@@ -1,8 +1,8 @@
-# Editor Preview: Native XR Path
+# Editor Preview: Native XR Path (Option 3)
 
 ## Context
 
-The current editor preview (see [EditorPreview.md](./EditorPreview.md))
+The current editor preview (merged via PR #85, branch `editor-preview`)
 uses `USceneCaptureComponent2D` + a standalone OpenXR session to render
 the PIE world into a native 3D window. It works, but has inherent
 limitations:
@@ -21,9 +21,9 @@ same path, eliminating the SceneCapture workaround.
 
 ## Why this failed before
 
-From prior investigation of the PIE render path:
+From `Docs/Internal/handoff-editor-preview.md`:
 
-> UE's PIE rendering path does NOT call
+> UE5.7's PIE rendering path does NOT call
 > `FDisplayXRDevice::UpdateViewport()`. The XR device's viewport
 > management functions are only called in standalone game mode, not in
 > the editor's PIE. The compositor never initializes because
@@ -70,7 +70,7 @@ on our device, vs what we need it to call.
 
 ### Phase 2 — Read OpenXRHMD source for the PIE hook pattern
 
-UE's `OpenXRHMD` works in PIE. Relevant code to study:
+UE 5.7's `OpenXRHMD` works in PIE. Relevant code to study:
 
 - `Engine/Plugins/Runtime/OpenXR/Source/OpenXRHMD/Private/OpenXRHMD.cpp` — session lifecycle, `OnBeginPlay`, stereo activation
 - `Engine/Source/Runtime/Engine/Private/GameViewportClient.cpp` — look for where `IStereoRendering` / `IHeadMountedDisplay` methods fire during PIE draw
@@ -103,11 +103,11 @@ changes:
 Once UE calls our XR path in PIE:
 
 - `AllocateRenderTargetTexture` wraps the DisplayXR swapchain image as
-  a `PF_B8G8R8A8` RHI texture (same pattern as the zero-copy wrap in
-  `DisplayXRCompositor.cpp`)
+  a `PF_B8G8R8A8` RHI texture (same pattern as
+  `DisplayXRCompositor.cpp:287-300`)
 - `FSceneViewExtensionBase` callbacks apply Kooima projection via
   `ComputeViews` (already implemented for game mode in
-  `DisplayXRDevice.cpp`)
+  `DisplayXRDevice.cpp:500-658`)
 - `xrEndFrame` submits the rendered image — runtime handles interlace
   and outputs to the 3D display directly
 
@@ -120,11 +120,11 @@ Once PIE rendering works natively:
 - Or keep a small secondary window that mirrors the swapchain for cases
   where the 3D display isn't the primary monitor. Simpler than the
   current SceneCapture path.
-- Close the "SceneCapture vs native" tension in `EditorPreview.md`.
+- Update handoff docs; close the "SceneCapture vs native" tension.
 
 ## Risks
 
-- **Failure case**: if Phase 2 reveals UE genuinely requires an
+- **Failure case**: if Phase 2 reveals UE 5.7 genuinely requires an
   `FOpenXRHMD`-managed session for PIE XR, our custom device may not
   fit. Fallback: keep the SceneCapture approach as shipped.
 - **Regression risk**: touching `FDisplayXRDevice` registration can
@@ -145,7 +145,7 @@ Once PIE rendering works natively:
 ### Existing — reference only (don't modify until Phase 4)
 - `Source/DisplayXRCore/Private/Rendering/DisplayXRDevice.cpp` —
   current custom HMD device (game-mode path)
-- `Source/DisplayXRCore/Private/DisplayXRCompositor.cpp` —
+- `Source/DisplayXRCore/Private/DisplayXRCompositor.cpp:287-300` —
   zero-copy swapchain wrapping pattern
 - `Source/DisplayXRCore/Private/DisplayXRSession.cpp` — OpenXR session
   lifecycle
@@ -162,7 +162,7 @@ Once PIE rendering works natively:
 
 After Phase 4 implementation:
 
-1. Open a test project with the plugin installed in UE 5.5+ editor
+1. Open DisplayXRTest project in UE 5.7 editor
 2. Place rig pawn in level, possess on BeginPlay
 3. Press Play → editor PIE viewport should render stereo through our
    compositor. The 3D display should show correct stereo output.
