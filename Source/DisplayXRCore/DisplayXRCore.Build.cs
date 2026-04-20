@@ -20,6 +20,7 @@ public class DisplayXRCore : ModuleRules
 			"Engine",
 			"HeadMountedDisplay",
 			"XRBase",
+			"InputCore",
 		});
 
 		PrivateDependencyModuleNames.AddRange(new string[]

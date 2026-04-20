@@ -1,92 +1,164 @@
-# Agent Prompt — Editor Preview Native XR Path (Option 3)
+# Agent Prompt — Editor Preview Native XR Path, Phase 4
 
-Copy-paste the block below into a fresh Claude Code session to kick
-off Phase 1 of the investigation.
+Copy-paste the block below into a fresh Claude Code session to pick up
+this work.
 
 ---
 
-You're picking up a research + implementation task on the
-`editor-preview-xr-native` branch of the `displayxr-unreal` repo at
+You're picking up Phase 4 of the native XR editor preview on branch
+`editor-preview-xr-native` in the `displayxr-unreal` repo at
 `C:\Users\Sparks i7 3080\Documents\GitHub\displayxr-unreal`.
 
-## Your job
+## Read first
 
-Read `Docs/DisplayXR/EditorPreviewNative.md` first — that's the plan.
-Then execute Phase 1 (instrument `FDisplayXRDevice` and log which of
-its methods UE actually calls during PIE startup vs game-mode
-startup). Report findings before starting Phase 2.
+`Docs/DisplayXR/EditorPreviewNative.md` — it's been rewritten with the
+current status, the key insight from the last session, and the Phase 4
+plan. Read it in full before doing anything else.
 
-## What's already shipped
+## State of the world
 
-PR #85 (`editor-preview` → `main`) delivered a working but
-SceneCapture-based editor preview. Full journey documented at
-`Docs/Internal/handoff-editor-preview-pie-integration.md`. The
-shipped approach works; this task is about replacing it with a
-native XR render path.
+**Phase 1–3 shipped** at commit `40e9265` (stable HEAD of
+`editor-preview-xr-native`). With `r.DisplayXR.EditorNativePIE 1`:
 
-## The load-bearing claim to re-verify
+- UE's stereo pipeline drives PIE through `FDisplayXRDevice` exactly
+  like gameplay does. All `FXRRenderTargetManager` +
+  `FSceneViewExtensionBase` methods fire in PIE.
+- The atlas is rendered zero-copy into the OpenXR swapchain. UMG, HUD,
+  post-process, TAA, Niagara, Lumen — all included automatically.
+- The atlas is visible in the editor's PIE viewport tab (pre-weave).
+- No `SceneCapture2D` involved in the render path.
 
-`Docs/Internal/handoff-editor-preview.md` states that
-`FDisplayXRDevice::UpdateViewport` is never called in PIE — which
-blocked the direct compositor approach. But Epic's `OpenXRHMD`
-plugin works in PIE on UE 5.7, so there's a hook pattern we didn't
-discover before. Phase 1 + Phase 2 in the plan are specifically
-about finding that pattern.
+**Phase 4 is open**: route that atlas to a visible top-level window on
+the 3D display from editor PIE. Last session's WIP (raw `CreateWindowExW`
+mirror window + DXGI swapchain + manual atlas copy) is preserved at git
+tag `wip/mirror-swapchain-exploration` (commit `882b3ae`). **That WIP
+is not the path forward** — see the plan doc for why.
 
-## What NOT to do yet
+## The load-bearing insight from last session
 
-- Don't modify game-mode rendering code (`DisplayXRCompositor`,
-  `DisplayXRDevice.cpp` beyond adding logs). Game mode works; don't
-  regress it.
-- Don't delete the current editor preview (`DisplayXRPreviewSession`
-  etc.) until Phase 4 is proven. It's the fallback.
-- Don't rewrite `FDisplayXRDevice` as a thin `FOpenXRHMD` extension.
-  That's a different architecture — stay with the custom HMD path
-  and find the PIE activation hook.
+Running gameplay with `-Windowed` at 3840x2160 on the 3D display
+**still shows the correct atlas**. Gameplay works because the game
+window is a UE-managed `SWindow`, not because it's fullscreen. The
+editor-PIE mirror we tried was a raw `CreateWindowExW` window; the
+DisplayXR runtime's D3D12 native compositor didn't compose cleanly
+with it.
+
+So Phase 4's new plan: **create the mirror as a UE `SWindow` via
+`FSlateApplication::Get().AddWindow(SNew(SWindow)...)`** and pass its
+native HWND to the compositor. Plan doc has the concrete steps.
+
+## What to do first
+
+1. Read `Docs/DisplayXR/EditorPreviewNative.md` fully.
+2. Launch a Plan agent (or plan yourself) with the goal:
+   *implement Phase 4 per the plan doc — `SWindow` mirror bound to the
+   compositor, cherry-picking the `xrSetSharedTextureOutputRectEXT` +
+   `OverrideCompositorHWND` + conditional-child-window changes from the
+   WIP tag, dropping the raw-Win32 and DXGI-swapchain parts*.
+3. Before coding, examine the WIP commits to decide exactly which
+   diffs to cherry-pick and which to leave behind:
+   ```
+   git log wip/mirror-swapchain-exploration --not HEAD --oneline
+   git show <commit> -- Source/DisplayXRCore/Private/DisplayXRCompositor.cpp
+   ```
+4. Reference UE engine source on `SWindow` + swapchain integration
+   (especially how the shipped `FDisplayXRPreviewSession` creates its
+   native window vs. how UE itself manages game/editor `SWindow`s).
+
+## Don't do
+
+- Don't revert or reset the Phase 1–3 work. It's correct and shipped.
+- Don't touch the game-mode compositor path (`FDisplayXRCompositor`
+  `Initialize` default branch that creates the child window). Only
+  change behavior when `OverrideCompositorHWND` is set.
+- Don't duplicate SceneCapture rendering. The whole point of Phase 4
+  is the atlas is already generated by UE's stereo pipeline — just
+  route it to a visible window.
+- Don't resume the DXGI-flip swapchain + manual atlas copy approach
+  from the WIP unless the `SWindow` approach also fails. It crashed
+  with `DXGI_ERROR_DEVICE_REMOVED` on the copy; don't spend the
+  session re-diagnosing that.
+
+## Bundled side item — SHIFT+F1 dev shortcut
+
+`DisplayXRCoreModule.cpp` currently registers a Slate input
+pre-processor for SHIFT+F1 → toggle mouse capture on the local
+`PlayerController`. It's not firing — likely because
+`FSlateApplication::IsInitialized()` returns false at
+`PostConfigInit` load time, so `RegisterInputPreProcessor` silently
+skips.
+
+Fix in Phase 4:
+
+- Defer registration via `FTSTicker` or
+  `FDelayedAutoRegisterFunction(EDelayedRegisterRunPhase::EndOfEngineInit,...)`
+  until Slate is up.
+- Add a log inside `HandleKeyDownEvent` so you can confirm it's
+  hitting on key presses.
 
 ## Constraints
 
-- UE 5.7, Windows, DX12 only
-- DisplayXR naming — no vendor branding anywhere in module / symbol names
-- Build path: copy modified sources to
-  `C:/Users/Sparks i7 3080/Documents/Unreal Projects/DisplayXRTest/Plugins/DisplayXR/Source/`,
-  kill `UnrealEditor` + `LiveCodingConsole`, run
-  `UE_5.7/Engine/Build/BatchFiles/Build.bat DisplayXRTestEditor Win64 Development -Project=... -WaitMutex -FromMsBuild`.
-- Log to the `DisplayXRTest.log` under `Saved/Logs/` in the test
-  project — read it with the Grep tool.
+- UE 5.7, Windows, DX12 only.
+- DisplayXR terminology — atlas/tiles/3D mode. Never SBS/stereo.
+  Treat the atlas layout as N-view (the DP dictates it via
+  `XR_EXT_display_info` — current test mode is 2×1 tiles but don't
+  hardcode that count).
+- Build path:
+  ```
+  cp <plugin sources> C:/Users/Sparks\ i7\ 3080/Documents/Unreal\ Projects/DisplayXRTest/Plugins/DisplayXR/Source/
+  taskkill /F /IM UnrealEditor.exe
+  taskkill /F /IM LiveCodingConsole.exe
+  cd C:/Users/Sparks\ i7\ 3080/Documents/Unreal\ Projects/DisplayXRTest
+  ./build.bat
+  ```
+  (That `build.bat` in the test project wraps `Build.bat
+  DisplayXRTestEditor Win64 Development -Project=... -WaitMutex
+  -FromMsBuild`.)
+- Logs:
+  `C:/Users/Sparks\ i7\ 3080/Documents/Unreal\ Projects/DisplayXRTest/Saved/Logs/DisplayXRTest.log`
+  — grep for `LogDisplayXRDevice`, `LogDisplayXREditor`,
+  `LogDisplayXRCompositor`, `LogDisplayXRSession`.
+- Launch editor for interactive tests:
+  `"/c/Program Files/Epic Games/UE_5.7/Engine/Binaries/Win64/UnrealEditor.exe" "<project.uproject>" -NoLiveCoding &`
+  (and the user presses Play — don't automate PIE).
+- Launch game windowed (baseline that works):
+  ```
+  MSYS_NO_PATHCONV=1 MSYS2_ARG_CONV_EXCL='*' \
+    "/c/Program Files/Epic Games/UE_5.7/Engine/Binaries/Win64/UnrealEditor.exe" \
+    "<project.uproject>" /Game/SimpleCube -game -WinX=0 -WinY=0 \
+    -ResX=3840 -ResY=2160 -Windowed -NoLiveCoding \
+    -ExecCmds="t.IdleWhenNotForeground 0"
+  ```
+  The MSYS env vars prevent bash from mangling `/Game/SimpleCube`.
 
-## First concrete step
+## Verification
 
-Open `Source/DisplayXRCore/Private/Rendering/DisplayXRDevice.cpp`
-and `Source/DisplayXRCore/Private/Rendering/DisplayXRDevice.h`.
-Add a one-line `UE_LOG` at the top of each of these methods, with
-enough context to tell editor-from-PIE apart (include
-`GEditor->PlayWorld != nullptr` or equivalent as a flag in the log):
+Per the plan doc's verification section:
 
-- `UpdateViewport(...)`
-- `EnableStereo(bool)` / `IsStereoEnabled()` (log enable/disable state
-  transitions only — these run every frame)
-- `ShouldUseSeparateRenderTarget()` (log once per world context
-  change — also every-frame)
-- `GetIdealRenderTargetSize()`
-- `AllocateRenderTargetTexture(...)` / `AllocateDepthTexture(...)`
-- `BeginRenderViewFamily` / `SetupViewFamily` /
-  `PreRenderViewFamily_RenderThread`
-- `OnBeginPlay(FWorldContext&)`
+1. PIE with CVar on → `SWindow` appears with weaved atlas visible on
+   the 3D display, editor desktop no longer weaved around it.
+2. Editor PIE viewport tab still shows pre-weave atlas.
+3. PIE Stop closes `SWindow` cleanly; desktop returns to 2D.
+4. Second PIE cycle works without editor restart.
+5. `run-game.bat` (fullscreen and windowed) still renders correctly.
+6. SHIFT+F1 in game → cursor appears + lookaround releases; toggle
+   back.
 
-Then build, launch the editor, press Play, and collect the log. Share
-the sequence you see — that tells us which hooks fire and which
-don't, which is the whole point of Phase 1.
+Ask clarifying questions if the `SWindow` setup has subtleties we
+haven't discussed. The biggest open question is how UE creates the
+window's underlying DXGI swapchain and whether the runtime's native
+compositor can target the same HWND without conflict — be ready to
+read UE's `FViewportWidget`/`FSlateRHIRenderer` path if needed.
 
 ## Reference
 
-- Plan: `Docs/DisplayXR/EditorPreviewNative.md`
-- Architecture docs: `Docs/Internal/Backends.md`, `Docs/Internal/Modules.md`
-- Prior handoffs (read for context, not instruction):
+- Plan: `Docs/DisplayXR/EditorPreviewNative.md` (rewritten 2026-04-20)
+- WIP tag: `wip/mirror-swapchain-exploration` (commit `882b3ae`)
+- Shipped preview (reference for window/session patterns that work
+  today): `Source/DisplayXREditor/Private/DisplayXRPreviewSession.cpp`
+- Engine source for `SWindow`:
+  `%UE_ROOT%/Engine/Source/Runtime/SlateCore/Public/Widgets/SWindow.h`
+- Prior handoffs:
   `Docs/Internal/handoff-ue57-custom-hmd.md`,
-  `Docs/Internal/handoff-editor-preview.md`,
-  `Docs/Internal/handoff-editor-preview-pie-integration.md`
-- Epic source (read-only): `%UE_ROOT%/Engine/Plugins/Runtime/OpenXR/Source/OpenXRHMD/Private/OpenXRHMD.cpp`
-
-Ask me clarifying questions if anything about the plan or setup is
-ambiguous.
+  `handoff-editor-preview.md`,
+  `handoff-editor-preview-pie-integration.md`

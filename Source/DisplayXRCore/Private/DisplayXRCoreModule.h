@@ -7,6 +7,7 @@
 #include "IHeadMountedDisplayModule.h"
 
 class FDisplayXRSession;
+class FDisplayXRDevInputProcessor;
 
 /**
  * DisplayXR core module. Registers as an HMD module so UE picks our custom
@@ -28,9 +29,10 @@ public:
 	virtual void GetModuleAliases(TArray<FString>& AliasesOut) const override;
 
 	/** Get the session (for FDisplayXRPlatform routing). */
-	static FDisplayXRSession* GetSession();
+	DISPLAYXRCORE_API static FDisplayXRSession* GetSession();
 
 private:
 	TSharedPtr<FDisplayXRSession> Session;
+	TSharedPtr<FDisplayXRDevInputProcessor> DevInputProcessor;
 	static FDisplayXRCoreModule* ModuleInstance;
 };

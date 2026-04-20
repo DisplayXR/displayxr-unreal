@@ -7,6 +7,12 @@
 #include "Rendering/DisplayXRDevice.h"
 #include "SceneViewExtension.h"
 #include "Modules/ModuleManager.h"
+#include "Framework/Application/IInputProcessor.h"
+#include "Framework/Application/SlateApplication.h"
+#include "GameFramework/PlayerController.h"
+#include "Engine/World.h"
+#include "Engine/LocalPlayer.h"
+#include "Engine/Engine.h"
 
 #if PLATFORM_WINDOWS
 #include "Windows/AllowWindowsPlatformTypes.h"
@@ -16,6 +22,69 @@
 #endif
 
 DEFINE_LOG_CATEGORY_STATIC(LogDisplayXRCore, Log, All);
+
+// =============================================================================
+// Dev-mode input preprocessor: SHIFT+F1 toggles mouse cursor / input mode on
+// the local PlayerController. Matches the editor's SHIFT+F1 affordance so
+// developers can release the game's mouse-look without having to Alt+F4 out.
+// =============================================================================
+class FDisplayXRDevInputProcessor : public IInputProcessor
+{
+public:
+	virtual void Tick(const float, FSlateApplication&, TSharedRef<ICursor>) override {}
+
+	virtual bool HandleKeyDownEvent(FSlateApplication&, const FKeyEvent& KeyEvent) override
+	{
+		if (KeyEvent.GetKey() != EKeys::F1 || !KeyEvent.IsShiftDown())
+		{
+			return false;
+		}
+		APlayerController* PC = FindLocalPC();
+		if (!PC)
+		{
+			return false;
+		}
+		bCaptured = !bCaptured;
+		if (bCaptured)
+		{
+			// Return to game: hide cursor, lock, game-only input.
+			FInputModeGameOnly InputMode;
+			PC->SetInputMode(InputMode);
+			PC->SetShowMouseCursor(false);
+			UE_LOG(LogTemp, Log, TEXT("DisplayXR: SHIFT+F1 → mouse captured (game)"));
+		}
+		else
+		{
+			// Release: show cursor, unlock, game+UI input.
+			FInputModeGameAndUI InputMode;
+			InputMode.SetLockMouseToViewportBehavior(EMouseLockMode::DoNotLock);
+			InputMode.SetHideCursorDuringCapture(false);
+			PC->SetInputMode(InputMode);
+			PC->SetShowMouseCursor(true);
+			UE_LOG(LogTemp, Log, TEXT("DisplayXR: SHIFT+F1 → mouse released"));
+		}
+		return true;
+	}
+
+private:
+	static APlayerController* FindLocalPC()
+	{
+		if (!GEngine) return nullptr;
+		for (const FWorldContext& Ctx : GEngine->GetWorldContexts())
+		{
+			if ((Ctx.WorldType == EWorldType::Game || Ctx.WorldType == EWorldType::PIE) && Ctx.World())
+			{
+				if (APlayerController* PC = Ctx.World()->GetFirstPlayerController())
+				{
+					return PC;
+				}
+			}
+		}
+		return nullptr;
+	}
+
+	bool bCaptured = true;  // starts matching the game's default captured state
+};
 
 FDisplayXRCoreModule* FDisplayXRCoreModule::ModuleInstance = nullptr;
 
@@ -57,11 +126,26 @@ void FDisplayXRCoreModule::StartupModule()
 	// Register with UE's HMD module discovery
 	IHeadMountedDisplayModule::StartupModule();
 
+	// Register SHIFT+F1 → release/capture mouse dev shortcut. Slate may not be
+	// initialized at module-load time in some build targets, so defer until
+	// FSlateApplication is ready.
+	if (FSlateApplication::IsInitialized())
+	{
+		DevInputProcessor = MakeShared<FDisplayXRDevInputProcessor>();
+		FSlateApplication::Get().RegisterInputPreProcessor(DevInputProcessor);
+	}
+
 	UE_LOG(LogDisplayXRCore, Log, TEXT("DisplayXR: Core module started (custom HMD path)"));
 }
 
 void FDisplayXRCoreModule::ShutdownModule()
 {
+	if (DevInputProcessor.IsValid() && FSlateApplication::IsInitialized())
+	{
+		FSlateApplication::Get().UnregisterInputPreProcessor(DevInputProcessor);
+	}
+	DevInputProcessor.Reset();
+
 	if (Session.IsValid())
 	{
 		Session->Shutdown();
