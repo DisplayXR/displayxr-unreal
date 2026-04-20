@@ -30,6 +30,36 @@ extern "C" {
 DEFINE_LOG_CATEGORY_STATIC(LogDisplayXRDevice, Log, All);
 
 // =============================================================================
+// PIE-instrumentation helpers (Phase 1 of EditorPreviewNative.md investigation)
+// Temporary: every log line below tagged [GAME]/[EDITOR]/[PIE] tells us which
+// FDisplayXRDevice callbacks UE actually drives in editor PIE vs standalone.
+// =============================================================================
+
+static FORCEINLINE const TCHAR* WorldCtxTag()
+{
+#if WITH_EDITOR
+	if (GIsPlayInEditorWorld) return TEXT("PIE");
+	if (GIsEditor) return TEXT("EDITOR");
+#endif
+	return TEXT("GAME");
+}
+
+static FORCEINLINE const TCHAR* WorldTypeStr(EWorldType::Type T)
+{
+	switch (T)
+	{
+	case EWorldType::Game:          return TEXT("Game");
+	case EWorldType::Editor:        return TEXT("Editor");
+	case EWorldType::PIE:           return TEXT("PIE");
+	case EWorldType::EditorPreview: return TEXT("EditorPreview");
+	case EWorldType::GamePreview:   return TEXT("GamePreview");
+	case EWorldType::GameRPC:       return TEXT("GameRPC");
+	case EWorldType::Inactive:      return TEXT("Inactive");
+	default:                        return TEXT("Unknown");
+	}
+}
+
+// =============================================================================
 // Constructor
 // =============================================================================
 
@@ -38,7 +68,7 @@ FDisplayXRDevice::FDisplayXRDevice(const FAutoRegister& AutoRegister, FDisplayXR
 	, FSceneViewExtensionBase(AutoRegister)
 	, Session(InSession)
 {
-	UE_LOG(LogDisplayXRDevice, Log, TEXT("DisplayXR Device: Created"));
+	UE_LOG(LogDisplayXRDevice, Log, TEXT("[%s] DisplayXR Device: Created"), WorldCtxTag());
 }
 
 FDisplayXRDevice::~FDisplayXRDevice()
@@ -89,6 +119,9 @@ void FDisplayXRDevice::ResetOrientationAndPosition(float Yaw)
 
 void FDisplayXRDevice::OnBeginPlay(FWorldContext& InWorldContext)
 {
+	UE_LOG(LogDisplayXRDevice, Log, TEXT("[%s] OnBeginPlay: ContextWorldType=%s pieInstance=%d"),
+		WorldCtxTag(), WorldTypeStr(InWorldContext.WorldType), InWorldContext.PIEInstance);
+	GLog->Flush();
 	FHeadMountedDisplayBase::OnBeginPlay(InWorldContext);
 }
 
@@ -149,11 +182,15 @@ bool FDisplayXRDevice::GetHMDDistortionEnabled(EShadingPath ShadingPath) const
 
 bool FDisplayXRDevice::IsStereoEnabled() const
 {
+	static bool bLogged = false;
+	if (!bLogged) { bLogged = true; UE_LOG(LogDisplayXRDevice, Log, TEXT("[%s] IsStereoEnabled first-call -> true"), WorldCtxTag()); GLog->Flush(); }
 	return true;
 }
 
 bool FDisplayXRDevice::EnableStereo(bool stereo)
 {
+	UE_LOG(LogDisplayXRDevice, Log, TEXT("[%s] EnableStereo(%d) -> true"), WorldCtxTag(), stereo ? 1 : 0);
+	GLog->Flush();
 	return true;
 }
 
@@ -225,6 +262,13 @@ IStereoRenderTargetManager* FDisplayXRDevice::GetRenderTargetManager()
 
 bool FDisplayXRDevice::ShouldUseSeparateRenderTarget() const
 {
+	static int32 SUSCount = 0;
+	++SUSCount;
+	if (SUSCount <= 3 || SUSCount % 300 == 0)
+	{
+		UE_LOG(LogDisplayXRDevice, Log, TEXT("[%s] ShouldUseSeparateRenderTarget #%d -> true"), WorldCtxTag(), SUSCount);
+		GLog->Flush();
+	}
 	return true;
 }
 
@@ -246,8 +290,9 @@ bool FDisplayXRDevice::AllocateRenderTargetTexture(uint32 Index, uint32 SizeX, u
 
 	OutTargetableTexture = OutShaderResourceTexture = RHICreateTexture(Desc);
 
-	UE_LOG(LogDisplayXRDevice, Log, TEXT("DisplayXR: AllocateRenderTargetTexture (fallback) %ux%u fmt=%d"),
-		SizeX, SizeY, (int)DesiredFormat);
+	UE_LOG(LogDisplayXRDevice, Log, TEXT("[%s] AllocateRenderTargetTexture (singular fallback) %ux%u fmt=%d"),
+		WorldCtxTag(), SizeX, SizeY, (int)DesiredFormat);
+	GLog->Flush();
 
 	return OutTargetableTexture.IsValid();
 }
@@ -257,8 +302,21 @@ bool FDisplayXRDevice::AllocateRenderTargetTextures(uint32 SizeX, uint32 SizeY, 
 	TArray<FTextureRHIRef>& OutTargetableTextures,
 	TArray<FTextureRHIRef>& OutShaderResourceTextures, uint32 NumSamples)
 {
+	static int32 ARTCount = 0;
+	++ARTCount;
+	const bool bShouldLog = (ARTCount <= 5);
+
 	if (!Compositor.IsValid() || !Compositor->IsReady())
 	{
+		if (bShouldLog)
+		{
+			UE_LOG(LogDisplayXRDevice, Log, TEXT("[%s] AllocateRenderTargetTextures #%d early-return: compositor=%s ready=%d (%ux%u)"),
+				WorldCtxTag(), ARTCount,
+				Compositor.IsValid() ? TEXT("valid") : TEXT("null"),
+				(Compositor.IsValid() && Compositor->IsReady()) ? 1 : 0,
+				SizeX, SizeY);
+			GLog->Flush();
+		}
 		// Fall back to UE's default / singular allocator until compositor is ready.
 		return false;
 	}
@@ -266,14 +324,20 @@ bool FDisplayXRDevice::AllocateRenderTargetTextures(uint32 SizeX, uint32 SizeY, 
 	TArray<FTextureRHIRef> Wrapped;
 	if (!Compositor->GetSwapchainImagesRHI(Wrapped) || Wrapped.Num() == 0)
 	{
+		if (bShouldLog)
+		{
+			UE_LOG(LogDisplayXRDevice, Log, TEXT("[%s] AllocateRenderTargetTextures #%d early-return: swapchain images empty"),
+				WorldCtxTag(), ARTCount);
+			GLog->Flush();
+		}
 		return false;
 	}
 
 	OutTargetableTextures = Wrapped;
 	OutShaderResourceTextures = Wrapped;
 
-	UE_LOG(LogDisplayXRDevice, Log, TEXT("DisplayXR: AllocateRenderTargetTextures -> %d swapchain images (%ux%u)"),
-		Wrapped.Num(), SizeX, SizeY);
+	UE_LOG(LogDisplayXRDevice, Log, TEXT("[%s] AllocateRenderTargetTextures #%d -> %d swapchain images (%ux%u)"),
+		WorldCtxTag(), ARTCount, Wrapped.Num(), SizeX, SizeY);
 	GLog->Flush();
 	return true;
 }
@@ -292,6 +356,9 @@ EPixelFormat FDisplayXRDevice::GetActualColorSwapchainFormat() const
 
 void FDisplayXRDevice::CalculateRenderTargetSize(const FViewport& Viewport, uint32& InOutSizeX, uint32& InOutSizeY)
 {
+	const uint32 InX = InOutSizeX;
+	const uint32 InY = InOutSizeY;
+
 	// When compositor is ready we render directly into swapchain images, which
 	// are at full display resolution (e.g. 3840x2160). Tiles are sub-rects.
 	if (Compositor.IsValid() && Compositor->IsReady())
@@ -302,30 +369,61 @@ void FDisplayXRDevice::CalculateRenderTargetSize(const FViewport& Viewport, uint
 		{
 			InOutSizeX = SwW;
 			InOutSizeY = SwH;
-			return;
 		}
 	}
+	else
+	{
+		InOutSizeX = CachedViewConfig.GetAtlasW();
+		InOutSizeY = CachedViewConfig.GetAtlasH();
+		if (InOutSizeX == 0) InOutSizeX = 1920;
+		if (InOutSizeY == 0) InOutSizeY = 1080;
+	}
 
-	InOutSizeX = CachedViewConfig.GetAtlasW();
-	InOutSizeY = CachedViewConfig.GetAtlasH();
-	if (InOutSizeX == 0) InOutSizeX = 1920;
-	if (InOutSizeY == 0) InOutSizeY = 1080;
+	static bool bLogged = false;
+	static uint32 LastX = 0, LastY = 0;
+	if (!bLogged || InOutSizeX != LastX || InOutSizeY != LastY)
+	{
+		bLogged = true;
+		LastX = InOutSizeX;
+		LastY = InOutSizeY;
+		UE_LOG(LogDisplayXRDevice, Log, TEXT("[%s] CalculateRenderTargetSize: in=%ux%u -> out=%ux%u (compositorReady=%d)"),
+			WorldCtxTag(), InX, InY, InOutSizeX, InOutSizeY,
+			(Compositor.IsValid() && Compositor->IsReady()) ? 1 : 0);
+		GLog->Flush();
+	}
 }
 
 bool FDisplayXRDevice::NeedReAllocateViewportRenderTarget(const FViewport& Viewport)
 {
+	static bool bLoggedFirst = false;
+	if (!bLoggedFirst)
+	{
+		bLoggedFirst = true;
+		UE_LOG(LogDisplayXRDevice, Log, TEXT("[%s] NeedReAllocateViewportRenderTarget first-call"), WorldCtxTag());
+		GLog->Flush();
+	}
+
 	// One-shot reallocation trigger when the compositor transitions to ready,
 	// so UE re-runs AllocateRenderTargetTextures with the swapchain-backed array.
 	if (Compositor.IsValid() && Compositor->IsReady() && bSwapchainRTReallocPending)
 	{
 		bSwapchainRTReallocPending = false;
+		UE_LOG(LogDisplayXRDevice, Log, TEXT("[%s] NeedReAllocateViewportRenderTarget -> true (compositor became ready)"), WorldCtxTag());
+		GLog->Flush();
 		return true;
 	}
 
 	const FIntPoint RenderTargetSize = Viewport.GetRenderTargetTextureSizeXY();
-	uint32 NewSizeX, NewSizeY;
+	uint32 NewSizeX = 0, NewSizeY = 0;
 	CalculateRenderTargetSize(Viewport, NewSizeX, NewSizeY);
-	return (NewSizeX != (uint32)RenderTargetSize.X || NewSizeY != (uint32)RenderTargetSize.Y);
+	const bool bNeed = (NewSizeX != (uint32)RenderTargetSize.X || NewSizeY != (uint32)RenderTargetSize.Y);
+	if (bNeed)
+	{
+		UE_LOG(LogDisplayXRDevice, Log, TEXT("[%s] NeedReAllocateViewportRenderTarget -> true (size %dx%d -> %ux%u)"),
+			WorldCtxTag(), RenderTargetSize.X, RenderTargetSize.Y, NewSizeX, NewSizeY);
+		GLog->Flush();
+	}
+	return bNeed;
 }
 
 void FDisplayXRDevice::CacheWindowSize() const
@@ -376,6 +474,20 @@ static TSharedPtr<SWidget> GetTopMostWidget(TSharedPtr<SWidget> Widget)
 
 void FDisplayXRDevice::UpdateViewport(bool bUseSeparateRenderTarget, const FViewport& Viewport, SViewport* ViewportWidget)
 {
+	static bool bLoggedFirst = false;
+	static bool bLastSep = false;
+	if (!bLoggedFirst || bLastSep != bUseSeparateRenderTarget)
+	{
+		const FIntPoint VS = Viewport.GetSizeXY();
+		UE_LOG(LogDisplayXRDevice, Log, TEXT("[%s] UpdateViewport %s: bSep=%d viewportSize=%dx%d widget=%p"),
+			WorldCtxTag(),
+			bLoggedFirst ? TEXT("change") : TEXT("first-call"),
+			bUseSeparateRenderTarget ? 1 : 0, VS.X, VS.Y, ViewportWidget);
+		GLog->Flush();
+		bLoggedFirst = true;
+		bLastSep = bUseSeparateRenderTarget;
+	}
+
 	FXRRenderTargetManager::UpdateViewport(bUseSeparateRenderTarget, Viewport, ViewportWidget);
 
 	// Resolve the game window HWND from the viewport widget chain. Cached on the
@@ -412,7 +524,7 @@ void FDisplayXRDevice::UpdateViewport(bool bUseSeparateRenderTarget, const FView
 			Compositor = MakeUnique<FDisplayXRCompositor>(Session);
 			if (!Compositor->Initialize(WindowHandle, D3DDevice, CommandQueue))
 			{
-				UE_LOG(LogDisplayXRDevice, Warning, TEXT("DisplayXR Device: Compositor initialization failed"));
+				UE_LOG(LogDisplayXRDevice, Warning, TEXT("[%s] DisplayXR Device: Compositor initialization failed"), WorldCtxTag());
 				Compositor.Reset();
 			}
 		}
@@ -432,8 +544,8 @@ void FDisplayXRDevice::RenderTexture_RenderThread(FRDGBuilder& GraphBuilder, FRD
 	RTCount++;
 	if (RTCount <= 3)
 	{
-		UE_LOG(LogDisplayXRDevice, Log, TEXT("DisplayXR RenderTexture #%d: BackBuffer=%p SrcTexture=%p WindowSize=%.0fx%.0f"),
-			RTCount, (void*)BackBuffer, (void*)SrcTexture, WindowSize.X, WindowSize.Y);
+		UE_LOG(LogDisplayXRDevice, Log, TEXT("[%s] RenderTexture_RenderThread #%d: BackBuffer=%p SrcTexture=%p"),
+			WorldCtxTag(), RTCount, (void*)BackBuffer, (void*)SrcTexture);
 		GLog->Flush();
 	}
 
@@ -454,6 +566,9 @@ void FDisplayXRDevice::RenderTexture_RenderThread(FRDGBuilder& GraphBuilder, FRD
 
 void FDisplayXRDevice::PostRenderViewFamily_RenderThread(FRDGBuilder& GraphBuilder, FSceneViewFamily& InViewFamily)
 {
+	static bool bLogged = false;
+	if (!bLogged) { bLogged = true; UE_LOG(LogDisplayXRDevice, Log, TEXT("[%s] PostRenderViewFamily_RenderThread first-call"), WorldCtxTag()); GLog->Flush(); }
+
 	if (!Compositor.IsValid() || !Compositor->IsReady()) return;
 
 	FDisplayXRCompositor* Comp = Compositor.Get();
@@ -495,15 +610,15 @@ void FDisplayXRDevice::SetupViewFamily(FSceneViewFamily& InViewFamily)
 	{
 		if (SVFCount <= 3 || SVFCount % 300 == 0)
 		{
-			UE_LOG(LogDisplayXRDevice, Log, TEXT("DisplayXR Device: SetupViewFamily #%d — compositor=%p ready=%d sessionRunning=%d"),
-				SVFCount, Compositor.Get(), Compositor->IsReady() ? 1 : 0, Session->IsSessionRunning() ? 1 : 0);
+			UE_LOG(LogDisplayXRDevice, Log, TEXT("[%s] SetupViewFamily #%d — compositor=%p ready=%d sessionRunning=%d"),
+				WorldCtxTag(), SVFCount, Compositor.Get(), Compositor->IsReady() ? 1 : 0, Session->IsSessionRunning() ? 1 : 0);
 			GLog->Flush();
 		}
 		Compositor->Tick();
 	}
 	else if (SVFCount <= 3)
 	{
-		UE_LOG(LogDisplayXRDevice, Log, TEXT("DisplayXR Device: SetupViewFamily #%d — no compositor yet"), SVFCount);
+		UE_LOG(LogDisplayXRDevice, Log, TEXT("[%s] SetupViewFamily #%d — no compositor yet"), WorldCtxTag(), SVFCount);
 		GLog->Flush();
 	}
 
@@ -512,8 +627,8 @@ void FDisplayXRDevice::SetupViewFamily(FSceneViewFamily& InViewFamily)
 
 	if (SVFCount <= 3)
 	{
-		UE_LOG(LogDisplayXRDevice, Log, TEXT("DisplayXR Device: SetupViewFamily #%d done — viewConfig %dx%d views=%d"),
-			SVFCount, CachedViewConfig.GetAtlasW(), CachedViewConfig.GetAtlasH(), CachedViewConfig.GetViewCount());
+		UE_LOG(LogDisplayXRDevice, Log, TEXT("[%s] SetupViewFamily #%d done — viewConfig %dx%d views=%d"),
+			WorldCtxTag(), SVFCount, CachedViewConfig.GetAtlasW(), CachedViewConfig.GetAtlasH(), CachedViewConfig.GetViewCount());
 		GLog->Flush();
 	}
 }
@@ -537,10 +652,14 @@ void FDisplayXRDevice::SetupViewProjectionMatrix(FSceneViewProjectionData& InOut
 
 void FDisplayXRDevice::BeginRenderViewFamily(FSceneViewFamily& InViewFamily)
 {
+	static bool bLogged = false;
+	if (!bLogged) { bLogged = true; UE_LOG(LogDisplayXRDevice, Log, TEXT("[%s] BeginRenderViewFamily first-call"), WorldCtxTag()); GLog->Flush(); }
 }
 
 void FDisplayXRDevice::PreRenderView_RenderThread(FRDGBuilder& GraphBuilder, FSceneView& InView)
 {
+	static bool bLogged = false;
+	if (!bLogged) { bLogged = true; UE_LOG(LogDisplayXRDevice, Log, TEXT("[%s] PreRenderView_RenderThread first-call"), WorldCtxTag()); GLog->Flush(); }
 	// Game-thread CalculateStereoViewOffset + GetStereoProjectionMatrix handle
 	// the per-view setup. No render-thread override needed — doing so would
 	// fight UE's view matrix which already includes the mouse rotation.
@@ -553,7 +672,30 @@ int32 FDisplayXRDevice::GetPriority() const
 
 bool FDisplayXRDevice::IsActiveThisFrame_Internal(const FSceneViewExtensionContext& Context) const
 {
-	return GEngine && GEngine->IsStereoscopic3D(Context.Viewport);
+	const bool bResult = GEngine && GEngine->IsStereoscopic3D(Context.Viewport);
+
+	// Log first call AND every transition: this is the gate that decides whether
+	// any FSceneViewExtensionBase callback (SetupViewFamily etc.) fires at all.
+	// In editor PIE this is expected to be false unless the SViewport opts in via
+	// EnableStereoRendering(true) — which only happens for VR Preview by default.
+	static bool bLoggedFirst = false;
+	static bool bLastResult = false;
+	if (!bLoggedFirst || bLastResult != bResult)
+	{
+		const FViewport* V = Context.Viewport;
+		const bool bAllow = V ? V->IsStereoRenderingAllowed() : true;
+		const bool bDevValid = GEngine && GEngine->StereoRenderingDevice.IsValid();
+		const bool bDevEnabled = bDevValid && GEngine->StereoRenderingDevice->IsStereoEnabled();
+		UE_LOG(LogDisplayXRDevice, Log,
+			TEXT("[%s] IsActiveThisFrame_Internal %s -> %d (viewport=%p IsStereoRenderingAllowed=%d StereoDeviceValid=%d StereoDeviceEnabled=%d)"),
+			WorldCtxTag(),
+			bLoggedFirst ? TEXT("change") : TEXT("first-call"),
+			bResult ? 1 : 0, V, bAllow ? 1 : 0, bDevValid ? 1 : 0, bDevEnabled ? 1 : 0);
+		GLog->Flush();
+		bLoggedFirst = true;
+		bLastResult = bResult;
+	}
+	return bResult;
 }
 
 // =============================================================================
