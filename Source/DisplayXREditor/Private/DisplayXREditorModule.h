@@ -18,10 +18,14 @@ public:
 private:
 	void OnBeginPIE(bool bIsSimulating);
 	void OnEndPIE(bool bIsSimulating);
+	void OnPostPIEStarted(bool bIsSimulating);
+	void OnPrePIEEnded(bool bIsSimulating);
 	bool TickPreview(float DeltaTime);
 
 	TSharedPtr<FDisplayXRPreviewSession> PreviewSession;
 	FDelegateHandle BeginPIEHandle;
 	FDelegateHandle EndPIEHandle;
+	FDelegateHandle PostPIEStartedHandle;
+	FDelegateHandle PrePIEEndedHandle;
 	FTSTicker::FDelegateHandle TickHandle;
 };

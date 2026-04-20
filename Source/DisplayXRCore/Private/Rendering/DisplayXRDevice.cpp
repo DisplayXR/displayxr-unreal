@@ -10,6 +10,8 @@
 #include "DynamicRHI.h"
 #include "SceneView.h"
 #include "Camera/CameraTypes.h"
+#include "GameFramework/PlayerController.h"
+#include "GameFramework/Pawn.h"
 
 // RDG primitives used by RenderTexture_RenderThread preview blit.
 #include "CommonRenderResources.h"   // FCopyRectPS
@@ -640,6 +642,29 @@ void FDisplayXRDevice::SetupView(FSceneViewFamily& InViewFamily, FSceneView& InV
 void FDisplayXRDevice::SetupViewPoint(APlayerController* Player, FMinimalViewInfo& InViewInfo)
 {
 	PlayerViewLocation_GameThread = InViewInfo.Location;
+
+	// Phase 3 diagnostic: log which pawn owns the base camera + its pose. In GAME
+	// this is the possessed rig pawn's camera (sitting on the display plane); in
+	// PIE with the native path, if this shows a different pawn or an off-plane
+	// pose, that's why the -619cm stereo offset produces a garbage view.
+	static bool bLogged = false;
+	if (!bLogged)
+	{
+		bLogged = true;
+		AActor* Pawn = Player ? Player->GetPawn() : nullptr;
+		AActor* ViewTarget = Player ? Player->GetViewTarget() : nullptr;
+		UE_LOG(LogDisplayXRDevice, Log,
+			TEXT("[%s] SetupViewPoint first-call: controller=%s pawn=%s viewTarget=%s loc=(%.2f,%.2f,%.2f) rot=(%.2f,%.2f,%.2f) fov=%.2f"),
+			WorldCtxTag(),
+			*GetNameSafe(Player),
+			Pawn ? *Pawn->GetName() : TEXT("<none>"),
+			ViewTarget ? *ViewTarget->GetName() : TEXT("<none>"),
+			InViewInfo.Location.X, InViewInfo.Location.Y, InViewInfo.Location.Z,
+			InViewInfo.Rotation.Pitch, InViewInfo.Rotation.Yaw, InViewInfo.Rotation.Roll,
+			InViewInfo.FOV);
+		GLog->Flush();
+	}
+
 	// Don't modify InViewInfo — let UE handle camera rotation naturally.
 	// The per-view offset is applied in CalculateStereoViewOffset.
 }
