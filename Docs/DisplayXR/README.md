@@ -8,7 +8,8 @@ Unreal Engine integration with the DisplayXR OpenXR runtime for eye-tracked 3D l
 - [Compositor Integration](./CompositorIntegration.md) — Original Phase 2 planning doc (historical)
 - [Display Rig Setup](./DisplayRigSetup.md) — How to set up the pawn/camera rig for stereo 3D (camera rotation, input, display-centric vs camera-centric)
 - [Eye Tracking](./EyeTracking.md) — Parallax pipeline: `xrLocateViews` → Kooima → per-view projection, coordinate conventions
-- [Editor Preview](./EditorPreview.md) — Preview strategy, Unity vs Unreal differences
+- [Editor Preview](./EditorPreview.md) — Current `SceneCapture2D`-based preview strategy, Unity vs Unreal differences
+- [Editor Preview: Native XR Path](./EditorPreviewNative.md) — In-flight plan to replace the current preview with a native `FDisplayXRDevice` → PIE hookup (see also the [agent prompt](./EditorPreviewNative-AgentPrompt.md))
 - [Mac Setup](./MacSetup.md) — macOS-specific setup, direct OpenXR session, scene view extension
 - [TODO](./TODO.md) — Outstanding work, parity with the Unity sibling, in-flight branches
 
