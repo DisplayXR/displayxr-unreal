@@ -10,8 +10,7 @@ Outstanding work for the DisplayXR Unreal plugin. Organized by theme, not priori
 Replace the current `SceneCapture2D`-based editor preview with a `FDisplayXRDevice` → PIE hookup so UE renders directly into the OpenXR swapchain in the editor (zero-copy, UMG/HUD supported).
 
 - Motivation: remove duplicate render path, pick up TAA history / eye adaptation / post-process state automatically, include UI widgets in the preview.
-- Design + agent prompt already drafted; not yet merged into this repo. When picked up, port `EditorPreviewNative.md` + `EditorPreviewNative-AgentPrompt.md` into `Docs/DisplayXR/`.
-- Key hypothesis to re-verify: UE's PIE pipeline does not invoke `FDisplayXRDevice::UpdateViewport()`. Every working UE XR plugin (OpenXR, SteamVR, Meta) activates in PIE, so the hook pattern exists — it was either missed or the device isn't registered in a way UE recognizes for PIE. First step: instrument `EnableStereo`, `IsStereoEnabled`, `ShouldUseSeparateRenderTarget`, `GetIdealRenderTargetSize`, `AllocateRenderTargetTexture`, `BeginRenderViewFamily`, compare sequence against Epic's `OpenXRHMD`.
+- Plan: [`EditorPreviewNative.md`](./EditorPreviewNative.md) (5-phase investigation). Agent handoff prompt: [`EditorPreviewNative-AgentPrompt.md`](./EditorPreviewNative-AgentPrompt.md).
 
 ---
 
