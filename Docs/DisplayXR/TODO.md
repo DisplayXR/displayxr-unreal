@@ -56,3 +56,4 @@ Unity sibling has a more mature docs tree. Bring Unreal up to parity so users ca
 
 - Kooima C libs (`camera3d_view.c/h`, `display3d_view.c/h`) are shared with `displayxr-unity`. Keep them engine-agnostic — no UE or Unity types — and sync changes both directions.
 - Some file-header years are `2025-2026`; new files should use `2026-` or extend the range as appropriate.
+- Smoke-test PR verifying `lint.yml` triggers on PR to `main`.
