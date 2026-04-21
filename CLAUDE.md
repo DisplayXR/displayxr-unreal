@@ -28,16 +28,11 @@ Output goes to `Packages/DisplayXR_<version>/`.
 2. **DisplayXRMaterials** (Runtime, all platforms, `Default`) — Custom material expression nodes (`StereoIndex`, `StereoSelect`, `SideBySideCoords`, `TopBottomCoords`).
 3. **DisplayXREditor** (Editor, `Win64|Mac`, `PostEngineInit`) — Editor preview session, viewport widget, component proxies.
 
-### Dual-Path OpenXR Integration
+### OpenXR Integration
 
-Selected at compile time via `DISPLAYXR_USE_UNREAL_OPENXR`:
+One unified session — `FDisplayXRSession` — loads the DisplayXR runtime **directly** on every platform (`LoadLibraryW` + `XrNegotiateLoaderRuntimeInterface` on Windows, `dlopen` on Mac/Linux). UE's `OpenXR` plugin is **not** a dependency; `DisplayXR.uplugin` declares only `XRBase`. `FDisplayXRCoreModule` implements `IHeadMountedDisplayModule` and bumps its HMD plugin priority +10 above `OpenXRHMD` / `SteamVR` so UE's HMD discovery picks us.
 
-| Path | Platforms | How |
-|---|---|---|
-| UE OpenXR hook | Windows, Android | `IOpenXRExtensionPlugin` intercepts `xrLocateViews`; UE's `FOpenXRHMD` owns the session |
-| Direct session | macOS | `FDisplayXRDirectSession` loads the runtime via `dlopen`; `FSceneViewExtensionBase` overrides projection |
-
-Everything above the OpenXR layer (components, rig manager, Kooima math, materials, Blueprint API) is shared.
+There is **no** `DISPLAYXR_USE_UNREAL_OPENXR` compile flag. Platform differences (DLL loading, window binding, D3D12 vs Metal graphics binding) live inside session and compositor code behind `#if PLATFORM_WINDOWS / PLATFORM_MAC / PLATFORM_LINUX`. See [`Docs/DisplayXR/Architecture.md`](./Docs/DisplayXR/Architecture.md) for the full picture and [`Docs/DisplayXR/adr/ADR-001-direct-runtime-loading.md`](./Docs/DisplayXR/adr/ADR-001-direct-runtime-loading.md) for why.
 
 ### Rendering Pipeline
 
