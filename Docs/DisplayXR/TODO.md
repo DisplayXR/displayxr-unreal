@@ -45,8 +45,8 @@ Unity sibling has a more mature docs tree. Bring Unreal up to parity so users ca
 
 ## 5. Platform coverage
 
-- **macOS path validation** — `DISPLAYXR_USE_UNREAL_OPENXR=0`, direct session via `FDisplayXRDirectSession`. End-to-end smoke test on a supported display.
-- **Android path validation** — OpenXR hook on current DisplayXR runtime. Vulkan backend.
+- **macOS path validation** — end-to-end smoke test of the unified `FDisplayXRSession` (Metal graphics binding, Cocoa window binding) on a supported display. See [MacSetup.md](./MacSetup.md).
+- **Android path validation** — unified session on Android (Vulkan graphics binding).
 - **UE version sweep** — currently targets UE 5.3+. Confirm 5.6 works; track 5.7 pre-release.
 
 ---

@@ -27,7 +27,7 @@ The plugin hooks into Unreal's OpenXR pipeline to provide:
 - **Zero-copy atlas handoff** — UE renders directly into the OpenXR swapchain (see [AtlasHandoff](Docs/DisplayXR/AtlasHandoff.md))
 - **Editor preview** — a standalone OpenXR session in the editor so you can see stereo output without running PIE (see [EditorPreview](Docs/DisplayXR/EditorPreview.md))
 
-Two code paths are selected at compile time — `IOpenXRExtensionPlugin` hook on Windows/Android, direct OpenXR session on macOS. Everything else (components, rig manager, Kooima C libraries, Blueprint API, materials module) is shared.
+One unified session loads the DisplayXR OpenXR runtime directly on every platform; UE's `OpenXR` plugin is **not** a dependency. Platform differences (Windows D3D12, macOS Metal, Android Vulkan) live inside the session and compositor, not in a product-level compile flag. See [Architecture.md](Docs/DisplayXR/Architecture.md) for the full picture.
 
 ## Requirements
 
@@ -71,12 +71,16 @@ For per-project builds, use UAT directly (see `Scripts/PackageApp.py` for a refe
 
 In-depth docs live in [Docs/DisplayXR/](Docs/DisplayXR/):
 
-- [AtlasHandoff](Docs/DisplayXR/AtlasHandoff.md) — zero-copy UE→OpenXR swapchain pipeline
+- [QuickStart](Docs/DisplayXR/QuickStart.md) — install runtime → install plugin → press Play
+- [Architecture](Docs/DisplayXR/Architecture.md) — one-page class hierarchy, ownership, per-frame flow
+- [AtlasHandoff](Docs/DisplayXR/AtlasHandoff.md) — zero-copy UE → OpenXR swapchain pipeline
 - [DisplayRigSetup](Docs/DisplayXR/DisplayRigSetup.md) — pawn/camera rig configuration, input, rig modes
-- [EditorPreview](Docs/DisplayXR/EditorPreview.md) — standalone preview session, Unity vs Unreal differences
+- [EditorPreview](Docs/DisplayXR/EditorPreview.md) — current `SceneCapture2D`-based preview
+- [EditorPreviewNative](Docs/DisplayXR/EditorPreviewNative.md) — in-flight plan for native `FDisplayXRDevice` → PIE preview
 - [EyeTracking](Docs/DisplayXR/EyeTracking.md) — `xrLocateViews` → Kooima → per-view projection pipeline
-- [MacSetup](Docs/DisplayXR/MacSetup.md) — macOS-specific setup, direct OpenXR session
-- [CompositorIntegration](Docs/DisplayXR/CompositorIntegration.md) — historical planning doc for the compositor thread design
+- [MacSetup](Docs/DisplayXR/MacSetup.md) — macOS-specific setup quirks
+- [CompositorIntegration](Docs/DisplayXR/CompositorIntegration.md) — prior compositor design (historical)
+- [ADRs](Docs/DisplayXR/adr/) — decision records for load-bearing architectural choices
 - [TODO](Docs/DisplayXR/TODO.md) — outstanding work, parity items, in-flight branches
 
 ## Related Repositories

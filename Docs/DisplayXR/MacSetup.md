@@ -1,147 +1,81 @@
-# macOS Setup Guide
+# macOS Setup
+
+Mac runs the same [Architecture](./Architecture.md) as Windows — one unified `FDisplayXRSession` loaded via `dlopen`. This doc covers the Mac-specific quirks the QuickStart doesn't handle.
+
+For the generic install-and-go flow, start with [QuickStart.md](./QuickStart.md) and come back here for the Mac-specific bits.
 
 ## Prerequisites
 
-- UE 5.7+ installed via Epic Games Launcher
+- Unreal Engine 5.3+ installed via Epic Games Launcher
 - Xcode (for C++ plugin compilation)
-- DisplayXR runtime installed (either from package or built from source)
+- DisplayXR runtime installed (either from a package or built from source — see [openxr-3d-display](https://github.com/dfattal/openxr-3d-display))
 
-## Platform Architecture
+## Mac-specific quirk 1: no UE OpenXR plugin on Mac
 
-Unreal's OpenXR plugin (`OpenXRHMD`) **does not ship on macOS**. Therefore, the DisplayXR plugin uses a different code path on Mac:
+Unreal's `OpenXR` plugin **does not ship on macOS**. Builds that depend on it will fail with `OpenXRHMD module not found`.
 
-| | Windows/Android | macOS |
-|---|---|---|
-| **OpenXR integration** | `IOpenXRExtensionPlugin` hooks into Unreal's `FOpenXRHMD` | `FDisplayXRDirectSession` loads OpenXR runtime directly via `dlopen` |
-| **Stereo injection** | `InsertOpenXRAPILayer()` hooks `xrLocateViews` | `FDisplayXRSceneViewExtension : FSceneViewExtensionBase` overrides camera |
-| **Runtime discovery** | Unreal's OpenXR loader handles it | Plugin loads `libopenxr_displayxr.so` directly |
-| **Compile flag** | `DISPLAYXR_USE_UNREAL_OPENXR=1` | `DISPLAYXR_USE_UNREAL_OPENXR=0` |
+This is not a problem for DisplayXR directly — the current `DisplayXR.uplugin` only depends on `XRBase`, which is available on Mac. **If you see a `.uplugin` anywhere that lists `OpenXR` as a plugin dependency, it's stale — delete the entry on Mac.**
 
-The Kooima math, components, rig manager, Blueprint API, and materials module are **identical** across platforms. Only the rendering injection point differs.
+## Mac-specific quirk 2: set DisplayXR as the active OpenXR runtime
 
-## Step 1: Set DisplayXR as Active OpenXR Runtime
-
-The system active runtime file currently points to SRMonado. Switch it to DisplayXR:
+Unlike Windows (where the registry entry is usually set by the runtime installer), Mac's active-runtime manifest lives in a plain JSON file. You may need to point it at DisplayXR:
 
 ```bash
-# Check current active runtime
+# See what's currently active
 cat /etc/xdg/openxr/1/active_runtime.json
 
-# Option A: Point to installed DisplayXR runtime
+# Option A — point to an installed DisplayXR runtime
 sudo cp /usr/local/share/openxr/1/openxr_displayxr.json /etc/xdg/openxr/1/active_runtime.json
 
-# Option B: Point to development build
+# Option B — write it inline (useful for a dev build)
 sudo tee /etc/xdg/openxr/1/active_runtime.json << 'EOF'
 {
     "file_format_version": "1.0.0",
     "runtime": {
         "name": "DisplayXR",
-        "library_path": "/usr/local/lib/libopenxr_displayxr.so"
+        "library_path": "/usr/local/lib/libopenxr_displayxr.dylib"
     }
 }
 EOF
 
-# Option C: Use environment variable (per-process, no sudo needed)
+# Option C — per-process override, no sudo needed
 export XR_RUNTIME_JSON=/usr/local/share/openxr/1/openxr_displayxr.json
 ```
 
-Verify the runtime library exists:
-```bash
-ls -la /usr/local/lib/libopenxr_displayxr.so
-```
-
-## Step 2: Create a UE C++ Project
-
-1. Open Unreal Editor 5.7
-2. Create a new project: **Games > Blank > C++** (not Blueprint)
-3. Name it (e.g., "DisplayXRTest")
-4. Wait for project creation to complete
-5. Close the editor
-
-## Step 3: Install the Plugin
+Verify the runtime library is readable:
 
 ```bash
-cd /path/to/DisplayXRTest/Plugins
-mkdir DisplayXR
-
-# Copy plugin files from the DisplayXR repo
-cp /path/to/displayxr-unreal/DisplayXR.uplugin DisplayXR/
-cp -r /path/to/displayxr-unreal/Source/DisplayXRCore DisplayXR/Source/
-cp -r /path/to/displayxr-unreal/Source/DisplayXRMaterials DisplayXR/Source/
-cp -r /path/to/displayxr-unreal/Source/DisplayXREditor DisplayXR/Source/
+ls -la /usr/local/lib/libopenxr_displayxr.dylib
 ```
 
-## Step 4: Disable the OpenXR Plugin Dependency (Mac Only)
+## Mac-specific quirk 3: graphics binding
 
-Edit `DisplayXR/DisplayXR.uplugin` and remove or disable the OpenXR plugin dependency on Mac:
+On Windows the session uses `XrGraphicsBindingD3D12KHR`. On Mac it uses `XR_EXT_cocoa_window_binding` via Metal. The session handles this internally via `#if PLATFORM_MAC` — you don't set any compile flag. If you're touching session code and need the Mac path, look for `PLATFORM_MAC || PLATFORM_LINUX` branches in `DisplayXRSession.cpp`.
 
-The plugin descriptor has `"Plugins": [{"Name": "OpenXR", "Enabled": true}]`. On Mac, this will fail because the OpenXR plugin doesn't exist. Either:
+## Install + build
 
-**Option A:** Remove the OpenXR dependency (safest for Mac-only testing):
-```json
-"Plugins": []
-```
+Once the quirks above are sorted, install the plugin like on any platform:
 
-**Option B:** Make it platform-conditional (requires testing).
+1. Create a UE 5.3+ **C++** project (Blueprint-only can't compile plugins).
+2. Close the editor.
+3. Clone the repo into `Plugins/DisplayXR/`:
+   ```bash
+   cd <YourProject>
+   mkdir -p Plugins
+   git clone https://github.com/DisplayXR/displayxr-unreal.git Plugins/DisplayXR
+   ```
+4. Regenerate the Xcode project and build, or double-click the `.uproject` and let UE compile it.
 
-## Step 5: Build and Launch
-
-Double-click the `.uproject` file. Unreal will detect the plugin and compile it via Xcode.
-
-Check Output Log for:
-```
-DisplayXR: Core module started (direct OpenXR session path)
-DisplayXR Direct: Loaded OpenXR from /usr/local/lib/libopenxr_displayxr.so
-DisplayXR Direct: Instance created, SystemId=...
-DisplayXR Direct: Display X.XXX x X.XXX m, XXXX x XXXX px
-DisplayXR Direct: Session created
-DisplayXR Direct: Session running
-```
-
-## Step 6: Test
-
-1. Add a Camera Actor to the scene
-2. Add a `DisplayXR Camera` component to it (from the DisplayXR category)
-3. Adjust IpdFactor, ParallaxFactor, InvConvergenceDistance
-4. The editor viewport should show Kooima-adjusted perspective
-
-## How the Mac Path Works
-
-```
-Engine Startup:
-  FDisplayXRCoreModule::StartupModule()
-    → Creates FDisplayXRDirectSession
-    → dlopen("libopenxr_displayxr.so")
-    → xrCreateInstance() with XR_EXT_display_info + XR_EXT_cocoa_window_binding
-    → xrGetSystemProperties() → queries display info
-    → xrCreateSession() with Cocoa binding
-    → Registers FDisplayXRSceneViewExtension
-
-Each Frame:
-  FDisplayXRDirectSession::Tick()
-    → xrPollEvent (handle session state changes)
-    → xrLocateViews (get raw eye positions)
-    → camera3d/display3d_compute_views (Kooima projection)
-    → Store stereo matrices in double buffer
-
-  FDisplayXRSceneViewExtension::SetupViewPoint()
-    → Read eye positions from direct session
-    → Apply center-eye offset to editor camera
-
-  FDisplayXRSceneViewExtension::SetupView()
-    → Read Kooima projection matrices from direct session
-    → Override camera projection matrix
-
-  UDisplayXRCamera/Display::TickComponent()
-    → Push tunables via FDisplayXRPlatform (routes to direct session)
-```
+Then see [QuickStart.md](./QuickStart.md) §3–5 for rig setup and verification.
 
 ## Troubleshooting
 
-**"Failed to load OpenXR loader"**: The runtime library wasn't found. Check that `/usr/local/lib/libopenxr_displayxr.so` exists. If using a dev build, set `XR_RUNTIME_JSON` environment variable before launching UE.
+- **`Failed to load OpenXR loader`** — runtime library wasn't found. Check the `library_path` in `/etc/xdg/openxr/1/active_runtime.json` against what's actually on disk, or set `XR_RUNTIME_JSON` before launching UE.
+- **`xrCreateInstance failed`** — runtime loaded but couldn't initialize. Check the 3D display is connected and its driver is running.
+- **`xrCreateSession failed`** — instance created but session failed. This can happen if no display is connected — the plugin still provides display info but won't track eyes.
+- **Build error: `OpenXRHMD module not found`** — the `.uplugin` still has an `OpenXR` dependency (see quirk 1 above). Pull latest or remove the entry manually.
+- **`Session initialized` but rendering is 2D** — the HMD plugin priority bump didn't win. Ensure `DisplayXRCore` is actually loading (`PostConfigInit`). On Mac the compositor path is still being validated (tracked in [TODO.md](./TODO.md) §5); Mac may render in 2D by design until that lands.
 
-**"xrCreateInstance failed"**: The runtime loaded but couldn't initialize. Check that the 3D display is connected and its driver is running.
+## Status
 
-**"xrCreateSession failed"**: Instance created but session failed. This can happen if no display is connected — the plugin will still provide display info but won't track eyes.
-
-**Build error: "OpenXRHMD module not found"**: The `.uplugin` still has the OpenXR dependency. Remove it for Mac builds (see Step 4).
+Mac validation (end-to-end session + compositor) is tracked in [TODO.md](./TODO.md) §5 under "Platform coverage". The architecture works on Mac in principle; the last-mile testing is pending.
