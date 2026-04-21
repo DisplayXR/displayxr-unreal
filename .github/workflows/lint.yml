@@ -1,0 +1,28 @@
+name: lint
+
+on:
+  pull_request:
+    branches: [main]
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Vendor-name guard
+        run: |
+          # Constructed at runtime so this workflow does not contain the literal string.
+          FORBIDDEN="le""ia"
+          if grep -rniI --exclude-dir=.git "$FORBIDDEN" .; then
+            echo "::error::Forbidden vendor name found in tracked files."
+            exit 1
+          fi
+
+      - name: DisplayXR.uplugin is valid JSON
+        run: python3 -c "import json; json.load(open('DisplayXR.uplugin'))"
+
+      - name: Workflow YAML is valid
+        run: |
+          python3 -m pip install --quiet pyyaml
+          python3 -c "import yaml, glob; [yaml.safe_load(open(f)) for f in glob.glob('.github/workflows/*.yml')]"

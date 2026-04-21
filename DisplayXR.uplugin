@@ -1,0 +1,36 @@
+{
+	"FileVersion": 3,
+	"Version": 1,
+	"VersionName": "0.1.0",
+	"FriendlyName": "DisplayXR",
+	"Description": "3D display rendering for tracked displays",
+	"Category": "Virtual Reality",
+	"CreatedBy": "DisplayXR contributors",
+	"EnabledByDefault": true,
+	"CanContainContent": false,
+	"Modules": [
+		{
+			"Name": "DisplayXRCore",
+			"Type": "Runtime",
+			"LoadingPhase": "PostConfigInit",
+			"PlatformAllowList": [ "Win64", "Mac", "Android" ]
+		},
+		{
+			"Name": "DisplayXRMaterials",
+			"Type": "Runtime",
+			"LoadingPhase": "Default"
+		},
+		{
+			"Name": "DisplayXREditor",
+			"Type": "Editor",
+			"LoadingPhase": "PostEngineInit",
+			"PlatformAllowList": [ "Win64", "Mac" ]
+		}
+	],
+	"Plugins": [
+		{
+			"Name": "XRBase",
+			"Enabled": true
+		}
+	]
+}
