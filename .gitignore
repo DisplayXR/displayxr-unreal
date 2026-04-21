@@ -71,8 +71,9 @@ Plugins/*/Intermediate/*
 # Cache files for the editor to use
 DerivedDataCache/*
 
-# Local Claude Code settings
-.claude/
+# Local Claude Code settings — keep skills committed, ignore per-user state
+.claude/*
+!.claude/skills/
 
 # macOS
 .DS_Store
