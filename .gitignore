@@ -75,5 +75,9 @@ DerivedDataCache/*
 .claude/*
 !.claude/skills/
 
+# Release artifacts produced by /release skill (published via gh release create)
+DisplayXR_*.zip
+RELEASE_BODY.md
+
 # macOS
 .DS_Store
