@@ -1713,7 +1713,7 @@ void FDisplayXRPreviewSession::RenderAndBlit(uint32_t ImageIndex)
 	// -----------------------------------------------------------------------
 
 	// Read raw eye positions from xrLocateViews
-	FVector LeftEyeRaw, RightEyeRaw;
+	FVector LeftEyeRaw = FVector::ZeroVector, RightEyeRaw = FVector::ZeroVector;
 	bool bTracked = false;
 	if (ViewCount >= 2)
 	{
