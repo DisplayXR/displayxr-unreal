@@ -26,7 +26,8 @@ The two are mutually exclusive on disk: `Plugins/DisplayXR/` in the test project
   ├─ Clone displayxr-unreal-test into <target>/displayxr-unreal-test
   ├─ cmd /c mklink /J <target>/displayxr-unreal-test/Plugins/DisplayXR  <this checkout>
   ├─ Generate Visual Studio project files for DisplayXRTest.uproject
-  └─ Report: sln path, junction source, next steps (build + run)
+  ├─ Build DisplayXRTestEditor (Win64 Development) — first build is 10–20 min
+  └─ Report: sln path, junction source, next step (launch editor)
 ```
 
 ## Arguments
@@ -93,7 +94,23 @@ The last line before `Total execution time` must be `Result: Succeeded`. Verify 
 
 If UBT logs `Unable to instantiate module 'SwarmInterface': Could not find NetFxSDK install dir` here, the NetFxSDK prereq check in step 0 missed it — reclassify as `PREREQ_MISSING`, not a skill bug.
 
-### 5. Report
+### 5. Build the Development Editor target
+
+First build is 10–20 min (shader compile + full engine module link against the plugin). Use a **45-minute timeout**. Subsequent incremental builds finish in seconds.
+
+Invoke `Build.bat` via PowerShell — the space in the UE install path makes direct Bash invocation brittle:
+
+```powershell
+& "C:\Program Files\Epic Games\UE_5.7\Engine\Build\BatchFiles\Build.bat" `
+  DisplayXRTestEditor Win64 Development `
+  -project="$TEST_PROJECT\DisplayXRTest.uproject" -WaitMutex
+```
+
+The last line before `Total execution time` must be `Result: Succeeded`.
+
+If the build fails with plugin compile errors (missing includes, unresolved symbols, type mismatches in `Source/`), **that is legitimate dev-loop signal, not a skill failure** — dev mode is pointing UE at your in-flight plugin source. Report the error tail and stop; the user will fix the source in `$PLUGIN_SRC\Source\` and re-run the build (either `Build.bat` again, or F5 in Visual Studio). The junction and sln remain valid across rebuilds.
+
+### 6. Report
 
 ```
 Dev install complete.
@@ -103,19 +120,18 @@ Plugin source:  <PLUGIN_SRC>
   (junctioned at <TEST_PROJECT>\Plugins\DisplayXR)
 Solution:       <TEST_PROJECT>\DisplayXRTest.sln
 
-Next steps — build and launch the editor:
+DisplayXRTestEditor built successfully (Win64 Development).
 
-  & "C:\Program Files\Epic Games\UE_5.7\Engine\Build\BatchFiles\Build.bat" `
-    DisplayXRTestEditor Win64 Development `
-    -project="<TEST_PROJECT>\DisplayXRTest.uproject" -WaitMutex
+Launch the editor:
 
   & "C:\Program Files\Epic Games\UE_5.7\Engine\Binaries\Win64\UnrealEditor.exe" `
     "<TEST_PROJECT>\DisplayXRTest.uproject"
 
 Or: open <TEST_PROJECT>\DisplayXRTest.sln in Visual Studio, set
-DisplayXRTestEditor as startup project, F5 to build and run.
+DisplayXRTestEditor as startup project, F5.
 
-Edits to <PLUGIN_SRC>\Source\ are picked up on the next UE rebuild.
+Edits to <PLUGIN_SRC>\Source\ are picked up on the next rebuild
+(Build.bat again, or incremental compile in Visual Studio).
 ```
 
 ## Switching back to release mode
