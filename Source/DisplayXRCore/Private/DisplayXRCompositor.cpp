@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: BSL-1.0
 
 #include "DisplayXRCompositor.h"
+#include "DisplayXRPlatform.h"
 
 #if PLATFORM_WINDOWS
 #include "Windows/AllowWindowsPlatformTypes.h"
@@ -229,11 +230,25 @@ bool FDisplayXRCompositor::Initialize(void* InParentHWND, void* InD3DDevice, voi
 	// would corrupt UE's RHI command-list tracking.
 	if (!CreateRuntimeQueue()) return false;
 
-	if (!CreateChildWindow(InParentHWND)) return false;
+	// Child-window strategy:
+	//  - Game mode (OverrideCompositorHWND null): keep the historical child
+	//    window. The fullscreen game window has no visible pixels behind it
+	//    so a WS_CHILD overlay is harmless.
+	//  - Editor native-PIE (OverrideCompositorHWND set): the override HWND is
+	//    our own raw-Win32 top-level mirror. Skip the child and bind the
+	//    session directly — matches the shipped FDisplayXRPreviewSession
+	//    pattern and keeps the DWM composite simple.
+	const bool bUseParentDirectly = (FDisplayXRPlatform::OverrideCompositorHWND != nullptr);
+	ParentHWND = InParentHWND;  // track either way so Tick's rect call has an HWND
+	if (!bUseParentDirectly)
+	{
+		if (!CreateChildWindow(InParentHWND)) return false;
+	}
+	void* const SessionHWND = bUseParentDirectly ? InParentHWND : ChildHWND;
 
-	// Create session with UE's device + our dedicated runtime queue + child window
+	// Create session with UE's device + our dedicated runtime queue + bound window
 	if (!Session->IsSessionCreated()) {
-		if (!Session->CreateSessionWithGraphics(UEDevice, RuntimeQueue, ChildHWND)) {
+		if (!Session->CreateSessionWithGraphics(UEDevice, RuntimeQueue, SessionHWND)) {
 			UE_LOG(LogDisplayXRCompositor, Error, TEXT("Compositor: Session creation failed"));
 			return false;
 		}
@@ -266,18 +281,49 @@ void FDisplayXRCompositor::Shutdown()
 // =============================================================================
 void FDisplayXRCompositor::Tick()
 {
-	if (bReady) return;
-	if (Session && Session->IsSessionRunning() && !bSwapchainCreated) {
-		UE_LOG(LogDisplayXRCompositor, Log, TEXT("Compositor: Creating swapchain..."));
-		GLog->Flush();
-		if (CreateSwapchain() && WrapSwapchainImagesAsRHI()) {
-			if (StartCompositorThread()) {
-				bReady = true;
-				UE_LOG(LogDisplayXRCompositor, Log, TEXT("Compositor: Ready"));
-				GLog->Flush();
+	if (!bReady) {
+		if (Session && Session->IsSessionRunning() && !bSwapchainCreated) {
+			UE_LOG(LogDisplayXRCompositor, Log, TEXT("Compositor: Creating swapchain..."));
+			GLog->Flush();
+			if (CreateSwapchain() && WrapSwapchainImagesAsRHI()) {
+				if (StartCompositorThread()) {
+					bReady = true;
+					UE_LOG(LogDisplayXRCompositor, Log, TEXT("Compositor: Ready"));
+					GLog->Flush();
+				}
+			}
+		}
+		return;
+	}
+
+#if PLATFORM_WINDOWS
+	// Gated on OverrideCompositorHWND so game mode — which has never called
+	// this function — stays silent. When the override is set (editor native-
+	// PIE), push the bound HWND's client rect to the runtime so its native
+	// compositor knows where to present the atlas. Shipped preview calls
+	// this every tick; logging is throttled to size changes.
+	if (xrSetOutputRectFunc && Session && Session->IsSessionRunning()
+		&& FDisplayXRPlatform::OverrideCompositorHWND != nullptr)
+	{
+		HWND BoundHWND = (HWND)(ChildHWND ? ChildHWND : ParentHWND);
+		RECT rc;
+		if (BoundHWND && GetClientRect(BoundHWND, &rc))
+		{
+			const uint32 W = (uint32)(rc.right - rc.left);
+			const uint32 H = (uint32)(rc.bottom - rc.top);
+			if (W > 0 && H > 0)
+			{
+				xrSetOutputRectFunc(Session->GetXrSession(), 0, 0, W, H);
+				if (W != LastCanvasW || H != LastCanvasH)
+				{
+					UE_LOG(LogDisplayXRCompositor, Log, TEXT("Compositor: output rect updated %ux%u"), W, H);
+					LastCanvasW = W;
+					LastCanvasH = H;
+				}
 			}
 		}
 	}
+#endif
 }
 
 // =============================================================================
@@ -528,6 +574,15 @@ bool FDisplayXRCompositor::ResolveXrFunctions()
 	ok &= R("xrAcquireSwapchainImage", (PFN_xrVoidFunction*)&xrAcquireSwapchainImageFunc);
 	ok &= R("xrWaitSwapchainImage", (PFN_xrVoidFunction*)&xrWaitSwapchainImageFunc);
 	ok &= R("xrReleaseSwapchainImage", (PFN_xrVoidFunction*)&xrReleaseSwapchainImageFunc);
+
+	// Optional — only present on DisplayXR runtimes with the shared-texture
+	// output-rect extension. Not gated on `ok`: game-mode fullscreen still
+	// works without it.
+	xrGetInstanceProcAddrFunc(Inst, "xrSetSharedTextureOutputRectEXT",
+		(PFN_xrVoidFunction*)&xrSetOutputRectFunc);
+	UE_LOG(LogDisplayXRCompositor, Log, TEXT("Compositor: xrSetSharedTextureOutputRectEXT resolved=%s"),
+		xrSetOutputRectFunc ? TEXT("yes") : TEXT("no"));
+
 	return ok;
 }
 
@@ -541,7 +596,10 @@ bool FDisplayXRCompositor::CreateChildWindow(void* P)
 	if (!RegClass()) return false;
 	RECT rc; GetClientRect((HWND)P, &rc);
 	int W = rc.right, H = rc.bottom;
-	ChildHWND = CreateWindowExW(WS_EX_TRANSPARENT, OVERLAY_CLASS, L"DisplayXR",
+	// No WS_EX_TRANSPARENT: in game mode there's nothing behind to bleed
+	// through anyway, and removing the flag keeps the child opaque if the
+	// game-mode path is ever used with a partially-visible parent window.
+	ChildHWND = CreateWindowExW(0, OVERLAY_CLASS, L"DisplayXR",
 		WS_CHILD | WS_VISIBLE, 0, 0, W, H, (HWND)P, 0, GetModuleHandleW(0), 0);
 	if (!ChildHWND) return false;
 	UE_LOG(LogDisplayXRCompositor, Log, TEXT("Compositor: Child window %dx%d"), W, H);

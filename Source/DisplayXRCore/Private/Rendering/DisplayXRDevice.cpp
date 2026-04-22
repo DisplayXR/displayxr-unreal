@@ -517,6 +517,19 @@ void FDisplayXRDevice::UpdateViewport(bool bUseSeparateRenderTarget, const FView
 	{
 		bCompositorCreationAttempted = true;
 
+		// HWND selection: editor native-PIE sets FDisplayXRPlatform::
+		// OverrideCompositorHWND to a raw-Win32 mirror so the runtime has a
+		// dedicated window to target, independent of the PIE viewport (which
+		// is embedded in the editor). Game mode leaves the override null and
+		// uses the viewport-widget HWND already resolved above.
+		if (FDisplayXRPlatform::OverrideCompositorHWND)
+		{
+			WindowHandle = FDisplayXRPlatform::OverrideCompositorHWND;
+			UE_LOG(LogDisplayXRDevice, Log, TEXT("[%s] UpdateViewport: using OverrideCompositorHWND=%p"),
+				WorldCtxTag(), WindowHandle);
+		}
+
+
 		// Get D3D device and command queue from UE's RHI
 		void* D3DDevice = GDynamicRHI ? GDynamicRHI->RHIGetNativeDevice() : nullptr;
 		void* CommandQueue = GDynamicRHI ? GDynamicRHI->RHIGetNativeGraphicsQueue() : nullptr;

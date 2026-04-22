@@ -140,4 +140,12 @@ private:
 	PFN_xrAcquireSwapchainImage xrAcquireSwapchainImageFunc = nullptr;
 	PFN_xrWaitSwapchainImage xrWaitSwapchainImageFunc = nullptr;
 	PFN_xrReleaseSwapchainImage xrReleaseSwapchainImageFunc = nullptr;
+
+	// Optional extension: DisplayXR runtime's D3D12 native compositor uses
+	// this to route its swapchain present into a specific rect of the bound
+	// HWND. Called from Tick when OverrideCompositorHWND is set; stays null
+	// on runtimes without the extension (game-mode fullscreen unaffected).
+	PFN_xrSetSharedTextureOutputRectEXT xrSetOutputRectFunc = nullptr;
+	uint32 LastCanvasW = 0;
+	uint32 LastCanvasH = 0;
 };
