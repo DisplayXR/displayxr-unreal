@@ -5,6 +5,7 @@
 #include "DisplayXRPlatform.h"
 #include "DisplayXRRigManager.h"
 #include "Camera/CameraComponent.h"
+#include "GameFramework/Pawn.h"
 
 UDisplayXRDisplay::UDisplayXRDisplay()
 {

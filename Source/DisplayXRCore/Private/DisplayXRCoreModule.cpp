@@ -6,6 +6,7 @@
 #include "DisplayXRPlatform.h"
 #include "Rendering/DisplayXRDevice.h"
 #include "SceneViewExtension.h"
+#include "Modules/ModuleManager.h"
 
 #if PLATFORM_WINDOWS
 #include "Windows/AllowWindowsPlatformTypes.h"

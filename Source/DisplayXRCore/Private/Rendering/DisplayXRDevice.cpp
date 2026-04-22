@@ -8,6 +8,8 @@
 #include "Widgets/SViewport.h"
 #include "UnrealEngine.h"
 #include "DynamicRHI.h"
+#include "SceneView.h"
+#include "Camera/CameraTypes.h"
 
 extern "C" {
 #include "Native/display3d_view.h"
