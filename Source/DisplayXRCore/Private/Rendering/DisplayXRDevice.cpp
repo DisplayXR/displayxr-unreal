@@ -15,11 +15,6 @@
 #include "GameFramework/Pawn.h"
 #include "RenderingThread.h"   // FlushRenderingCommands
 
-// RDG primitives used by RenderTexture_RenderThread preview blit.
-#include "CommonRenderResources.h"   // FCopyRectPS
-#include "PixelShaderUtils.h"        // FPixelShaderUtils::AddFullscreenPass
-#include "RenderGraphUtils.h"        // AddCopyTexturePass, AddClearRenderTargetPass
-
 #if PLATFORM_WINDOWS
 #include "Windows/AllowWindowsPlatformTypes.h"
 #include <windows.h>
@@ -104,6 +99,32 @@ static LRESULT CALLBACK DisplayXRSubclassedWndProc(HWND Hwnd, UINT Msg, WPARAM W
 	case WM_EXITSIZEMOVE:
 		GDisplayXRInSizeMove = false;
 		break;
+
+	case WM_SIZING:
+	{
+		// Bypass aspect-ratio enforcement. UE's FWindowsApplication (or the
+		// DisplayXR/SR SDK runtime DLLs loaded into this process) handles
+		// WM_SIZING by constraining the drag rect to a fixed aspect — even
+		// with bShouldWindowPreserveAspectRatio=False in the project INI
+		// (observed empirically: clean main still aspect-locks).
+		//
+		// Strategy: snapshot the user's actual drag rect, forward to the
+		// original chain so UE keeps its internal state in sync, then overwrite
+		// whatever aspect adjustment was applied. Return TRUE so Windows does
+		// not also run DefWindowProc's handler.
+		RECT* const pRect = reinterpret_cast<RECT*>(LParam);
+		if (pRect)
+		{
+			const RECT UserRect = *pRect;
+			if (GDisplayXROrigWndProc)
+			{
+				::CallWindowProcW(GDisplayXROrigWndProc, Hwnd, Msg, WParam, LParam);
+			}
+			*pRect = UserRect;
+			return TRUE;
+		}
+		break;
+	}
 
 	case WM_PAINT:
 		if (GDisplayXRInSizeMove && GEngine)
@@ -613,8 +634,9 @@ void FDisplayXRDevice::UpdateViewport(bool bUseSeparateRenderTarget, const FView
 	GameHWND = WindowHandle;
 
 #if PLATFORM_WINDOWS
-	// Install a WndProc subclass on the game window so we can keep UE ticking
-	// during an interactive move/resize (modal DefWindowProc loop).
+	// Install a WndProc subclass on the game window so we can:
+	//   - keep UE ticking during an interactive move/resize modal loop (WM_PAINT),
+	//   - bypass aspect-ratio constraint applied by UE / runtime DLLs on WM_SIZING.
 	if (GameHWND)
 	{
 		DisplayXRInstallWndProcHook((HWND)GameHWND);
