@@ -13,6 +13,7 @@
 #include "Camera/CameraTypes.h"
 #include "GameFramework/PlayerController.h"
 #include "GameFramework/Pawn.h"
+#include "RenderingThread.h"   // FlushRenderingCommands
 
 // RDG primitives used by RenderTexture_RenderThread preview blit.
 #include "CommonRenderResources.h"   // FCopyRectPS
@@ -63,6 +64,103 @@ static FORCEINLINE const TCHAR* WorldTypeStr(EWorldType::Type T)
 }
 
 // =============================================================================
+// Windows WndProc subclass — drive live redraws during modal move/resize
+// =============================================================================
+//
+// On Windows, a caption-bar drag or border-resize drag enters a modal loop in
+// DefWindowProc (SC_MOVE / SC_SIZE) that blocks UE's main message pump. Without
+// intervention the game thread is frozen, so ComputeViews never sees
+// intermediate window rects — the off-axis frustum only catches up on mouse
+// release, and resize-sizing of the atlas tiles only updates on mouse release.
+//
+// The reference test app cube_handle_d3d11_win (main.cpp:116-135) keeps
+// rendering by leaving the window invalidated (no BeginPaint/EndPaint) and
+// running RenderOneFrame synchronously from WM_PAINT inside the modal loop.
+//
+// Our port does the same, with a critical difference: UE's rendering is
+// asynchronous (game thread queues draw commands for the render thread, which
+// drives the compositor's swapchain Acquire/Release). Calling RedrawViewports
+// alone is not enough — a second WM_PAINT can fire and Acquire the next
+// swapchain image before the previous frame's Release has run, which corrupts
+// the compositor's per-frame pairing. Synchronous completion via
+// FlushRenderingCommands before returning keeps each paint an atomic frame.
+
+#if PLATFORM_WINDOWS
+#include "Windows/AllowWindowsPlatformTypes.h"
+
+static WNDPROC  GDisplayXROrigWndProc = nullptr;
+static HWND     GDisplayXRHookedHwnd = nullptr;
+static bool     GDisplayXRInSizeMove = false;
+
+static LRESULT CALLBACK DisplayXRSubclassedWndProc(HWND Hwnd, UINT Msg, WPARAM WParam, LPARAM LParam)
+{
+	switch (Msg)
+	{
+	case WM_ENTERSIZEMOVE:
+		GDisplayXRInSizeMove = true;
+		::InvalidateRect(Hwnd, nullptr, FALSE);
+		break;
+
+	case WM_EXITSIZEMOVE:
+		GDisplayXRInSizeMove = false;
+		break;
+
+	case WM_PAINT:
+		if (GDisplayXRInSizeMove && GEngine)
+		{
+			// Re-enter UE from inside the modal message loop. RedrawViewports
+			// runs a viewport draw synchronously on this (main) thread, which
+			// invokes SetupViewFamily on our FSceneViewExtension — ComputeViews
+			// then sees the new HWND rect and rebuilds the projection.
+			GEngine->RedrawViewports(false);
+			// Wait for the render thread to fully consume the draw — this is
+			// what makes each WM_PAINT atomic vs. the compositor's Acquire/
+			// Release pairing. Without this, a second WM_PAINT acquires the
+			// next swapchain image before the previous frame's Release has run,
+			// leading to orphaned acquires and "ReleaseImage_RT: no image
+			// acquired" errors after the drag ends.
+			FlushRenderingCommands();
+			// Stay invalidated so the modal loop keeps feeding us WM_PAINTs.
+			::InvalidateRect(Hwnd, nullptr, FALSE);
+			return 0; // deliberately skip UE's WM_PAINT (no BeginPaint → stays invalid)
+		}
+		break;
+	}
+
+	return GDisplayXROrigWndProc
+		? ::CallWindowProcW(GDisplayXROrigWndProc, Hwnd, Msg, WParam, LParam)
+		: ::DefWindowProcW(Hwnd, Msg, WParam, LParam);
+}
+
+static void DisplayXRInstallWndProcHook(HWND Hwnd)
+{
+	if (!Hwnd || GDisplayXRHookedHwnd == Hwnd) return;
+	if (GDisplayXRHookedHwnd)
+	{
+		::SetWindowLongPtrW(GDisplayXRHookedHwnd, GWLP_WNDPROC, (LONG_PTR)GDisplayXROrigWndProc);
+		GDisplayXROrigWndProc = nullptr;
+		GDisplayXRHookedHwnd = nullptr;
+	}
+	GDisplayXROrigWndProc = (WNDPROC)::SetWindowLongPtrW(Hwnd, GWLP_WNDPROC, (LONG_PTR)DisplayXRSubclassedWndProc);
+	GDisplayXRHookedHwnd = Hwnd;
+}
+
+static void DisplayXRRemoveWndProcHook()
+{
+	if (GDisplayXRHookedHwnd && GDisplayXROrigWndProc)
+	{
+		::SetWindowLongPtrW(GDisplayXRHookedHwnd, GWLP_WNDPROC, (LONG_PTR)GDisplayXROrigWndProc);
+	}
+	GDisplayXROrigWndProc = nullptr;
+	GDisplayXRHookedHwnd = nullptr;
+	GDisplayXRInSizeMove = false;
+}
+
+#include "Windows/HideWindowsPlatformTypes.h"
+#endif // PLATFORM_WINDOWS
+
+
+// =============================================================================
 // Constructor
 // =============================================================================
 
@@ -76,6 +174,9 @@ FDisplayXRDevice::FDisplayXRDevice(const FAutoRegister& AutoRegister, FDisplayXR
 
 FDisplayXRDevice::~FDisplayXRDevice()
 {
+#if PLATFORM_WINDOWS
+	DisplayXRRemoveWndProcHook();
+#endif
 	UE_LOG(LogDisplayXRDevice, Log, TEXT("DisplayXR Device: Destroyed"));
 }
 
@@ -510,6 +611,15 @@ void FDisplayXRDevice::UpdateViewport(bool bUseSeparateRenderTarget, const FView
 		}
 	}
 	GameHWND = WindowHandle;
+
+#if PLATFORM_WINDOWS
+	// Install a WndProc subclass on the game window so we can keep UE ticking
+	// during an interactive move/resize (modal DefWindowProc loop).
+	if (GameHWND)
+	{
+		DisplayXRInstallWndProcHook((HWND)GameHWND);
+	}
+#endif
 
 	// Deferred compositor creation: create the compositor (which owns session
 	// creation with graphics binding) once we have D3D device and game window HWND.
