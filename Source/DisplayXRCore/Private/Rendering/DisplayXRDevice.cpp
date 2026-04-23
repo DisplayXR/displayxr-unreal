@@ -11,6 +11,17 @@
 #include "SceneView.h"
 #include "Camera/CameraTypes.h"
 
+// RDG primitives used by RenderTexture_RenderThread preview blit.
+#include "CommonRenderResources.h"   // FCopyRectPS
+#include "PixelShaderUtils.h"        // FPixelShaderUtils::AddFullscreenPass
+#include "RenderGraphUtils.h"        // AddCopyTexturePass, AddClearRenderTargetPass
+
+#if PLATFORM_WINDOWS
+#include "Windows/AllowWindowsPlatformTypes.h"
+#include <windows.h>
+#include "Windows/HideWindowsPlatformTypes.h"
+#endif
+
 extern "C" {
 #include "Native/display3d_view.h"
 #include "Native/camera3d_view.h"
@@ -28,6 +39,11 @@ FDisplayXRDevice::FDisplayXRDevice(const FAutoRegister& AutoRegister, FDisplayXR
 	, Session(InSession)
 {
 	UE_LOG(LogDisplayXRDevice, Log, TEXT("DisplayXR Device: Created"));
+}
+
+FDisplayXRDevice::~FDisplayXRDevice()
+{
+	UE_LOG(LogDisplayXRDevice, Log, TEXT("DisplayXR Device: Destroyed"));
 }
 
 // =============================================================================
@@ -143,10 +159,18 @@ bool FDisplayXRDevice::EnableStereo(bool stereo)
 
 void FDisplayXRDevice::AdjustViewRect(const int32 ViewIndex, int32& X, int32& Y, uint32& SizeX, uint32& SizeY) const
 {
-	// Each tile is ScaleX * DisplayW wide, ScaleY * DisplayH tall.
-	// Tiles are laid out in a TileColumns x TileRows grid starting at top-left.
-	const int32 TileW = CachedViewConfig.GetTileW();
-	const int32 TileH = CachedViewConfig.GetTileH();
+	// Window-relative tile dims per the multiview-tiling spec (canvas = window
+	// client area for handle apps): V_w = canvas_w * view_scale_x, V_h =
+	// canvas_h * view_scale_y. Tiles live in the top-left of the panel-sized
+	// swapchain image; the runtime's compositor reads tiles at the same
+	// window-based offsets (it calls GetClientRect(app_hwnd) itself every
+	// frame). CalculateRenderTargetSize stays panel-sized — changing UE's
+	// logical RT size was the source of the prior eye-content bleed, not the
+	// tile offsets themselves.
+	CacheWindowSize();
+	const int32 TileW = FMath::Max(1, FMath::RoundToInt(CachedWindowW * CachedViewConfig.ScaleX));
+	const int32 TileH = FMath::Max(1, FMath::RoundToInt(CachedWindowH * CachedViewConfig.ScaleY));
+
 	const int32 Cols = FMath::Max(CachedViewConfig.TileColumns, 1);
 	const int32 Col = ViewIndex % Cols;
 	const int32 Row = ViewIndex / Cols;
@@ -304,6 +328,38 @@ bool FDisplayXRDevice::NeedReAllocateViewportRenderTarget(const FViewport& Viewp
 	return (NewSizeX != (uint32)RenderTargetSize.X || NewSizeY != (uint32)RenderTargetSize.Y);
 }
 
+void FDisplayXRDevice::CacheWindowSize() const
+{
+	// Default to DisplayXR panel dims so downstream math always has a valid pair.
+	const FDisplayXRDisplayInfo DI = Session ? Session->GetDisplayInfo() : FDisplayXRDisplayInfo();
+	uint32 W = DI.DisplayPixelWidth  > 0 ? (uint32)DI.DisplayPixelWidth  : 1920;
+	uint32 H = DI.DisplayPixelHeight > 0 ? (uint32)DI.DisplayPixelHeight : 1080;
+
+#if PLATFORM_WINDOWS
+	if (GameHWND)
+	{
+		RECT rc = {};
+		if (::GetClientRect((HWND)GameHWND, &rc))
+		{
+			const int32 RectW = rc.right  - rc.left;
+			const int32 RectH = rc.bottom - rc.top;
+			if (RectW > 0 && RectH > 0)
+			{
+				// Clamp to panel size: user dragging larger than the panel would
+				// ask the compositor to crop a region bigger than the swapchain,
+				// which isn't allocated for that size (spec: swapchain is worst-
+				// case sized at init and never reallocated).
+				W = FMath::Min<uint32>((uint32)RectW, W);
+				H = FMath::Min<uint32>((uint32)RectH, H);
+			}
+		}
+	}
+#endif
+
+	CachedWindowW = W;
+	CachedWindowH = H;
+}
+
 static TSharedPtr<SWidget> GetTopMostWidget(TSharedPtr<SWidget> Widget)
 {
 	if (!Widget.IsValid())
@@ -322,21 +378,30 @@ void FDisplayXRDevice::UpdateViewport(bool bUseSeparateRenderTarget, const FView
 {
 	FXRRenderTargetManager::UpdateViewport(bUseSeparateRenderTarget, Viewport, ViewportWidget);
 
+	// Resolve the game window HWND from the viewport widget chain. Cached on the
+	// device so ComputeViews can re-query window rect each frame for window-
+	// relative Kooima math.
+	void* WindowHandle = nullptr;
+	if (ViewportWidget)
+	{
+		TSharedPtr<SWidget> WindowWidget = GetTopMostWidget(ViewportWidget->GetParentWidget());
+		if (WindowWidget.IsValid())
+		{
+			SWindow* WindowPtr = static_cast<SWindow*>(WindowWidget.Get());
+			if (WindowPtr->GetNativeWindow().IsValid())
+			{
+				WindowHandle = WindowPtr->GetNativeWindow()->GetOSWindowHandle();
+			}
+		}
+	}
+	GameHWND = WindowHandle;
+
 	// Deferred compositor creation: create the compositor (which owns session
 	// creation with graphics binding) once we have D3D device and game window HWND.
 	static bool bCompositorCreationAttempted = false;
 	if (Session && !Compositor && !bCompositorCreationAttempted)
 	{
 		bCompositorCreationAttempted = true;
-
-		// Get HWND from viewport widget chain
-		void* WindowHandle = nullptr;
-		TSharedPtr<SWidget> WindowWidget = GetTopMostWidget(ViewportWidget->GetParentWidget());
-		if (WindowWidget.IsValid())
-		{
-			SWindow* WindowPtr = static_cast<SWindow*>(WindowWidget.Get());
-			WindowHandle = WindowPtr->GetNativeWindow()->GetOSWindowHandle();
-		}
 
 		// Get D3D device and command queue from UE's RHI
 		void* D3DDevice = GDynamicRHI ? GDynamicRHI->RHIGetNativeDevice() : nullptr;
@@ -367,15 +432,24 @@ void FDisplayXRDevice::RenderTexture_RenderThread(FRDGBuilder& GraphBuilder, FRD
 	RTCount++;
 	if (RTCount <= 3)
 	{
-		UE_LOG(LogDisplayXRDevice, Log, TEXT("DisplayXR RenderTexture #%d: BackBuffer=%p SrcTexture=%p"),
-			RTCount, (void*)BackBuffer, (void*)SrcTexture);
+		UE_LOG(LogDisplayXRDevice, Log, TEXT("DisplayXR RenderTexture #%d: BackBuffer=%p SrcTexture=%p WindowSize=%.0fx%.0f"),
+			RTCount, (void*)BackBuffer, (void*)SrcTexture, WindowSize.X, WindowSize.Y);
 		GLog->Flush();
 	}
 
-	// Zero-copy path: SrcTexture IS the swapchain image UE rendered into.
-	// The OpenXR compositor owns display output, so skip the backbuffer blit.
-	// Swapchain release happens in PostRenderViewFamily_RenderThread, which is
-	// the SceneViewExtension hook that runs after the scene's RDG graph flushes.
+	// Zero-copy path: SrcTexture IS the OpenXR swapchain image UE rendered into.
+	// The OpenXR compositor owns display output on the light-field panel.
+	//
+	// A host-window preview blit (center-view tile → game window backbuffer)
+	// that respects window resize is tracked as TODO: previous attempts via
+	// FPixelShaderUtils::AddFullscreenPass + FCopyRectPS failed D3D12 PSO
+	// creation with E_INVALIDARG when the Slate backbuffer format was HDR10
+	// (R10G10B10A2_UNORM). Needs a different RDG pattern — possibly using
+	// AddDrawTexturePass for format conversion + a separate scale pass, or
+	// a compute-shader copy. Left as a no-op for now; combined with Issues 3+5
+	// the window still resizes freely and the content region tracks it, but
+	// the game-window preview may show black-pad regions where the
+	// content-region rect is smaller than the host window.
 }
 
 void FDisplayXRDevice::PostRenderViewFamily_RenderThread(FRDGBuilder& GraphBuilder, FSceneViewFamily& InViewFamily)
@@ -529,10 +603,61 @@ void FDisplayXRDevice::ComputeViews()
 	RawEyes[0] = { (float)LeftEyeRaw.X, (float)LeftEyeRaw.Y, (float)LeftEyeRaw.Z };
 	RawEyes[1] = { (float)RightEyeRaw.X, (float)RightEyeRaw.Y, (float)RightEyeRaw.Z };
 
-	// Screen dimensions
+	// -----------------------------------------------------------------------
+	// Window-relative Kooima (matches DisplayXRPreviewSession + reference
+	// cube_handle_d3d11_win test app):
+	// - Screen dimensions = physical window size in meters (not full display)
+	// - Eye positions offset by window-center-minus-monitor-center, so the
+	//   off-axis frustum tracks the window across the display as it moves/resizes.
+	// -----------------------------------------------------------------------
+	const float DispW_m = DI.DisplayWidthMeters  > 0.0f ? DI.DisplayWidthMeters  : 0.344f;
+	const float DispH_m = DI.DisplayHeightMeters > 0.0f ? DI.DisplayHeightMeters : 0.194f;
+	const float DispPxW = DI.DisplayPixelWidth   > 0    ? (float)DI.DisplayPixelWidth  : 3840.0f;
+	const float DispPxH = DI.DisplayPixelHeight  > 0    ? (float)DI.DisplayPixelHeight : 2160.0f;
+	const float PxSizeX = DispW_m / DispPxW;
+	const float PxSizeY = DispH_m / DispPxH;
+
 	Display3DScreen Screen;
-	Screen.width_m = DI.DisplayWidthMeters > 0.0f ? DI.DisplayWidthMeters : 0.15f;
-	Screen.height_m = DI.DisplayHeightMeters > 0.0f ? DI.DisplayHeightMeters : 0.09f;
+	Screen.width_m  = DispW_m;
+	Screen.height_m = DispH_m;
+	float EyeOffsetX_m = 0.0f;
+	float EyeOffsetY_m = 0.0f;
+
+#if PLATFORM_WINDOWS
+	if (GameHWND)
+	{
+		HWND Hwnd = (HWND)GameHWND;
+
+		RECT rc;
+		GetClientRect(Hwnd, &rc);
+		const float WinPxW = (float)(rc.right - rc.left);
+		const float WinPxH = (float)(rc.bottom - rc.top);
+		if (WinPxW > 0.0f && WinPxH > 0.0f)
+		{
+			Screen.width_m  = WinPxW * PxSizeX;
+			Screen.height_m = WinPxH * PxSizeY;
+		}
+
+		POINT ClientOrigin = {0, 0};
+		ClientToScreen(Hwnd, &ClientOrigin);
+		HMONITOR hMon = MonitorFromWindow(Hwnd, MONITOR_DEFAULTTONEAREST);
+		MONITORINFO mi = { sizeof(mi) };
+		if (GetMonitorInfo(hMon, &mi))
+		{
+			const float WinCenterX = (float)(ClientOrigin.x - mi.rcMonitor.left) + WinPxW * 0.5f;
+			const float WinCenterY = (float)(ClientOrigin.y - mi.rcMonitor.top)  + WinPxH * 0.5f;
+			const float MonW = (float)(mi.rcMonitor.right - mi.rcMonitor.left);
+			const float MonH = (float)(mi.rcMonitor.bottom - mi.rcMonitor.top);
+
+			EyeOffsetX_m =  (WinCenterX - MonW * 0.5f) * PxSizeX;
+			EyeOffsetY_m = -(WinCenterY - MonH * 0.5f) * PxSizeY; // screen Y-down → OpenXR Y-up
+		}
+	}
+#endif
+
+	// Shift raw eyes into window-relative display space (still meters, OpenXR convention).
+	RawEyes[0].x -= EyeOffsetX_m; RawEyes[0].y -= EyeOffsetY_m;
+	RawEyes[1].x -= EyeOffsetX_m; RawEyes[1].y -= EyeOffsetY_m;
 
 	// Nominal viewer position
 	XrVector3f NominalViewer = {
@@ -544,6 +669,9 @@ void FDisplayXRDevice::ComputeViews()
 	{
 		NominalViewer = {0.0f, 0.0f, 0.5f};
 	}
+	// Keep nominal in the same window-relative frame as RawEyes.
+	NominalViewer.x -= EyeOffsetX_m;
+	NominalViewer.y -= EyeOffsetY_m;
 
 	// Scene transform (display pose for Kooima)
 	FVector ScenePos;
@@ -616,8 +744,12 @@ void FDisplayXRDevice::ComputeViews()
 		DT.ipd_factor = T.IpdFactor;
 		DT.parallax_factor = T.ParallaxFactor;
 		DT.perspective_factor = T.PerspectiveFactor;
+		// vdh is FIXED (does not scale with window). Screen.height_m is the
+		// window physical height, so m2v = vdh / window_h changes with resize —
+		// making world-scale objects physically smaller as the window shrinks
+		// (matches test app cube_handle_d3d11_win and DisplayXRPreviewSession).
 		DT.virtual_display_height = T.VirtualDisplayHeight > 0.0f
-			? T.VirtualDisplayHeight : Screen.height_m;
+			? T.VirtualDisplayHeight : DispH_m;
 
 		Display3DView OutViews[2];
 		display3d_compute_views(RawEyes, KooimaViewCount, &NominalViewer, &Screen,

@@ -35,6 +35,7 @@ class FDisplayXRDevice
 {
 public:
 	FDisplayXRDevice(const FAutoRegister& AutoRegister, FDisplayXRSession* InSession);
+	virtual ~FDisplayXRDevice();
 
 	// --- IXRTrackingSystem ---
 	virtual FName GetSystemName() const override;
@@ -119,4 +120,20 @@ private:
 	// One-shot reallocation trigger: fires true once when compositor becomes ready
 	// so UE re-runs AllocateRenderTargetTextures with the new (swapchain) size.
 	mutable bool bSwapchainRTReallocPending = true;
+
+	// Host game window HWND, re-cached each UpdateViewport. Used per-frame in
+	// ComputeViews to compute window-relative Kooima inputs (eye offset + screen
+	// dims) so the off-axis frustum tracks the window as it moves/resizes.
+	void* GameHWND = nullptr;
+
+	// Cached window client-area pixel dims, refreshed by CacheWindowSize().
+	// Read by const methods (AdjustViewRect, CalculateRenderTargetSize,
+	// RenderTexture_RenderThread), hence mutable.
+	mutable uint32 CachedWindowW = 0;
+	mutable uint32 CachedWindowH = 0;
+
+	// Query HWND client rect into the cached window dims. Falls back to the
+	// DisplayXR panel pixel dims when HWND is stale / off-screen / platform-
+	// unavailable, so the plugin still produces a valid content region.
+	void CacheWindowSize() const;
 };

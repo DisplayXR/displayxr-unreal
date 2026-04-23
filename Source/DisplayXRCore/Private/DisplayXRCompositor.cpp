@@ -109,9 +109,57 @@ void FDisplayXRCompositor::CompositorLoop()
 			continue;
 		}
 
-		// Build projection layer
+		// Build projection layer.
+		//
+		// CRITICAL: the imageRect we declare here is what the DisplayXR runtime
+		// reads from the atlas to composite onto the physical panel (see reference
+		// cube_handle_d3d12_win/main.cpp:482-488). It MUST match where UE's
+		// AdjustViewRect told UE to write each tile — otherwise the runtime's
+		// sample rect straddles two of UE's tiles and one eye sees the other's
+		// content (right-eye-in-left-eye bleed).
+		//
+		// HWND identity: we bind ChildHWND via XR_EXT_win32_window_binding, so
+		// the runtime calls GetClientRect(ChildHWND). ChildHWND is created at a
+		// fixed size at session-init and does NOT auto-track the parent resize
+		// — we have to sync it explicitly here each frame so the runtime sees
+		// the current window size, and so that both sides agree on tile dims.
 		FDisplayXRViewConfig VC = Session->GetViewConfig();
-		int32 NV = VC.GetViewCount(), TW = VC.GetTileW(), TH = VC.GetTileH();
+		int32 NV = VC.GetViewCount();
+		int32 TW = VC.GetTileW();
+		int32 TH = VC.GetTileH();
+#if PLATFORM_WINDOWS
+		if (ParentHWND && ChildHWND)
+		{
+			RECT pcr = {};
+			if (::GetClientRect((HWND)ParentHWND, &pcr))
+			{
+				const int32 ParentW = pcr.right - pcr.left;
+				const int32 ParentH = pcr.bottom - pcr.top;
+
+				// Keep ChildHWND sized to match the parent so runtime's
+				// GetClientRect(ChildHWND) sees the current size.
+				RECT ccr = {};
+				::GetClientRect((HWND)ChildHWND, &ccr);
+				if (ParentW > 0 && ParentH > 0 &&
+					(ParentW != (ccr.right - ccr.left) || ParentH != (ccr.bottom - ccr.top)))
+				{
+					::SetWindowPos((HWND)ChildHWND, nullptr, 0, 0, ParentW, ParentH,
+						SWP_NOZORDER | SWP_NOACTIVATE);
+				}
+
+				if (ParentW > 0 && ParentH > 0)
+				{
+					// Clamp against the physical swapchain (worst-case panel size).
+					// Spec: swapchain is never reallocated — if the user drags
+					// larger than the panel, cap tile dims at panel scale × view_scale.
+					const int32 ClampedW = FMath::Min<int32>(ParentW, (int32)SwapchainWidth);
+					const int32 ClampedH = FMath::Min<int32>(ParentH, (int32)SwapchainHeight);
+					TW = FMath::Max(1, FMath::RoundToInt(ClampedW * VC.ScaleX));
+					TH = FMath::Max(1, FMath::RoundToInt(ClampedH * VC.ScaleY));
+				}
+			}
+		}
+#endif
 		int32 Cols = FMath::Max(VC.TileColumns, 1);
 
 		FVector LE, RE; bool bT;
