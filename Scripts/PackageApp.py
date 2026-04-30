@@ -19,16 +19,28 @@ ProjectVersion = ProjectManifest["EngineAssociation"]
 print("Project engine UE" + ProjectVersion)
 print("Building against UE" + EngineVersion)
 
-EnginePath = ""
+def find_engine_path(version):
+    # Try the legacy registry key first (older Epic Launcher / Installed Builds).
+    try:
+        with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE,
+                            "SOFTWARE\\EpicGames\\Unreal Engine\\" + version,
+                            0, winreg.KEY_READ | winreg.KEY_WOW64_64KEY) as key:
+            return winreg.QueryValueEx(key, "InstalledDirectory")[0]
+    except OSError:
+        pass
 
-try:
-    EngineKey = winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, "SOFTWARE\\EpicGames\\Unreal Engine\\" + EngineVersion, 0, winreg.KEY_READ | winreg.KEY_WOW64_64KEY)
-    EnginePath = installed = winreg.QueryValueEx(EngineKey, "InstalledDirectory")[0]
-    winreg.CloseKey(EngineKey)
-except Exception as ex:
-    print("Could not find UE" + EngineVersion + "(" + ex + ")")
-    raise
+    # Fall back: Epic Launcher's default install path.
+    program_files = os.environ.get("ProgramFiles", r"C:\Program Files")
+    default_path = os.path.join(program_files, "Epic Games", "UE_" + version)
+    if os.path.isfile(os.path.join(default_path, "Engine", "Binaries", "Win64", "UnrealEditor.exe")):
+        return default_path
 
+    raise RuntimeError(
+        "Could not find UE " + version + ": not in registry "
+        "(HKLM\\SOFTWARE\\EpicGames\\Unreal Engine\\" + version + ") "
+        "and not at " + default_path)
+
+EnginePath = find_engine_path(EngineVersion)
 print("Engine location: " + EnginePath)
 
 if os.path.isdir(OutPath):
@@ -45,10 +57,14 @@ Flags += '-serverconfig=' + BuildType + ' '
 Flags += '-cook -allmaps -build -stage -pak -archive '
 Flags += '-archivedirectory="' + OutPath + '"'
 
-Command = UAT + ' BuildCookRun ' + Flags
+Command = '"' + UAT + '" BuildCookRun ' + Flags
 
+# cmd /c "<cmd>" strips the outer quotes when the inner command also has
+# quotes (paths with spaces, e.g. C:\Program Files\...). Wrapping the whole
+# thing in an extra pair triggers cmd's "first-and-last quote stripping"
+# rule, which then leaves the inner UAT path quoted exactly as intended.
 print("Packaging...")
-ReturnCode = os.system(Command)
+ReturnCode = os.system('"' + Command + '"')
 
 
 # ---------------------------------------------------------------------------
@@ -174,9 +190,10 @@ if ReturnCode == 0:
                         json.dump(registered, rf, indent=2)
                     print("Wrote registered manifest: " + reg_path)
 
-directories = [f.path for f in os.scandir(OutPath) if f.is_dir()]
-for directory in directories:
-    print("Exporting redist to " + directory)
-    copy_tree(EnginePath + "\\Engine\\Extras\\Redist", directory + "\\Engine\\Extras\\Redist")
+if ReturnCode == 0 and os.path.isdir(OutPath):
+    directories = [f.path for f in os.scandir(OutPath) if f.is_dir()]
+    for directory in directories:
+        print("Exporting redist to " + directory)
+        copy_tree(EnginePath + "\\Engine\\Extras\\Redist", directory + "\\Engine\\Extras\\Redist")
 
 sys.exit(ReturnCode)
