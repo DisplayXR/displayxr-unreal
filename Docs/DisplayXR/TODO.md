@@ -22,6 +22,7 @@ The Unity sibling has a more mature docs tree. Bring Unreal up to parity so user
 - ✅ Quick-start guide → [`QuickStart.md`](./QuickStart.md)
 - ✅ Single-page architecture doc → [`Architecture.md`](./Architecture.md)
 - ✅ First 3 ADRs (Unreal-specific: direct runtime loading, zero-copy atlas, UE-native off-axis projection) → [`adr/`](./adr/)
+- ✅ App-manifest pipeline (cook/stage emits `<exe>.displayxr.json` + optional `%LOCALAPPDATA%\DisplayXR\apps\` registered manifest) → [issue #5](https://github.com/DisplayXR/displayxr-unreal/issues/5). Win64 only; Mac parity is open below.
 
 ### Still open
 
@@ -51,6 +52,7 @@ The Unity sibling has a more mature docs tree. Bring Unreal up to parity so user
 ## 4. Platform coverage
 
 - **macOS path validation** — end-to-end smoke test of the unified `FDisplayXRSession` (Metal graphics binding, Cocoa window binding) on a supported display. See [MacSetup.md](./MacSetup.md).
+- **Mac parity for app manifest** — port the Win64 manifest pipeline (issue #5) to Mac: settings panel already compiles cross-platform, but `Scripts/PackageApp.py` is Windows-only and the registered-mode path needs a Mac equivalent (likely `~/Library/Application Support/DisplayXR/apps/` — confirm against runtime spec).
 - **Android path validation** — unified session on Android (Vulkan graphics binding).
 - **UE version sweep** — currently targets UE 5.3+. Confirm 5.6 works; track 5.7 pre-release.
 

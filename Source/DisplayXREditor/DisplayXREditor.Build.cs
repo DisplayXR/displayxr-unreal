@@ -27,6 +27,10 @@ public class DisplayXREditor : ModuleRules
 			"HeadMountedDisplay",
 			"Json",
 			"JsonUtilities",
+			"DeveloperSettings",
+			"Projects",
+			"ImageCore",
+			"ImageWrapper",
 		});
 
 		// D3D12 headers for swapchain GPU copy
