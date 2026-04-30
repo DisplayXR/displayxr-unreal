@@ -79,5 +79,9 @@ DerivedDataCache/*
 DisplayXR_*.zip
 RELEASE_BODY.md
 
+# Python bytecode (e.g. Scripts/__pycache__ from PackageApp.py)
+__pycache__/
+*.pyc
+
 # macOS
 .DS_Store
