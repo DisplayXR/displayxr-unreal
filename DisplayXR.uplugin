@@ -1,7 +1,7 @@
 {
 	"FileVersion": 3,
 	"Version": 1,
-	"VersionName": "0.1.1",
+	"VersionName": "0.2.0",
 	"EngineVersion": "5.7.0",
 	"FriendlyName": "DisplayXR",
 	"Description": "3D display rendering for tracked displays",
