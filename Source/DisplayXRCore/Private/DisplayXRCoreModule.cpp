@@ -2,11 +2,13 @@
 // SPDX-License-Identifier: BSL-1.0
 
 #include "DisplayXRCoreModule.h"
+#include "DisplayXRAtlasCapture.h"
 #include "DisplayXRSession.h"
 #include "DisplayXRPlatform.h"
 #include "Rendering/DisplayXRDevice.h"
 #include "SceneViewExtension.h"
 #include "Modules/ModuleManager.h"
+#include "HAL/IConsoleManager.h"
 #include "Framework/Application/IInputProcessor.h"
 #include "Framework/Application/SlateApplication.h"
 #include "GameFramework/PlayerController.h"
@@ -35,6 +37,20 @@ public:
 
 	virtual bool HandleKeyDownEvent(FSlateApplication&, const FKeyEvent& KeyEvent) override
 	{
+		// 'I' (no modifiers) — capture atlas to PNG, parity with runtime-pvt
+		// reference test apps. Skip when typing into a text widget.
+		if (KeyEvent.GetKey() == EKeys::I
+			&& !KeyEvent.IsShiftDown() && !KeyEvent.IsControlDown() && !KeyEvent.IsAltDown())
+		{
+			const TSharedPtr<SWidget> Focused = FSlateApplication::Get().GetUserFocusedWidget(0);
+			const bool bTextFocus = Focused.IsValid() && Focused->GetType().ToString().Contains(TEXT("EditableText"));
+			if (!bTextFocus)
+			{
+				FDisplayXRAtlasCapture::RequestCapture();
+				return true;
+			}
+		}
+
 		if (KeyEvent.GetKey() != EKeys::F1 || !KeyEvent.IsShiftDown())
 		{
 			return false;
@@ -126,20 +142,50 @@ void FDisplayXRCoreModule::StartupModule()
 	// Register with UE's HMD module discovery
 	IHeadMountedDisplayModule::StartupModule();
 
-	// Register SHIFT+F1 → release/capture mouse dev shortcut. Slate may not be
-	// initialized at module-load time in some build targets, so defer until
-	// FSlateApplication is ready.
+	// Register SHIFT+F1 (mouse cursor toggle) and 'I' (atlas capture) Slate
+	// preprocessor. The runtime module loads at PostConfigInit — earlier than
+	// Slate — so the synchronous path almost always misses the window. Defer to
+	// OnPostEngineInit, which fires after Slate is up in both editor and game
+	// targets. Keep the synchronous path for the rare case where Slate is
+	// somehow already up by the time we run (e.g. hot-reload).
 	if (FSlateApplication::IsInitialized())
 	{
-		DevInputProcessor = MakeShared<FDisplayXRDevInputProcessor>();
-		FSlateApplication::Get().RegisterInputPreProcessor(DevInputProcessor);
+		RegisterDevInputProcessor();
 	}
+	else
+	{
+		PostEngineInitHandle = FCoreDelegates::OnPostEngineInit.AddRaw(this, &FDisplayXRCoreModule::RegisterDevInputProcessor);
+	}
+
+	AtlasCaptureCmd = MakeUnique<FAutoConsoleCommand>(
+		TEXT("DisplayXR.CaptureAtlas"),
+		TEXT("Capture the current swapchain atlas to %USERPROFILE%\\Pictures\\DisplayXR\\<ProjectName>-<N>_<cols>x<rows>.png."),
+		FConsoleCommandDelegate::CreateStatic(&FDisplayXRAtlasCapture::RequestCapture));
 
 	UE_LOG(LogDisplayXRCore, Log, TEXT("DisplayXR: Core module started (custom HMD path)"));
 }
 
+void FDisplayXRCoreModule::RegisterDevInputProcessor()
+{
+	if (!FSlateApplication::IsInitialized() || DevInputProcessor.IsValid())
+	{
+		return;
+	}
+	DevInputProcessor = MakeShared<FDisplayXRDevInputProcessor>();
+	FSlateApplication::Get().RegisterInputPreProcessor(DevInputProcessor);
+	UE_LOG(LogDisplayXRCore, Log, TEXT("DisplayXR: Slate input preprocessor registered (SHIFT+F1, I)"));
+}
+
 void FDisplayXRCoreModule::ShutdownModule()
 {
+	AtlasCaptureCmd.Reset();
+
+	if (PostEngineInitHandle.IsValid())
+	{
+		FCoreDelegates::OnPostEngineInit.Remove(PostEngineInitHandle);
+		PostEngineInitHandle.Reset();
+	}
+
 	if (DevInputProcessor.IsValid() && FSlateApplication::IsInitialized())
 	{
 		FSlateApplication::Get().UnregisterInputPreProcessor(DevInputProcessor);

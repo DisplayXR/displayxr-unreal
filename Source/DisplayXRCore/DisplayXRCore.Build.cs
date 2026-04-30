@@ -35,6 +35,7 @@ public class DisplayXRCore : ModuleRules
 			"Projects",
 			"Json",
 			"JsonUtilities",
+			"ImageWrapper",
 		});
 
 		// D3D12 headers for compositor GPU copy

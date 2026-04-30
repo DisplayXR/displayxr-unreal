@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: BSL-1.0
 
 #include "DisplayXRFunctionLibrary.h"
+#include "DisplayXRAtlasCapture.h"
 #include "DisplayXRPlatform.h"
 #include "DisplayXRRigManager.h"
 
@@ -39,4 +40,9 @@ bool UDisplayXRFunctionLibrary::RequestEyeTrackingMode(bool bManual)
 void UDisplayXRFunctionLibrary::CycleRig()
 {
 	FDisplayXRRigManager::CycleNext();
+}
+
+void UDisplayXRFunctionLibrary::CaptureAtlasNow()
+{
+	FDisplayXRAtlasCapture::RequestCapture();
 }

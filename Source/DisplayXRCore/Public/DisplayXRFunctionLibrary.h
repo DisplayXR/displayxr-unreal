@@ -40,4 +40,8 @@ public:
 	/** Cycle to the next registered DisplayXR rig. */
 	UFUNCTION(BlueprintCallable, Category = "DisplayXR")
 	static void CycleRig();
+
+	/** Capture the current swapchain atlas to %USERPROFILE%\Pictures\DisplayXR\ as a PNG. */
+	UFUNCTION(BlueprintCallable, Category = "DisplayXR")
+	static void CaptureAtlasNow();
 };

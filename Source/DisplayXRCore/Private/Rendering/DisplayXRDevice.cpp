@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: BSL-1.0
 
 #include "DisplayXRDevice.h"
+#include "DisplayXRAtlasCapture.h"
 #include "DisplayXRStereoMath.h"
 #include "DisplayXRRigManager.h"
 #include "DisplayXRPlatform.h"
@@ -595,11 +596,19 @@ void FDisplayXRDevice::PostRenderViewFamily_RenderThread(FRDGBuilder& GraphBuild
 		SrcTextureRHI = InViewFamily.RenderTarget->GetRenderTargetTexture();
 	}
 
+	const int32 AtlasW = CachedViewConfig.GetAtlasW();
+	const int32 AtlasH = CachedViewConfig.GetAtlasH();
+	const int32 Cols = CachedViewConfig.TileColumns;
+	const int32 Rows = CachedViewConfig.TileRows;
+
 	GraphBuilder.AddPass(
 		RDG_EVENT_NAME("DisplayXR_ReleaseSwapchain"),
 		ERDGPassFlags::NeverCull,
-		[Comp, SrcTextureRHI](FRHICommandListImmediate& RHICmdList)
+		[Comp, SrcTextureRHI, AtlasW, AtlasH, Cols, Rows](FRHICommandListImmediate& RHICmdList)
 		{
+			// Capture before release: swapchain image is still in the rendered
+			// state here; ReleaseImage transitions it to PRESENT.
+			FDisplayXRAtlasCapture::ProcessRequest_RenderThread(RHICmdList, SrcTextureRHI, AtlasW, AtlasH, Cols, Rows);
 			Comp->ReleaseImage_RenderThread(RHICmdList, SrcTextureRHI);
 		});
 }

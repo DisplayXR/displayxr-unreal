@@ -6,6 +6,7 @@
 #include "CoreMinimal.h"
 #include "IHeadMountedDisplayModule.h"
 
+class FAutoConsoleCommand;
 class FDisplayXRSession;
 class FDisplayXRDevInputProcessor;
 
@@ -32,7 +33,11 @@ public:
 	DISPLAYXRCORE_API static FDisplayXRSession* GetSession();
 
 private:
+	void RegisterDevInputProcessor();
+
 	TSharedPtr<FDisplayXRSession> Session;
 	TSharedPtr<FDisplayXRDevInputProcessor> DevInputProcessor;
+	TUniquePtr<FAutoConsoleCommand> AtlasCaptureCmd;
+	FDelegateHandle PostEngineInitHandle;
 	static FDisplayXRCoreModule* ModuleInstance;
 };
