@@ -226,6 +226,14 @@ void FDisplayXRAtlasCapture::ProcessRequest_RenderThread(
 		return;
 	}
 
+	// Force opaque alpha. The swapchain's alpha channel is undefined for
+	// display output (compositor doesn't use it); leaving it at 0 produces a
+	// fully transparent PNG that renders black in image viewers.
+	for (FColor& C : Pixels)
+	{
+		C.A = 0xFF;
+	}
+
 	const FString OutPath = MakeOutputPath(Cols, Rows);
 	const bool bSaved = EncodeAndSavePng(Pixels, AtlasW, AtlasH, OutPath);
 	PendingRequests.Decrement();
