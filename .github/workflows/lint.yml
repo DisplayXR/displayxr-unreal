@@ -13,8 +13,11 @@ jobs:
       - name: Vendor-name guard
         run: |
           # Constructed at runtime so this workflow does not contain the literal string.
+          # CHANGELOG.md is excluded — it's the historical record and may
+          # legitimately reference the original vendor SDK by name (e.g. the
+          # pre-deprivatize port).
           FORBIDDEN="le""ia"
-          if grep -rniI --exclude-dir=.git "$FORBIDDEN" .; then
+          if grep -rniI --exclude-dir=.git --exclude=CHANGELOG.md "$FORBIDDEN" .; then
             echo "::error::Forbidden vendor name found in tracked files."
             exit 1
           fi
