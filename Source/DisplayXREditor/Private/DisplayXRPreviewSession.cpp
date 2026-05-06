@@ -70,6 +70,17 @@ static HWND GPreviewEditorHWND = nullptr;
 static POINT GDragLastCursor = {0, 0};
 static bool GDragging = false;
 
+// Title-bar move-drag state. We intercept SC_MOVE instead of letting
+// DefWindowProc run the OS modal drag loop — the modal loop blocks the editor
+// thread, freezing Kooima updates until the drag ends. By driving the move
+// ourselves and bracketing it with synthesized WM_ENTERSIZEMOVE/WM_EXITSIZEMOVE,
+// the SR weaver subclass still applies lenticular phase-snap on each
+// WM_WINDOWPOSCHANGING (no 3D stutter) while Tick() keeps running (real-time
+// Kooima). See repo issue #10.
+static bool GMoveDragging = false;
+static POINT GMoveAnchorScreen = {0, 0};
+static POINT GMoveAnchorWindow = {0, 0};
+
 static LRESULT CALLBACK PreviewWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 {
 	switch (msg)
@@ -79,6 +90,27 @@ static LRESULT CALLBACK PreviewWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARA
 		// editor's PIE viewport. MA_NOACTIVATE tells Windows to deliver the
 		// click without activation.
 		return MA_NOACTIVATE;
+	case WM_SYSCOMMAND:
+		// Title-bar move: take over from DefWindowProc's modal loop so the
+		// editor thread keeps ticking during the drag. SendMessage (not Post)
+		// — WM_ENTERSIZEMOVE must reach the SR subclass synchronously before
+		// our first SetWindowPos, otherwise the first frame of the drag isn't
+		// snapped.
+		if ((wParam & 0xFFF0) == SC_MOVE)
+		{
+			::SendMessageW(hwnd, WM_ENTERSIZEMOVE, 0, 0);
+
+			::GetCursorPos(&GMoveAnchorScreen);
+			RECT WindowRect;
+			::GetWindowRect(hwnd, &WindowRect);
+			GMoveAnchorWindow.x = WindowRect.left;
+			GMoveAnchorWindow.y = WindowRect.top;
+
+			GMoveDragging = true;
+			::SetCapture(hwnd);
+			return 0;
+		}
+		break;
 	case WM_LBUTTONDOWN:
 		// LMB-down: focus PIE for keyboard, start tracking a potential
 		// drag. If the user drags, we forward deltas as rotation input.
@@ -91,13 +123,46 @@ static LRESULT CALLBACK PreviewWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARA
 		SetCapture(hwnd);
 		return 0;
 	case WM_LBUTTONUP:
+		if (GMoveDragging)
+		{
+			GMoveDragging = false;
+			::ReleaseCapture();
+			::SendMessageW(hwnd, WM_EXITSIZEMOVE, 0, 0);
+			return 0;
+		}
 		if (GDragging)
 		{
 			GDragging = false;
 			ReleaseCapture();
 		}
 		return 0;
+	case WM_CAPTURECHANGED:
+		// Capture can be yanked by Alt-Tab, system menu, etc. mid-drag. If we
+		// don't pair WM_ENTERSIZEMOVE with an WM_EXITSIZEMOVE the SR subclass
+		// stays in snap-mode and may misbehave on subsequent SetWindowPos
+		// calls. lParam is the HWND that gained capture; if it's us we kept
+		// it (e.g. SetCapture in the same wndproc), so don't tear down.
+		if (GMoveDragging && (HWND)lParam != hwnd)
+		{
+			GMoveDragging = false;
+			::SendMessageW(hwnd, WM_EXITSIZEMOVE, 0, 0);
+		}
+		if (GDragging && (HWND)lParam != hwnd)
+		{
+			GDragging = false;
+		}
+		break;
 	case WM_MOUSEMOVE:
+		if (GMoveDragging)
+		{
+			POINT Current;
+			::GetCursorPos(&Current);
+			const int NewX = GMoveAnchorWindow.x + (Current.x - GMoveAnchorScreen.x);
+			const int NewY = GMoveAnchorWindow.y + (Current.y - GMoveAnchorScreen.y);
+			::SetWindowPos(hwnd, NULL, NewX, NewY, 0, 0,
+				SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+			return 0;
+		}
 		if (GDragging && GPreviewSessionForWndProc)
 		{
 			POINT Current;
