@@ -22,9 +22,10 @@ The two are mutually exclusive on disk: `Plugins/DisplayXR/` in the test project
 ```
 /install-dev [target-parent-dir]
   │
-  ├─ Pre-flight (UE 5.7, VS 2022 + NetFxSDK, runtime JSON, gh auth, no-spaces paths)
+  ├─ Pre-flight (UE 5.7, VS 2022 + NetFxSDK, runtime JSON, gh auth)
+  ├─ Mirror plugin to no-space dev root if PLUGIN_SRC or TARGET_PARENT has spaces
   ├─ Clone displayxr-unreal-test into <target>/displayxr-unreal-test
-  ├─ cmd /c mklink /J <target>/displayxr-unreal-test/Plugins/DisplayXR  <this checkout>
+  ├─ cmd /c mklink /J <target>/displayxr-unreal-test/Plugins/DisplayXR  <plugin (or mirror)>
   ├─ Generate Visual Studio project files for DisplayXRTest.uproject
   ├─ Build DisplayXRTestEditor (Win64 Development) — first build is 10–20 min
   └─ Report: sln path, junction source, next step (launch editor)
@@ -41,16 +42,23 @@ The two are mutually exclusive on disk: `Plugins/DisplayXR/` in the test project
 - **Visual Studio 2022** with the "Game development with C++" workload **including the .NET Framework 4.6.2+ SDK and matching targeting pack**. Verify by registry: `HKLM:\SOFTWARE\WOW6432Node\Microsoft\Microsoft SDKs\NETFXSDK` (or the non-WOW6432Node equivalent) must exist. Missing this causes UBT to fail with `Could not find NetFxSDK install dir` before any plugin code compiles — install the SDK and targeting pack from the VS Installer → Individual components.
 - **DisplayXR runtime** installed: `C:\Program Files\DisplayXR\Runtime\DisplayXR_win64.json` exists.
 - **GitHub CLI** authenticated: `gh auth status` exits 0.
-- **Target path contains no spaces anywhere** (drive, username, and argument components). UE 5.7's `ContentBrowserAssetDataSource` mixes 8.3 and long filename probes when mounting `Content/Developers/` and fatals if the project path straddles the two — this is an environment bug avoided entirely by a space-free path. On a machine whose username has a space (`C:\Users\Jane Doe\...`) do not default to `$HOME\Documents\Unreal`; ask the user for an alternative like `C:\dxr-dev\`.
-- **This repo's absolute path also contains no spaces** — the junction points here, so the test project inherits this path at mount time.
+- **Spaced paths are auto-mitigated, not rejected.** UE 5.7's `ContentBrowserAssetDataSource` fatals when the project path contains spaces — it mixes 8.3 and long-filename probes when mounting `Content/Developers/`. The skill works around this by mirroring `PLUGIN_SRC` to a no-space dev root (default `C:\dxr-dev\`) and switching `TARGET_PARENT` to the same root if `$HOME` straddles the bug. Mechanism is in Step 1.
+- **Working tree on `PLUGIN_SRC` must be clean if a mirror is needed.** The mirror is a fresh `git clone` of the same branch — uncommitted edits in the original checkout would not appear in the mirror, and the user would think they were testing code they hadn't actually saved. Halt with `PREREQ_MISSING` and ask them to commit or stash first. (When `PLUGIN_SRC` has no spaces, no mirror is created and this check is skipped.)
 
 ## Steps — stop on first failure
 
-### 1. Resolve and validate target
+### 1. Resolve paths and mirror plugin if needed
 
-- `TARGET_PARENT = [ARGUMENTS] ?? "$HOME\Documents\Unreal"`.
-- `PLUGIN_SRC   = git -C . rev-parse --show-toplevel` (convert forward slashes to backslashes for `mklink`).
-- Reject with `PREREQ_MISSING` if `TARGET_PARENT` or `PLUGIN_SRC` contains any space.
+- `TARGET_PARENT = [ARGUMENTS] ?? "$HOME\Documents\Unreal"`. If the resolved value contains a space (e.g., `$HOME` is `C:\Users\Jane Doe`), substitute `C:\dxr-dev\` instead. The user-supplied argument is honored verbatim; reject with `PREREQ_MISSING` if the user explicitly passed a spaced path.
+- `PLUGIN_SRC = git -C . rev-parse --show-toplevel` (convert forward slashes to backslashes for `mklink`).
+- **If `PLUGIN_SRC` contains a space** — auto-mirror to a no-space dev root:
+  - Verify clean working tree: `git -C "$PLUGIN_SRC" status --porcelain` must be empty. If dirty, halt with `PREREQ_MISSING` and ask the user to commit or stash first. The mirror is a fresh clone — uncommitted edits would silently disappear from the build.
+  - Capture branch and origin: `BRANCH = git -C "$PLUGIN_SRC" branch --show-current`; `ORIGIN = git -C "$PLUGIN_SRC" remote get-url origin`.
+  - `MIRROR_DIR = "C:\dxr-dev\displayxr-unreal"`.
+  - If `MIRROR_DIR` already exists: ask the user whether to **reuse** as-is, **refresh** (`git -C "$MIRROR_DIR" fetch origin && git -C "$MIRROR_DIR" reset --hard origin/$BRANCH`), or **abort**. Do not silently overwrite.
+  - Otherwise create `C:\dxr-dev\` if missing, then clone: `git clone -b $BRANCH $ORIGIN "$MIRROR_DIR"`.
+  - Reassign `PLUGIN_SRC = $MIRROR_DIR` for the rest of the steps. Build artifacts (`Binaries/`, `Intermediate/`) will land in the mirror, which is what we want — they would otherwise pollute the original spaced checkout.
+  - Surface the mirror prominently in the final report so the user knows future edits must happen in `$MIRROR_DIR`, not the original.
 - `TEST_PROJECT = "$TARGET_PARENT\displayxr-unreal-test"`.
 - If `TEST_PROJECT` already exists and is non-empty, stop and **ask the user** whether to delete (show the exact command: `Remove-Item -Recurse -Force "$TEST_PROJECT"`) or abort. Do not silently overwrite.
 - Create `TARGET_PARENT` if missing.
@@ -121,6 +129,12 @@ Plugin source:  <PLUGIN_SRC>
 Solution:       <TEST_PROJECT>\DisplayXRTest.sln
 
 DisplayXRTestEditor built successfully (Win64 Development).
+
+[If the plugin was mirrored due to spaces in the original checkout, also include:]
+  ⚠ Plugin was mirrored from <ORIGINAL_SPACED_PATH> to <MIRROR_DIR>.
+    Future edits MUST be made in <MIRROR_DIR>, not the original — UE
+    only sees the mirror through the junction. The original checkout
+    is now stale and should not be used for plugin development.
 
 Launch the editor:
 
