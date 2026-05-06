@@ -4,6 +4,17 @@ All notable changes to the DisplayXR Unreal plugin are documented here.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.2.1] - 2026-05-07
+
+### Fixed
+- `EditorPreview`: real-time Kooima updates during window drag without 3D stutter.
+
+### Changed
+- `install-dev` skill: auto-mirror plugin to no-space root for spaced `PLUGIN_SRC`.
+- README: added lint + license badges.
+- CI: excluded `CHANGELOG.md` from vendor-name guard.
+- Added `.github/CODEOWNERS` for sole-reviewer auto-request.
+
 ## [0.2.0] - 2026-04-29
 
 ### Added
