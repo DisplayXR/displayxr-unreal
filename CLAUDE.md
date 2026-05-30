@@ -64,6 +64,30 @@ There is **no** `DISPLAYXR_USE_UNREAL_OPENXR` compile flag. Platform differences
 - `.github/workflows/lint.yml` — PR-to-main lint checks: vendor-name guard, valid JSON in `DisplayXR.uplugin`, valid YAML in workflows. Runs on `ubuntu-latest`.
 - Full UE build is not in CI (UE is not on github-hosted runners). Tracked as future work in `Docs/DisplayXR/TODO.md`.
 
+## Releasing
+
+Preferred path: `/release` skill at `.claude/skills/release/SKILL.md`.
+Tags, packages the plugin via `Scripts/PackagePlugin.bat`, creates a
+GitHub Release with the packaged zip attached.
+
+Manual fallback:
+```bash
+git tag -a vX.Y.Z -m "release notes ..."
+git push origin vX.Y.Z
+```
+
+### Independent of the runtime's `versions.json` auto-bump matrix
+
+The DisplayXR runtime maintains a `versions.json` at its root that
+pins the **bundled stack** (runtime, shell, leia-plugin, mcp, demos)
+for the dev orchestrator and the meta-installer. **This Unreal plugin
+is intentionally NOT in that matrix** — it's a downstream consumer
+of the runtime's OpenXR wire protocol, not part of the co-released
+bundle. The Unreal sibling [`displayxr-unity`](https://github.com/DisplayXR/displayxr-unity)
+shares the same boundary. See
+[`displayxr-runtime/docs/specs/runtime/versions-json-autobump.md`](https://github.com/DisplayXR/displayxr-runtime/blob/main/docs/specs/runtime/versions-json-autobump.md)
+for the auto-bump spec; this plugin doesn't participate.
+
 ## Documentation
 
 - `README.md` — project overview, setup, TOC
@@ -73,4 +97,7 @@ There is **no** `DISPLAYXR_USE_UNREAL_OPENXR` compile flag. Platform differences
 ## Sibling repositories
 
 - **[DisplayXR/displayxr-unity](https://github.com/DisplayXR/displayxr-unity)** — Unity plugin. Reference implementation; shares native C Kooima code.
-- **[dfattal/openxr-3d-display](https://github.com/dfattal/openxr-3d-display)** — DisplayXR OpenXR runtime.
+- **[DisplayXR/displayxr-runtime](https://github.com/DisplayXR/displayxr-runtime)** — DisplayXR OpenXR runtime. (Old URL `dfattal/openxr-3d-display` redirects, but reference the canonical org URL in new docs.)
+- **[DisplayXR/displayxr-mcp](https://github.com/DisplayXR/displayxr-mcp)** — MCP framework. Not consumed by this plugin today; future possibility if Unreal-side agent surface becomes a thing.
+- **[DisplayXR/displayxr-leia-plugin](https://github.com/DisplayXR/displayxr-leia-plugin)** — Leia SR display-processor plug-in for the runtime. Vendor integration is runtime-side; this plugin doesn't talk to the SR SDK directly.
+- **[DisplayXR/displayxr-installer](https://github.com/DisplayXR/displayxr-installer)** — Meta-installer bundle for end users. Bundles runtime + shell + leia + mcp + demos. This Unreal plugin is NOT bundled (see §Releasing).
