@@ -35,35 +35,39 @@ namespace DisplayXRAtlasCaptureNS
 		return UserProfile / TEXT("Pictures") / TEXT("DisplayXR");
 	}
 
-	// Path PREFIX (no extension) for xrCaptureAtlasEXT, which appends "_atlas.png".
-	// Numbers against existing "<Stem>-<N>_<Cols>x<Rows>_atlas.png" files (the
-	// runtime-produced names) so repeat captures accumulate instead of overwriting.
-	static FString MakeOutputPrefix(int32 Cols, int32 Rows)
+	// Path PREFIX (bare — no layout tokens, no extension) for xrCaptureAtlasEXT.
+	// The runtime owns the suffix and appends "_atlas_<viewCount>_<cols>x<rows>.png"
+	// (see DisplayXR/displayxr-runtime#425). The prefix must NOT repeat the layout
+	// or the final name duplicates it (..._2x1_atlas_2_2x1.png). Numbers against
+	// existing "<Stem>-<N>_atlas_*.png" files so repeat captures accumulate
+	// instead of overwriting.
+	static FString MakeOutputPrefix()
 	{
 		const FString Dir = ResolveCaptureDir();
 		IFileManager::Get().MakeDirectory(*Dir, /*Tree=*/true);
 		const FString Stem = FString(FApp::GetProjectName());
 
-		const FString Suffix = FString::Printf(TEXT("_%dx%d_atlas.png"), Cols, Rows);
-		const FString Wildcard = Stem + TEXT("-*") + Suffix;
+		// Runtime-produced names look like "<Stem>-<N>_atlas_<views>_<c>x<r>.png".
+		const FString Prefix = Stem + TEXT("-");
+		const FString Wildcard = Prefix + TEXT("*_atlas_*.png");
 		TArray<FString> Found;
 		IFileManager::Get().FindFiles(Found, *(Dir / Wildcard), /*Files=*/true, /*Dirs=*/false);
 
 		int32 MaxN = 0;
 		for (const FString& File : Found)
 		{
-			FString Tail = File;
-			if (!Tail.StartsWith(Stem + TEXT("-"))) continue;
-			Tail = Tail.Mid(Stem.Len() + 1);
-			if (!Tail.EndsWith(Suffix)) continue;
-			Tail = Tail.LeftChop(Suffix.Len());
-			if (Tail.IsNumeric())
+			if (!File.StartsWith(Prefix)) continue;
+			FString Tail = File.Mid(Prefix.Len()); // "<N>_atlas_<views>_<c>x<r>.png"
+			int32 Underscore = INDEX_NONE;
+			if (!Tail.FindChar(TEXT('_'), Underscore)) continue; // first '_' ends <N>
+			const FString NumStr = Tail.Left(Underscore);
+			if (NumStr.IsNumeric())
 			{
-				MaxN = FMath::Max(MaxN, FCString::Atoi(*Tail));
+				MaxN = FMath::Max(MaxN, FCString::Atoi(*NumStr));
 			}
 		}
-		// "<Dir>/<Stem>-<N>_<Cols>x<Rows>" — no "_atlas", no ".png".
-		return Dir / FString::Printf(TEXT("%s-%d_%dx%d"), *Stem, MaxN + 1, Cols, Rows);
+		// "<Dir>/<Stem>-<N>" — runtime appends "_atlas_<viewCount>_<cols>x<rows>.png".
+		return Dir / FString::Printf(TEXT("%s-%d"), *Stem, MaxN + 1);
 	}
 
 #if PLATFORM_WINDOWS
@@ -178,13 +182,15 @@ namespace DisplayXRAtlasCaptureNS
 			return;
 		}
 
-		const FString Prefix = MakeOutputPrefix(Cols, Rows);
+		const FString Prefix = MakeOutputPrefix();
 		// PROJECTION_ONLY: the app's projection atlas (no runtime chrome), parity
-		// with the native test apps. The runtime appends "_atlas.png".
+		// with the native test apps. The runtime appends
+		// "_atlas_<viewCount>_<cols>x<rows>.png" (DisplayXR/displayxr-runtime#425).
 		const bool bOk = Session->CaptureAtlas(Prefix, /*bProjectionOnly=*/true);
 		if (bOk)
 		{
-			UE_LOG(LogDisplayXRCapture, Log, TEXT("Atlas capture requested -> %s_atlas.png"), *Prefix);
+			UE_LOG(LogDisplayXRCapture, Log, TEXT("Atlas capture requested -> %s_atlas_%d_%dx%d.png"),
+				*Prefix, View.GetViewCount(), Cols, Rows);
 #if PLATFORM_WINDOWS
 			TriggerFlashOverlay_GameThread();
 #endif
