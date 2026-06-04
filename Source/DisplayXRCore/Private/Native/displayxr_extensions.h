@@ -121,6 +121,53 @@ typedef struct XrCocoaWindowBindingCreateInfoEXT {
     void *sharedIOSurface;               // IOSurfaceRef for zero-copy GPU sharing
 } XrCocoaWindowBindingCreateInfoEXT;
 
+// --- XR_EXT_atlas_capture ---
+// Runtime-owned "snapshot the multi-view atlas to a PNG". The app passes a
+// pathPrefix (runtime appends "_atlas.png") and a stage; the runtime reads
+// back its own compositor atlas — no app-side readback. Mirrors
+// displayxr-runtime/src/external/openxr_includes/openxr/XR_EXT_atlas_capture.h.
+#define XR_EXT_ATLAS_CAPTURE_EXTENSION_NAME "XR_EXT_atlas_capture"
+#define XR_EXT_ATLAS_CAPTURE_SPEC_VERSION 1
+
+#define XR_TYPE_ATLAS_CAPTURE_INFO_EXT   ((XrStructureType)1000999120)
+#define XR_TYPE_ATLAS_CAPTURE_RESULT_EXT ((XrStructureType)1000999121)
+
+#define XR_ATLAS_CAPTURE_PATH_MAX_EXT 256
+
+typedef enum XrAtlasCaptureStageEXT {
+    XR_ATLAS_CAPTURE_STAGE_POST_COMPOSE_EXT    = 0, // proj + window-space + quads
+    XR_ATLAS_CAPTURE_STAGE_PROJECTION_ONLY_EXT = 1, // projection-class layers only
+    XR_ATLAS_CAPTURE_STAGE_MAX_ENUM_EXT        = 0x7FFFFFFF
+} XrAtlasCaptureStageEXT;
+
+typedef struct XrAtlasCaptureInfoEXT {
+    XrStructureType type;
+    const void *next;
+    XrAtlasCaptureStageEXT stage;
+    char pathPrefix[XR_ATLAS_CAPTURE_PATH_MAX_EXT];
+} XrAtlasCaptureInfoEXT;
+
+typedef struct XrAtlasCaptureResultEXT {
+    XrStructureType type;
+    void *next;
+    uint64_t timestampNs;
+    uint32_t atlasWidth;
+    uint32_t atlasHeight;
+    uint32_t eyeWidth;
+    uint32_t eyeHeight;
+    uint32_t tileColumns;
+    uint32_t tileRows;
+    float displayWidthM;
+    float displayHeightM;
+    float eyeLeftM[3];
+    float eyeRightM[3];
+} XrAtlasCaptureResultEXT;
+
+typedef XrResult(XRAPI_PTR *PFN_xrCaptureAtlasEXT)(
+    XrSession session,
+    const XrAtlasCaptureInfoEXT *info,
+    XrAtlasCaptureResultEXT *result);
+
 #ifdef __cplusplus
 }
 #endif

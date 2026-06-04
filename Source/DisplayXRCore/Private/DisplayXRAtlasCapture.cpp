@@ -3,19 +3,15 @@
 
 #include "DisplayXRAtlasCapture.h"
 
+#include "DisplayXRCoreModule.h"
+#include "DisplayXRSession.h"
+
 #include "Async/Async.h"
 #include "Framework/Application/SlateApplication.h"
 #include "GenericPlatform/GenericPlatformMisc.h"
 #include "HAL/FileManager.h"
-#include "HAL/PlatformProcess.h"
-#include "IImageWrapper.h"
-#include "IImageWrapperModule.h"
-#include "Math/IntRect.h"
 #include "Misc/App.h"
-#include "Misc/FileHelper.h"
 #include "Misc/Paths.h"
-#include "Modules/ModuleManager.h"
-#include "RHICommandList.h"
 
 #if PLATFORM_WINDOWS
 #include "Windows/AllowWindowsPlatformTypes.h"
@@ -27,11 +23,9 @@ DEFINE_LOG_CATEGORY_STATIC(LogDisplayXRCapture, Log, All);
 
 namespace DisplayXRAtlasCaptureNS
 {
-	static FThreadSafeCounter PendingRequests;
-
 	static FString ResolveCaptureDir()
 	{
-		// %USERPROFILE%\Pictures\DisplayXR — parity with runtime-pvt test_apps.
+		// %USERPROFILE%\Pictures\DisplayXR — parity with the native test apps/demos.
 		FString UserProfile = FPlatformMisc::GetEnvironmentVariable(TEXT("USERPROFILE"));
 		if (UserProfile.IsEmpty())
 		{
@@ -41,19 +35,23 @@ namespace DisplayXRAtlasCaptureNS
 		return UserProfile / TEXT("Pictures") / TEXT("DisplayXR");
 	}
 
-	static int32 NextSequenceNumber(const FString& Dir, const FString& Stem, int32 Cols, int32 Rows)
+	// Path PREFIX (no extension) for xrCaptureAtlasEXT, which appends "_atlas.png".
+	// Numbers against existing "<Stem>-<N>_<Cols>x<Rows>_atlas.png" files (the
+	// runtime-produced names) so repeat captures accumulate instead of overwriting.
+	static FString MakeOutputPrefix(int32 Cols, int32 Rows)
 	{
-		// Find files like "<Stem>-<N>_<Cols>x<Rows>.png" and return max(N)+1, starting at 1.
-		const FString Suffix = FString::Printf(TEXT("_%dx%d.png"), Cols, Rows);
-		const FString Wildcard = Stem + TEXT("-*") + Suffix;
+		const FString Dir = ResolveCaptureDir();
+		IFileManager::Get().MakeDirectory(*Dir, /*Tree=*/true);
+		const FString Stem = FString(FApp::GetProjectName());
 
+		const FString Suffix = FString::Printf(TEXT("_%dx%d_atlas.png"), Cols, Rows);
+		const FString Wildcard = Stem + TEXT("-*") + Suffix;
 		TArray<FString> Found;
 		IFileManager::Get().FindFiles(Found, *(Dir / Wildcard), /*Files=*/true, /*Dirs=*/false);
 
 		int32 MaxN = 0;
 		for (const FString& File : Found)
 		{
-			// Strip "<Stem>-" prefix and "_<Cols>x<Rows>.png" suffix, parse the middle.
 			FString Tail = File;
 			if (!Tail.StartsWith(Stem + TEXT("-"))) continue;
 			Tail = Tail.Mid(Stem.Len() + 1);
@@ -64,23 +62,15 @@ namespace DisplayXRAtlasCaptureNS
 				MaxN = FMath::Max(MaxN, FCString::Atoi(*Tail));
 			}
 		}
-		return MaxN + 1;
-	}
-
-	static FString MakeOutputPath(int32 Cols, int32 Rows)
-	{
-		const FString Dir = ResolveCaptureDir();
-		IFileManager::Get().MakeDirectory(*Dir, /*Tree=*/true);
-		const FString Stem = FString(FApp::GetProjectName());
-		const int32 N = NextSequenceNumber(Dir, Stem, Cols, Rows);
-		return Dir / FString::Printf(TEXT("%s-%d_%dx%d.png"), *Stem, N, Cols, Rows);
+		// "<Dir>/<Stem>-<N>_<Cols>x<Rows>" — no "_atlas", no ".png".
+		return Dir / FString::Printf(TEXT("%s-%d_%dx%d"), *Stem, MaxN + 1, Cols, Rows);
 	}
 
 #if PLATFORM_WINDOWS
 	// Transient layered top-level window that fills white for ~80ms over the
-	// active editor/game window, then auto-destroys via WM_TIMER. Equivalent to
-	// the runtime-pvt reference flash, which paints inside the app's own
-	// WindowProc — we can't intercept UE's WindowProc cleanly, so we overlay.
+	// active editor/game window, then auto-destroys via WM_TIMER. The runtime
+	// capture is silent, so the affordance stays app-side (we can't intercept
+	// UE's WindowProc cleanly, so we overlay).
 	static const TCHAR* kFlashClassName = TEXT("DisplayXRCaptureFlash");
 	static const UINT_PTR kFlashTimerId = 1;
 	static bool bFlashClassRegistered = false;
@@ -168,88 +158,49 @@ namespace DisplayXRAtlasCaptureNS
 	}
 #endif // PLATFORM_WINDOWS
 
-	static bool EncodeAndSavePng(const TArray<FColor>& Pixels, int32 W, int32 H, const FString& OutPath)
+	static void DoCapture_GameThread()
 	{
-		IImageWrapperModule& Module = FModuleManager::LoadModuleChecked<IImageWrapperModule>(TEXT("ImageWrapper"));
-		TSharedPtr<IImageWrapper> Wrapper = Module.CreateImageWrapper(EImageFormat::PNG);
-		if (!Wrapper.IsValid())
+		check(IsInGameThread());
+
+		FDisplayXRSession* Session = FDisplayXRCoreModule::GetSession();
+		if (!Session)
 		{
-			return false;
+			UE_LOG(LogDisplayXRCapture, Warning, TEXT("Atlas capture skipped: no active session"));
+			return;
 		}
-		const int64 RawSize = (int64)W * H * sizeof(FColor);
-		if (!Wrapper->SetRaw(Pixels.GetData(), RawSize, W, H, ERGBFormat::BGRA, 8))
+
+		const FDisplayXRViewConfig View = Session->GetViewConfig();
+		const int32 Cols = FMath::Max(View.TileColumns, 1);
+		const int32 Rows = FMath::Max(View.TileRows, 1);
+		if (Cols <= 1 && Rows <= 1)
 		{
-			return false;
+			UE_LOG(LogDisplayXRCapture, Warning, TEXT("Atlas capture skipped: mono (1x1) layout"));
+			return;
 		}
-		const TArray64<uint8>& Compressed = Wrapper->GetCompressed(/*Quality=*/100);
-		if (Compressed.Num() == 0)
+
+		const FString Prefix = MakeOutputPrefix(Cols, Rows);
+		// PROJECTION_ONLY: the app's projection atlas (no runtime chrome), parity
+		// with the native test apps. The runtime appends "_atlas.png".
+		const bool bOk = Session->CaptureAtlas(Prefix, /*bProjectionOnly=*/true);
+		if (bOk)
 		{
-			return false;
+			UE_LOG(LogDisplayXRCapture, Log, TEXT("Atlas capture requested -> %s_atlas.png"), *Prefix);
+#if PLATFORM_WINDOWS
+			TriggerFlashOverlay_GameThread();
+#endif
 		}
-		return FFileHelper::SaveArrayToFile(Compressed, *OutPath);
 	}
 }
 
 void FDisplayXRAtlasCapture::RequestCapture()
 {
-	const int32 New = DisplayXRAtlasCaptureNS::PendingRequests.Increment();
-	UE_LOG(LogDisplayXRCapture, Log, TEXT("Atlas capture armed (pending=%d)"), New);
-}
-
-void FDisplayXRAtlasCapture::ProcessRequest_RenderThread(
-	FRHICommandListImmediate& RHICmdList,
-	FRHITexture* AtlasSrc,
-	int32 AtlasW,
-	int32 AtlasH,
-	int32 Cols,
-	int32 Rows)
-{
 	using namespace DisplayXRAtlasCaptureNS;
-
-	if (PendingRequests.GetValue() <= 0) return;
-	if (!AtlasSrc || AtlasW <= 0 || AtlasH <= 0 || Cols <= 0 || Rows <= 0)
+	if (IsInGameThread())
 	{
-		// Drain the request even if we can't service it — avoids a sticky arm.
-		PendingRequests.Decrement();
-		UE_LOG(LogDisplayXRCapture, Warning, TEXT("Atlas capture skipped: bad inputs (Atlas=%dx%d Tiles=%dx%d)"), AtlasW, AtlasH, Cols, Rows);
-		return;
-	}
-
-	const FIntRect Rect(0, 0, AtlasW, AtlasH);
-	TArray<FColor> Pixels;
-	RHICmdList.ReadSurfaceData(AtlasSrc, Rect, Pixels, FReadSurfaceDataFlags());
-
-	if (Pixels.Num() < AtlasW * AtlasH)
-	{
-		PendingRequests.Decrement();
-		UE_LOG(LogDisplayXRCapture, Warning, TEXT("Atlas capture: ReadSurfaceData returned %d pixels, expected %d"), Pixels.Num(), AtlasW * AtlasH);
-		return;
-	}
-
-	// Force opaque alpha. The swapchain's alpha channel is undefined for
-	// display output (compositor doesn't use it); leaving it at 0 produces a
-	// fully transparent PNG that renders black in image viewers.
-	for (FColor& C : Pixels)
-	{
-		C.A = 0xFF;
-	}
-
-	const FString OutPath = MakeOutputPath(Cols, Rows);
-	const bool bSaved = EncodeAndSavePng(Pixels, AtlasW, AtlasH, OutPath);
-	PendingRequests.Decrement();
-
-	if (bSaved)
-	{
-		UE_LOG(LogDisplayXRCapture, Log, TEXT("Atlas captured: %s (%dx%d, %dx%d tiles)"), *OutPath, AtlasW, AtlasH, Cols, Rows);
-#if PLATFORM_WINDOWS
-		AsyncTask(ENamedThreads::GameThread, []()
-		{
-			TriggerFlashOverlay_GameThread();
-		});
-#endif
+		DoCapture_GameThread();
 	}
 	else
 	{
-		UE_LOG(LogDisplayXRCapture, Error, TEXT("Atlas capture: failed to write PNG to %s"), *OutPath);
+		AsyncTask(ENamedThreads::GameThread, []() { DoCapture_GameThread(); });
 	}
 }

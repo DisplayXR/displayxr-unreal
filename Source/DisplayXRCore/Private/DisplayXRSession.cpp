@@ -454,6 +454,7 @@ bool FDisplayXRSession::CreateInstance()
 
 	const char* Extensions[] = {
 		XR_EXT_DISPLAY_INFO_EXTENSION_NAME,
+		XR_EXT_ATLAS_CAPTURE_EXTENSION_NAME,
 #if PLATFORM_WINDOWS
 		"XR_KHR_D3D12_enable",
 		XR_EXT_WIN32_WINDOW_BINDING_EXTENSION_NAME,
@@ -634,6 +635,8 @@ bool FDisplayXRSession::CreateSession()
 		(PFN_xrVoidFunction*)&xrRequestDisplayModeFunc);
 	xrGetInstanceProcAddrFunc(Instance, "xrEnumerateDisplayRenderingModesEXT",
 		(PFN_xrVoidFunction*)&xrEnumerateDisplayRenderingModesFunc);
+	xrGetInstanceProcAddrFunc(Instance, "xrCaptureAtlasEXT",
+		(PFN_xrVoidFunction*)&xrCaptureAtlasFunc);
 
 	// Query rendering modes to get tile layout and view dimensions
 	QueryRenderingModes();
@@ -885,6 +888,43 @@ bool FDisplayXRSession::RequestDisplayMode(bool bMode3D)
 	return false;
 }
 
+bool FDisplayXRSession::CaptureAtlas(const FString& PathPrefixUtf8, bool bProjectionOnly)
+{
+	if (!xrCaptureAtlasFunc)
+	{
+		UE_LOG(LogDisplayXRSession, Warning,
+			TEXT("DisplayXR Session: xrCaptureAtlasEXT unavailable — capture skipped"));
+		return false;
+	}
+	if (Session == XR_NULL_HANDLE)
+	{
+		UE_LOG(LogDisplayXRSession, Warning,
+			TEXT("DisplayXR Session: no active session — capture skipped"));
+		return false;
+	}
+
+	XrAtlasCaptureInfoEXT Info = {XR_TYPE_ATLAS_CAPTURE_INFO_EXT};
+	Info.next = nullptr;
+	Info.stage = bProjectionOnly
+		? XR_ATLAS_CAPTURE_STAGE_PROJECTION_ONLY_EXT
+		: XR_ATLAS_CAPTURE_STAGE_POST_COMPOSE_EXT;
+	// Runtime appends "_atlas.png" to pathPrefix. The field is a fixed in-struct
+	// char array (it crosses the IPC schema), so truncate to its capacity.
+	FCStringAnsi::Strncpy(Info.pathPrefix, TCHAR_TO_ANSI(*PathPrefixUtf8),
+		XR_ATLAS_CAPTURE_PATH_MAX_EXT);
+
+	const XrResult Result = xrCaptureAtlasFunc(Session, &Info, nullptr);
+	if (!XR_SUCCEEDED(Result))
+	{
+		UE_LOG(LogDisplayXRSession, Warning,
+			TEXT("DisplayXR Session: xrCaptureAtlasEXT failed (%d)"), (int)Result);
+		return false;
+	}
+	UE_LOG(LogDisplayXRSession, Log,
+		TEXT("DisplayXR Session: atlas capture requested -> %s_atlas.png"), *PathPrefixUtf8);
+	return true;
+}
+
 void FDisplayXRSession::SetTunables(const FDisplayXRTunables& InTunables)
 {
 	const int32 WriteIdx = 1 - TunablesReadIndex.Load();
@@ -1036,6 +1076,8 @@ bool FDisplayXRSession::CreateSessionWithGraphics(void* D3DDevice, void* Command
 		(PFN_xrVoidFunction*)&xrRequestDisplayModeFunc);
 	xrGetInstanceProcAddrFunc(Instance, "xrEnumerateDisplayRenderingModesEXT",
 		(PFN_xrVoidFunction*)&xrEnumerateDisplayRenderingModesFunc);
+	xrGetInstanceProcAddrFunc(Instance, "xrCaptureAtlasEXT",
+		(PFN_xrVoidFunction*)&xrCaptureAtlasFunc);
 
 	QueryRenderingModes();
 
