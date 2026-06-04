@@ -81,6 +81,19 @@ public:
 	/** Request 2D or 3D display mode. Updates ViewConfig on success. */
 	bool RequestDisplayMode(bool bMode3D);
 
+	/**
+	 * Runtime-owned atlas capture (XR_EXT_atlas_capture). Latches a request for
+	 * the runtime to write the session's multi-view atlas to
+	 * "<PathPrefix>_atlas.png" at the given stage. Non-blocking; the PNG lands at
+	 * the next composed frame. Returns false if the extension is unavailable.
+	 * @param PathPrefixUtf8  Output path WITHOUT extension (runtime appends "_atlas.png").
+	 * @param bProjectionOnly PROJECTION_ONLY (true) vs POST_COMPOSE (false).
+	 */
+	bool CaptureAtlas(const FString& PathPrefixUtf8, bool bProjectionOnly = true);
+
+	/** True if the runtime exported xrCaptureAtlasEXT and it resolved. */
+	bool HasAtlasCapture() const { return xrCaptureAtlasFunc != nullptr; }
+
 	/** Create the OpenXR session with D3D graphics binding and HWND.
 	 *  Must be called once the game viewport and RHI device are available. */
 	bool CreateSessionWithGraphics(void* D3DDevice, void* CommandQueue, void* WindowHandle);
@@ -133,6 +146,7 @@ private:
 	PFN_xrGetInstanceProcAddr xrGetInstanceProcAddrFunc = nullptr;
 	PFN_xrRequestDisplayModeEXT xrRequestDisplayModeFunc = nullptr;
 	PFN_xrEnumerateDisplayRenderingModesEXT xrEnumerateDisplayRenderingModesFunc = nullptr;
+	PFN_xrCaptureAtlasEXT xrCaptureAtlasFunc = nullptr;
 
 	// Display info (written once at init)
 	FDisplayXRDisplayInfo DisplayInfo;

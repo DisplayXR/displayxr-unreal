@@ -2,7 +2,6 @@
 // SPDX-License-Identifier: BSL-1.0
 
 #include "DisplayXRDevice.h"
-#include "DisplayXRAtlasCapture.h"
 #include "DisplayXRStereoMath.h"
 #include "DisplayXRRigManager.h"
 #include "DisplayXRPlatform.h"
@@ -728,27 +727,13 @@ void FDisplayXRDevice::PostRenderViewFamily_RenderThread(FRDGBuilder& GraphBuild
 		SrcTextureRHI = InViewFamily.RenderTarget->GetRenderTargetTexture();
 	}
 
-	// Atlas dims must be window-relative (matches AdjustViewRect / compositor
-	// imageRect post-window-relative-Kooima merge), NOT panel-relative.
-	// FDisplayXRViewConfig::GetAtlasW/H still returns panel-based dims for the
-	// swapchain allocation; the actually-rendered region is the top-left
-	// (Cols * windowW * scaleX) x (Rows * windowH * scaleY) sub-rect.
-	const int32 Cols = FMath::Max(CachedViewConfig.TileColumns, 1);
-	const int32 Rows = FMath::Max(CachedViewConfig.TileRows, 1);
-	CacheWindowSize();
-	const int32 TileW = FMath::Max(1, FMath::RoundToInt(CachedWindowW * CachedViewConfig.ScaleX));
-	const int32 TileH = FMath::Max(1, FMath::RoundToInt(CachedWindowH * CachedViewConfig.ScaleY));
-	const int32 AtlasW = Cols * TileW;
-	const int32 AtlasH = Rows * TileH;
-
+	// Atlas capture is now runtime-owned (xrCaptureAtlasEXT, driven from
+	// FDisplayXRAtlasCapture::RequestCapture); no app-side RHI readback here.
 	GraphBuilder.AddPass(
 		RDG_EVENT_NAME("DisplayXR_ReleaseSwapchain"),
 		ERDGPassFlags::NeverCull,
-		[Comp, SrcTextureRHI, AtlasW, AtlasH, Cols, Rows](FRHICommandListImmediate& RHICmdList)
+		[Comp, SrcTextureRHI](FRHICommandListImmediate& RHICmdList)
 		{
-			// Capture before release: swapchain image is still in the rendered
-			// state here; ReleaseImage transitions it to PRESENT.
-			FDisplayXRAtlasCapture::ProcessRequest_RenderThread(RHICmdList, SrcTextureRHI, AtlasW, AtlasH, Cols, Rows);
 			Comp->ReleaseImage_RenderThread(RHICmdList, SrcTextureRHI);
 		});
 }
