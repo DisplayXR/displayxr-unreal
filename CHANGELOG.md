@@ -4,6 +4,18 @@ All notable changes to the DisplayXR Unreal plugin are documented here.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.3.1] - 2026-06-04
+
+### Added
+- ABI-drift guard: OpenXR extension headers are now vendored verbatim from `displayxr-runtime` (pinned in `.displayxr-runtime-abi`), with a CI `abi-guard` job that fails on drift.
+
+### Fixed
+- Black-window regression on standalone/PIE caused by Win32 window-binding struct ABI drift (the runtime grew `transparentBackgroundEnabled` / `chromaKeyColor`).
+- Crash on close (`EXCEPTION_ACCESS_VIOLATION`): the session was destroyed before its child space. Shutdown now destroys ViewSpace → Session → Instance in order.
+
+### Changed
+- Atlas/screenshot capture reverted to app-side RHI readback. The runtime `xrCaptureAtlasEXT` path washes out the D3D12/BGRA swapchain (runtime bug DisplayXR/displayxr-runtime#425); the EXT variant lives on branch `ext-atlas-capture`.
+
 ## [0.2.1] - 2026-05-07
 
 ### Fixed
