@@ -15,9 +15,11 @@ jobs:
           # Constructed at runtime so this workflow does not contain the literal string.
           # CHANGELOG.md is excluded — it's the historical record and may
           # legitimately reference the original vendor SDK by name (e.g. the
-          # pre-deprivatize port).
+          # pre-deprivatize port). CLAUDE.md is excluded — it documents the
+          # DisplayXR org (sibling repos / bundle), which legitimately names
+          # the vendor display-processor plug-in repo by its published name.
           FORBIDDEN="le""ia"
-          if grep -rniI --exclude-dir=.git --exclude=CHANGELOG.md "$FORBIDDEN" .; then
+          if grep -rniI --exclude-dir=.git --exclude=CHANGELOG.md --exclude=CLAUDE.md "$FORBIDDEN" .; then
             echo "::error::Forbidden vendor name found in tracked files."
             exit 1
           fi
