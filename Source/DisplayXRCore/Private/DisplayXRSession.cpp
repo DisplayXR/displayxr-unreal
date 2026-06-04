@@ -236,10 +236,37 @@ bool FDisplayXRSession::LoadOpenXRLoader()
 		}
 	}
 
-	// Step 2: Try loading runtime DLL directly and negotiating
+	// Step 2: Try loading runtime DLL directly and negotiating.
+	//
+	// The runtime DLL imports sibling DLLs that live next to it in the
+	// install's Runtime dir (cjson.dll, pthreadVCE3.dll, …). A host process
+	// (e.g. a packaged Unreal game) does NOT have that dir on its loader
+	// search path, and Unreal hardens the search via SetDefaultDllDirectories,
+	// so a plain LoadLibraryW of the absolute runtime path fails dependency
+	// resolution with ERROR_MOD_NOT_FOUND (126) even though the DLL exists.
+	//
+	// Belt-and-suspenders: (1) preload those siblings by ABSOLUTE path so the
+	// runtime DLL's static imports bind to already-loaded modules regardless
+	// of any search-path policy, and (2) load the runtime DLL itself with its
+	// own directory added to the dependency search (LOAD_LIBRARY_SEARCH_*,
+	// the hardening-compatible successor to LOAD_WITH_ALTERED_SEARCH_PATH).
 	if (!RuntimeDllPath.IsEmpty())
 	{
-		LoaderHandle = (void*)LoadLibraryW(*RuntimeDllPath);
+		const uint32 SearchFlags = LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_DEFAULT_DIRS;
+		const FString RuntimeDir = FPaths::GetPath(RuntimeDllPath);
+		static const TCHAR* LocalDeps[] = {
+			TEXT("cjson.dll"), TEXT("pthreadVCE3.dll"),
+			TEXT("pthreadVC3.dll"), TEXT("SDL2.dll"),
+		};
+		for (const TCHAR* Dep : LocalDeps)
+		{
+			const FString DepPath = RuntimeDir / Dep;
+			if (FPaths::FileExists(DepPath))
+			{
+				LoadLibraryExW(*DepPath, nullptr, SearchFlags);
+			}
+		}
+		LoaderHandle = (void*)LoadLibraryExW(*RuntimeDllPath, nullptr, SearchFlags);
 		if (LoaderHandle)
 		{
 			UE_LOG(LogDisplayXRSession, Log, TEXT("DisplayXR Session: Loaded runtime DLL: %s"), *RuntimeDllPath);
