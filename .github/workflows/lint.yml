@@ -31,3 +31,44 @@ jobs:
         run: |
           python3 -m pip install --quiet pyyaml
           python3 -c "import yaml, glob; [yaml.safe_load(open(f)) for f in glob.glob('.github/workflows/*.yml')]"
+
+  abi-guard:
+    # The DisplayXR OpenXR extension headers under
+    # Source/DisplayXRCore/Private/Native/openxr/ are vendored VERBATIM from
+    # DisplayXR/displayxr-runtime (public) at the commit pinned in
+    # .displayxr-runtime-abi. Re-declaring these structs by hand is what caused
+    # the black-window ABI drift; this job fails the build if a vendored copy no
+    # longer matches the pinned runtime, so drift is a red check, not a mystery.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Vendored OpenXR extension headers match the pinned runtime
+        run: |
+          set -uo pipefail
+          PIN=$(grep -vE '^\s*#|^\s*$' .displayxr-runtime-abi | head -n1 | tr -d '[:space:]')
+          if [ -z "$PIN" ]; then
+            echo "::error file=.displayxr-runtime-abi::No runtime SHA found (expected a 40-char commit SHA on its own line)."
+            exit 1
+          fi
+          echo "Pinned displayxr-runtime ABI ref: $PIN"
+          BASE="https://raw.githubusercontent.com/DisplayXR/displayxr-runtime/$PIN/src/external/openxr_includes/openxr"
+          VEND="Source/DisplayXRCore/Private/Native/openxr"
+          HEADERS="XR_EXT_display_info.h XR_EXT_atlas_capture.h XR_EXT_win32_window_binding.h XR_EXT_cocoa_window_binding.h"
+          rc=0
+          for h in $HEADERS; do
+            if ! curl -fsSL "$BASE/$h" -o "/tmp/$h"; then
+              echo "::error::Failed to fetch $h from displayxr-runtime@$PIN — bad SHA in .displayxr-runtime-abi, or the header moved/renamed upstream."
+              rc=1; continue
+            fi
+            # --strip-trailing-cr: compare content only, ignore CRLF vs LF so a
+            # Windows checkout (autocrlf) doesn't read as drift against the LF
+            # source served by raw.githubusercontent.
+            if diff --strip-trailing-cr -u "/tmp/$h" "$VEND/$h"; then
+              echo "ok: $h matches displayxr-runtime@$PIN"
+            else
+              echo "::error file=$VEND/$h::Vendored header has drifted from displayxr-runtime@$PIN. Re-copy it from the runtime at the pinned SHA, or bump .displayxr-runtime-abi to adopt new protocol."
+              rc=1
+            fi
+          done
+          exit $rc
