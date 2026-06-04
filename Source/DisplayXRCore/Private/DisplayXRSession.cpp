@@ -101,18 +101,12 @@ bool FDisplayXRSession::Initialize()
 
 void FDisplayXRSession::Shutdown()
 {
-	if (Session != XR_NULL_HANDLE)
-	{
-		PFN_xrDestroySession xrDestroySessionFunc = nullptr;
-		xrGetInstanceProcAddrFunc(Instance, "xrDestroySession",
-			(PFN_xrVoidFunction*)&xrDestroySessionFunc);
-		if (xrDestroySessionFunc)
-		{
-			xrDestroySessionFunc(Session);
-		}
-		Session = XR_NULL_HANDLE;
-	}
-
+	// Destroy in REVERSE creation order: spaces are children of the session, so
+	// the session must outlive them. xrDestroySession frees all child spaces, so
+	// destroying the session FIRST and then calling xrDestroySpace(ViewSpace)
+	// dereferences a freed handle inside the runtime → EXCEPTION_ACCESS_VIOLATION
+	// on close (DisplayXRClient frame, DisplayXRSession.cpp:123). Space → session
+	// → instance is the correct teardown order.
 	if (ViewSpace != XR_NULL_HANDLE)
 	{
 		PFN_xrDestroySpace xrDestroySpaceFunc = nullptr;
@@ -123,6 +117,18 @@ void FDisplayXRSession::Shutdown()
 			xrDestroySpaceFunc(ViewSpace);
 		}
 		ViewSpace = XR_NULL_HANDLE;
+	}
+
+	if (Session != XR_NULL_HANDLE)
+	{
+		PFN_xrDestroySession xrDestroySessionFunc = nullptr;
+		xrGetInstanceProcAddrFunc(Instance, "xrDestroySession",
+			(PFN_xrVoidFunction*)&xrDestroySessionFunc);
+		if (xrDestroySessionFunc)
+		{
+			xrDestroySessionFunc(Session);
+		}
+		Session = XR_NULL_HANDLE;
 	}
 
 	if (Instance != XR_NULL_HANDLE)
