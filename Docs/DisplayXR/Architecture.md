@@ -111,7 +111,7 @@ FDisplayXRPlatform::RequestEyeTrackingMode(bManual);
 
 ## Kooima math lives in portable C
 
-`Source/DisplayXRCore/Private/Native/{camera3d_view, display3d_view}.{c,h}` are portable C, shared byte-for-byte with the [displayxr-unity](https://github.com/DisplayXR/displayxr-unity) sibling plugin. Keep them engine-agnostic — no UE or Unity types. Sync changes both directions.
+The Kooima math (`{camera3d_view, display3d_view}.{c,h}`) is the shared [displayxr-common](https://github.com/DisplayXR/displayxr-common) `displayxr::math` library, pinned as a git submodule at `Source/ThirdParty/displayxr-common` and compiled into `DisplayXRCore` via the `Private/Native/*_impl.c` shims. Changes land upstream (tag + pin bump), never in-tree — the same library is consumed by the runtime test apps, both demos, and the [displayxr-unity](https://github.com/DisplayXR/displayxr-unity) sibling plugin.
 
 `DisplayXRStereoMath.h` wraps the Kooima output into UE-native reverse-Z off-axis projection matrices (see [ADR-003](./adr/ADR-003-ue-native-off-axis-projection.md) for why we don't consume Kooima's `projection_matrix[16]` directly).
 

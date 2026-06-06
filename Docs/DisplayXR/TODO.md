@@ -60,5 +60,5 @@ The Unity sibling has a more mature docs tree. Bring Unreal up to parity so user
 
 ## 5. Known issues / cleanup
 
-- Kooima C libs (`camera3d_view.c/h`, `display3d_view.c/h`) are shared with `displayxr-unity`. Keep them engine-agnostic — no UE or Unity types — and sync changes both directions.
+- Kooima C libs (`camera3d_view.c/h`, `display3d_view.c/h`) come from the `displayxr-common` submodule (`Source/ThirdParty/displayxr-common`). Change them upstream (tag + pin bump), never in-tree.
 - Some file-header years are `2025-2026`; new files should use `2026-` or extend the range as appropriate.

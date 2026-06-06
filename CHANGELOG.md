@@ -4,6 +4,13 @@ All notable changes to the DisplayXR Unreal plugin are documented here.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Changed
+- Kooima math now comes from the shared [`displayxr-common`](https://github.com/DisplayXR/displayxr-common) `displayxr::math` library (v0.2.0), pinned as a git submodule at `Source/ThirdParty/displayxr-common` and compiled into `DisplayXRCore` via `Private/Native/*_impl.c` shims. The vendored `Private/Native/{display3d_view,camera3d_view}.{c,h}` copies are deleted. Run `git submodule update --init` after pulling.
+- `display3d_compute_views` call sites migrated to the superset API: ZDP-anchored `near_offset`/`far_offset` clip (inert here — UE rebuilds its own reverse-Z projection and only consumes `eye_display`) + `vulkan_flip_y=0` (matches the old no-flip behavior).
+- Window-relative Kooima input-prep (window-center→display-center offset + screen-Y-down→eye-Y-up flip) in `DisplayXRDevice::ComputeViews` and `DisplayXRPreviewSession` replaced by the library's Layer 1 `display3d_resolve_window_rect()`; only the platform rect fetch stays plugin-side.
+
 ## [0.3.1] - 2026-06-04
 
 ### Added

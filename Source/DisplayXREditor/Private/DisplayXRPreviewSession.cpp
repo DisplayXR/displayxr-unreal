@@ -42,11 +42,13 @@
 // All static inline — no link dependency on DisplayXRCore internals
 #include "DisplayXRStereoMath.h"
 
-// Kooima view library — include the .c implementation directly since
-// display3d_compute_views is compiled into DisplayXRCore but not exported.
-// The header has extern "C" guards so this is safe from C++ name mangling.
-#include "display3d_view.c"
-#include "camera3d_view.c"
+// Kooima view library (shared displayxr::math, Source/ThirdParty/displayxr-common
+// submodule). DisplayXRCore compiles its own copy but does not export it, so
+// this module rebuilds the implementation via the Private/*_impl.c shims
+// (compiled as C — the .c uses C compound literals and can't be #included
+// into C++). The headers carry their own extern "C" guards.
+#include "display3d_view.h"
+#include "camera3d_view.h"
 
 // D3D12 swapchain image struct (not in bundled openxr.h)
 #define XR_TYPE_SWAPCHAIN_IMAGE_D3D12_KHR_VALUE ((XrStructureType)1000028001)
@@ -1805,63 +1807,53 @@ void FDisplayXRPreviewSession::RenderAndBlit(uint32_t ImageIndex)
 	RawEyes[1] = {(float)RightEyeRaw.X, (float)RightEyeRaw.Y, (float)RightEyeRaw.Z};
 
 	// -----------------------------------------------------------------------
-	// Window-relative Kooima (matches openxr-3d-display test app pattern):
-	// - Screen dimensions = physical window size in meters (not full display)
-	// - Eye positions offset by distance from window center to display center
+	// Window-relative Kooima (Layer 1 of displayxr::math, matches
+	// DisplayXRDevice::ComputeViews): the platform rect fetch stays here;
+	// rect → screen-dims + eye-offset math (incl. the screen-Y-down →
+	// eye-Y-up flip) lives in display3d_resolve_window_rect().
 	// -----------------------------------------------------------------------
 	float DispW_m = DisplayInfo.DisplayWidthMeters > 0.0f ? DisplayInfo.DisplayWidthMeters : 0.344f;
 	float DispH_m = DisplayInfo.DisplayHeightMeters > 0.0f ? DisplayInfo.DisplayHeightMeters : 0.194f;
 	float DispPxW = DisplayInfo.DisplayPixelWidth > 0 ? (float)DisplayInfo.DisplayPixelWidth : 3840.0f;
 	float DispPxH = DisplayInfo.DisplayPixelHeight > 0 ? (float)DisplayInfo.DisplayPixelHeight : 2160.0f;
-	float PxSizeX = DispW_m / DispPxW;
-	float PxSizeY = DispH_m / DispPxH;
 
-	// Default to full display
-	Display3DScreen Screen;
-	Screen.width_m = DispW_m;
-	Screen.height_m = DispH_m;
-	float EyeOffsetX_m = 0.0f;
-	float EyeOffsetY_m = 0.0f;
+	// Default placement = full display (no window → display-centered frustum).
+	Display3DWindowPlacement Placement;
+	Placement.display_width_m   = DispW_m;
+	Placement.display_height_m  = DispH_m;
+	Placement.display_width_px  = DispPxW;
+	Placement.display_height_px = DispPxH;
+	Placement.rect_center_x_px  = DispPxW * 0.5f;
+	Placement.rect_center_y_px  = DispPxH * 0.5f;
+	Placement.rect_width_px     = DispPxW;
+	Placement.rect_height_px    = DispPxH;
 
 #if PLATFORM_WINDOWS
 	if (PreviewHWND)
 	{
-		// Window client area size in pixels
+		// Window client area size + position on its monitor
 		RECT rc;
 		GetClientRect((HWND)PreviewHWND, &rc);
 		float WinPxW = (float)(rc.right - rc.left);
 		float WinPxH = (float)(rc.bottom - rc.top);
 
-		// Window physical size in meters
-		if (WinPxW > 0 && WinPxH > 0)
-		{
-			Screen.width_m = WinPxW * PxSizeX;
-			Screen.height_m = WinPxH * PxSizeY;
-		}
-
-		// Window center offset from display center (meters)
 		POINT ClientOrigin = {0, 0};
 		ClientToScreen((HWND)PreviewHWND, &ClientOrigin);
 		HMONITOR hMon = MonitorFromWindow((HWND)PreviewHWND, MONITOR_DEFAULTTONEAREST);
 		MONITORINFO mi = {sizeof(mi)};
-		if (GetMonitorInfo(hMon, &mi))
+		if (WinPxW > 0 && WinPxH > 0 && GetMonitorInfo(hMon, &mi))
 		{
-			float WinCenterX = (float)(ClientOrigin.x - mi.rcMonitor.left) + WinPxW / 2.0f;
-			float WinCenterY = (float)(ClientOrigin.y - mi.rcMonitor.top) + WinPxH / 2.0f;
-			float MonW = (float)(mi.rcMonitor.right - mi.rcMonitor.left);
-			float MonH = (float)(mi.rcMonitor.bottom - mi.rcMonitor.top);
-
-			EyeOffsetX_m = (WinCenterX - MonW / 2.0f) * PxSizeX;
-			EyeOffsetY_m = -((WinCenterY - MonH / 2.0f) * PxSizeY);
+			// Monitor pixel dims (not DisplayInfo's) keep rect center and
+			// display center in the same pixel space.
+			Placement.display_width_px  = (float)(mi.rcMonitor.right - mi.rcMonitor.left);
+			Placement.display_height_px = (float)(mi.rcMonitor.bottom - mi.rcMonitor.top);
+			Placement.rect_center_x_px  = (float)(ClientOrigin.x - mi.rcMonitor.left) + WinPxW * 0.5f;
+			Placement.rect_center_y_px  = (float)(ClientOrigin.y - mi.rcMonitor.top)  + WinPxH * 0.5f;
+			Placement.rect_width_px     = WinPxW;
+			Placement.rect_height_px    = WinPxH;
 		}
 	}
 #endif
-
-	// Offset raw eyes by window center position (display-relative → window-relative)
-	RawEyes[0].x -= EyeOffsetX_m;
-	RawEyes[0].y -= EyeOffsetY_m;
-	RawEyes[1].x -= EyeOffsetX_m;
-	RawEyes[1].y -= EyeOffsetY_m;
 
 	// Nominal viewer
 	XrVector3f NominalViewer = {
@@ -1873,9 +1865,15 @@ void FDisplayXRPreviewSession::RenderAndBlit(uint32_t ImageIndex)
 	{
 		NominalViewer = {0.0f, 0.0f, 0.5f};
 	}
-	// Also offset nominal viewer to window-relative
-	NominalViewer.x -= EyeOffsetX_m;
-	NominalViewer.y -= EyeOffsetY_m;
+
+	// Resolve rect → Kooima screen dims + rect-center-relative eyes. The
+	// nominal viewer rides along so it stays in the same frame as the eyes.
+	XrVector3f RectPoints[3] = { RawEyes[0], RawEyes[1], NominalViewer };
+	Display3DScreen Screen;
+	display3d_resolve_window_rect(&Placement, RectPoints, 3, &Screen, RectPoints);
+	RawEyes[0] = RectPoints[0];
+	RawEyes[1] = RectPoints[1];
+	NominalViewer = RectPoints[2];
 
 	// -----------------------------------------------------------------------
 	// Read tunables + camera transform from active rig (or defaults if no rig)
@@ -2037,9 +2035,15 @@ void FDisplayXRPreviewSession::RenderAndBlit(uint32_t ImageIndex)
 		DT.virtual_display_height = RigVirtualDisplayHeight > 0.0f
 			? RigVirtualDisplayHeight : DispH_m;
 
+		// ZDP-anchored clip offsets (superset API) — inert here: only
+		// eye_display is consumed, the projection is rebuilt below.
+		// vulkan_flip_y=0 keeps the clean +Y-up frame (old no-flip behavior).
 		Display3DView KooimaViews[2];
 		display3d_compute_views(RawEyes, 2, &NominalViewer, &Screen,
-			&DT, &DisplayPose, 0.1f, 10000.0f, KooimaViews);
+			&DT, &DisplayPose,
+			/*near_offset=*/DT.virtual_display_height,
+			/*far_offset=*/1000.0f * DT.virtual_display_height,
+			/*vulkan_flip_y=*/0, KooimaViews);
 
 		for (int32 i = 0; i < 2; i++)
 		{
@@ -2060,8 +2064,9 @@ void FDisplayXRPreviewSession::RenderAndBlit(uint32_t ImageIndex)
 	if (RenderCount <= 3 || RenderCount % 300 == 0)
 	{
 		UE_LOG(LogDisplayXRPreviewSession, Log,
-			TEXT("Preview #%d: winScreen=%.3fx%.3f m eyeOff=(%.4f,%.4f) m"),
-			RenderCount, Screen.width_m, Screen.height_m, EyeOffsetX_m, EyeOffsetY_m);
+			TEXT("Preview #%d: winScreen=%.3fx%.3f m rectCenter=(%.0f,%.0f) px"),
+			RenderCount, Screen.width_m, Screen.height_m,
+			Placement.rect_center_x_px, Placement.rect_center_y_px);
 		UE_LOG(LogDisplayXRPreviewSession, Log,
 			TEXT("Preview #%d: rig=%s cameraCentric=%d pos=(%f,%f,%f) rot=(%f,%f,%f)"),
 			RenderCount, *GetActiveRigName(), bCameraCentric,

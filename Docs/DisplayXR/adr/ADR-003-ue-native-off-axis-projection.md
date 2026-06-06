@@ -42,5 +42,5 @@ Eye positions pass through `OpenXRPositionToUE(const XrVector3f&)` and `OpenXROr
 ## Related
 
 - `Source/DisplayXRCore/Private/DisplayXRStereoMath.h` — the matrix + eye-offset helpers
-- `Source/DisplayXRCore/Private/Native/camera3d_view.c` / `display3d_view.c` — Kooima source (shared with Unity)
+- `Source/ThirdParty/displayxr-common/include/camera3d_view.c` / `display3d_view.c` — Kooima source (shared `displayxr::math` submodule)
 - [EyeTracking.md](../EyeTracking.md) — the full `xrLocateViews` → Kooima → UE pipeline
