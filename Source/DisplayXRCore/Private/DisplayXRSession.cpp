@@ -941,8 +941,9 @@ bool FDisplayXRSession::CaptureAtlas(const FString& PathPrefixUtf8, bool bProjec
 	Info.stage = bProjectionOnly
 		? XR_ATLAS_CAPTURE_STAGE_PROJECTION_ONLY_EXT
 		: XR_ATLAS_CAPTURE_STAGE_POST_COMPOSE_EXT;
-	// Runtime appends "_atlas.png" to pathPrefix. The field is a fixed in-struct
-	// char array (it crosses the IPC schema), so truncate to its capacity.
+	// Runtime appends "_atlas_<viewCount>_<cols>x<rows>.png" to pathPrefix
+	// (DisplayXR/displayxr-runtime#425). The field is a fixed in-struct char array
+	// (it crosses the IPC schema), so truncate to its capacity.
 	FCStringAnsi::Strncpy(Info.pathPrefix, TCHAR_TO_ANSI(*PathPrefixUtf8),
 		XR_ATLAS_CAPTURE_PATH_MAX_EXT);
 
@@ -954,7 +955,8 @@ bool FDisplayXRSession::CaptureAtlas(const FString& PathPrefixUtf8, bool bProjec
 		return false;
 	}
 	UE_LOG(LogDisplayXRSession, Log,
-		TEXT("DisplayXR Session: atlas capture requested -> %s_atlas.png"), *PathPrefixUtf8);
+		TEXT("DisplayXR Session: atlas capture requested (prefix=%s; runtime appends _atlas_<viewCount>_<cols>x<rows>.png)"),
+		*PathPrefixUtf8);
 	return true;
 }
 

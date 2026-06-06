@@ -4,6 +4,13 @@ All notable changes to the DisplayXR Unreal plugin are documented here.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Changed
+- Atlas/screenshot capture restored to the runtime-owned `xrCaptureAtlasEXT` path (un-reverts the app-side RHI readback). The runtime bug that produced black/transparent and washed-out PNGs is fixed in `DisplayXR/displayxr-runtime#425` (opaque-alpha encode), so the EXT path from `ext-atlas-capture` is now the default again.
+- Capture filenames adopt the runtime-owned suffix `<Project>-<N>_atlas_<viewCount>_<cols>x<rows>.png`: the plugin passes a bare `<Project>-<N>` prefix (no pre-baked layout tokens) and the runtime appends the layout, so the final name no longer duplicates it. Sequence numbering scans the `<Project>-<N>_atlas_*.png` names.
+- ABI pin (`.displayxr-runtime-abi`) bumped to runtime `964277f` (the displayxr-runtime#432 merge): vendored `XR_EXT_atlas_capture.h` updated to SPEC_VERSION 2 (struct-identical to v1 — the bump documents the opaque-alpha encode and the layout-encoded filename suffix). Requires runtime ≥ v1.12.0 for correct (non-transparent) captures.
+
 ## [0.4.0] - 2026-06-05
 
 ### Changed

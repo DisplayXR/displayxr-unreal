@@ -23,6 +23,8 @@ jobs:
       - name: No re-vendored displayxr::math sources
         shell: bash
         run: |
+          # FetchContent copies live in _deps/ (gitignored) and a git submodule's
+          # files are not parent-tracked, so neither trips this check.
           hits=$(git ls-files | grep -E '(^|/)(display3d_view|camera3d_view)\.(c|h)$' || true)
           if [ -n "$hits" ]; then
             echo "::error::Re-vendored displayxr::math sources found. The off-axis Kooima"

@@ -18,4 +18,4 @@
 # matrix: this plugin is a downstream consumer of the wire protocol, released on
 # its own cadence. This file is the only coupling between the two repos.
 
-82b68ed19158d0d79fb391ac10807ab9cd667b7c
+964277f5ec5fd727c9ac2a62ae90bd06178a7609

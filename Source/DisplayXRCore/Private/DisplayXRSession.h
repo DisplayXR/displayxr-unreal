@@ -84,9 +84,11 @@ public:
 	/**
 	 * Runtime-owned atlas capture (XR_EXT_atlas_capture). Latches a request for
 	 * the runtime to write the session's multi-view atlas to
-	 * "<PathPrefix>_atlas.png" at the given stage. Non-blocking; the PNG lands at
-	 * the next composed frame. Returns false if the extension is unavailable.
-	 * @param PathPrefixUtf8  Output path WITHOUT extension (runtime appends "_atlas.png").
+	 * "<PathPrefix>_atlas_<viewCount>_<cols>x<rows>.png" at the given stage.
+	 * Non-blocking; the PNG lands at the next composed frame. Returns false if the
+	 * extension is unavailable.
+	 * @param PathPrefixUtf8  Output path WITHOUT extension (runtime appends the
+	 *                        "_atlas_<viewCount>_<cols>x<rows>.png" suffix).
 	 * @param bProjectionOnly PROJECTION_ONLY (true) vs POST_COMPOSE (false).
 	 */
 	bool CaptureAtlas(const FString& PathPrefixUtf8, bool bProjectionOnly = true);
