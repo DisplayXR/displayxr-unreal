@@ -18,8 +18,13 @@ jobs:
           # pre-deprivatize port). CLAUDE.md is excluded — it documents the
           # DisplayXR org (sibling repos / bundle), which legitimately names
           # the vendor display-processor plug-in repo by its published name.
+          # Verbatim-vendored third-party content is excluded — the guard polices
+          # AUTHORED plugin code, while the runtime extension headers under
+          # Private/Native/openxr/ MUST match upstream byte-for-byte (the
+          # abi-guard job enforces it) and carry upstream's copyright line, as
+          # does the displayxr-common submodule (Source/ThirdParty).
           FORBIDDEN="le""ia"
-          if grep -rniI --exclude-dir=.git --exclude=CHANGELOG.md --exclude=CLAUDE.md "$FORBIDDEN" .; then
+          if grep -rniI --exclude-dir=.git --exclude-dir=openxr --exclude-dir=displayxr-common --exclude=CHANGELOG.md --exclude=CLAUDE.md "$FORBIDDEN" .; then
             echo "::error::Forbidden vendor name found in tracked files."
             exit 1
           fi
