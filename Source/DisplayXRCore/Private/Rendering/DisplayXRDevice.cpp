@@ -21,10 +21,10 @@
 #include "Windows/HideWindowsPlatformTypes.h"
 #endif
 
-extern "C" {
-#include "Native/display3d_view.h"
-#include "Native/camera3d_view.h"
-}
+// Shared displayxr::math (displayxr-common submodule, Source/ThirdParty).
+// The headers carry their own extern "C" guards.
+#include "display3d_view.h"
+#include "camera3d_view.h"
 
 DEFINE_LOG_CATEGORY_STATIC(LogDisplayXRDevice, Log, All);
 
@@ -933,24 +933,27 @@ void FDisplayXRDevice::ComputeViews()
 	RawEyes[1] = { (float)RightEyeRaw.X, (float)RightEyeRaw.Y, (float)RightEyeRaw.Z };
 
 	// -----------------------------------------------------------------------
-	// Window-relative Kooima (matches DisplayXRPreviewSession + reference
-	// cube_handle_d3d11_win test app):
-	// - Screen dimensions = physical window size in meters (not full display)
-	// - Eye positions offset by window-center-minus-monitor-center, so the
-	//   off-axis frustum tracks the window across the display as it moves/resizes.
+	// Window-relative Kooima (Layer 1 of displayxr::math, matches
+	// DisplayXRPreviewSession + reference cube_handle_d3d11_win test app):
+	// the platform-specific rect fetch (client rect + monitor) stays here;
+	// the rect → screen-dims + eye-offset math — including the screen-Y-down →
+	// eye-Y-up flip — lives in display3d_resolve_window_rect().
 	// -----------------------------------------------------------------------
 	const float DispW_m = DI.DisplayWidthMeters  > 0.0f ? DI.DisplayWidthMeters  : 0.344f;
 	const float DispH_m = DI.DisplayHeightMeters > 0.0f ? DI.DisplayHeightMeters : 0.194f;
 	const float DispPxW = DI.DisplayPixelWidth   > 0    ? (float)DI.DisplayPixelWidth  : 3840.0f;
 	const float DispPxH = DI.DisplayPixelHeight  > 0    ? (float)DI.DisplayPixelHeight : 2160.0f;
-	const float PxSizeX = DispW_m / DispPxW;
-	const float PxSizeY = DispH_m / DispPxH;
 
-	Display3DScreen Screen;
-	Screen.width_m  = DispW_m;
-	Screen.height_m = DispH_m;
-	float EyeOffsetX_m = 0.0f;
-	float EyeOffsetY_m = 0.0f;
+	// Default placement = full display (no window → display-centered frustum).
+	Display3DWindowPlacement Placement;
+	Placement.display_width_m   = DispW_m;
+	Placement.display_height_m  = DispH_m;
+	Placement.display_width_px  = DispPxW;
+	Placement.display_height_px = DispPxH;
+	Placement.rect_center_x_px  = DispPxW * 0.5f;
+	Placement.rect_center_y_px  = DispPxH * 0.5f;
+	Placement.rect_width_px     = DispPxW;
+	Placement.rect_height_px    = DispPxH;
 
 #if PLATFORM_WINDOWS
 	if (GameHWND)
@@ -961,32 +964,24 @@ void FDisplayXRDevice::ComputeViews()
 		GetClientRect(Hwnd, &rc);
 		const float WinPxW = (float)(rc.right - rc.left);
 		const float WinPxH = (float)(rc.bottom - rc.top);
-		if (WinPxW > 0.0f && WinPxH > 0.0f)
-		{
-			Screen.width_m  = WinPxW * PxSizeX;
-			Screen.height_m = WinPxH * PxSizeY;
-		}
 
 		POINT ClientOrigin = {0, 0};
 		ClientToScreen(Hwnd, &ClientOrigin);
 		HMONITOR hMon = MonitorFromWindow(Hwnd, MONITOR_DEFAULTTONEAREST);
 		MONITORINFO mi = { sizeof(mi) };
-		if (GetMonitorInfo(hMon, &mi))
+		if (WinPxW > 0.0f && WinPxH > 0.0f && GetMonitorInfo(hMon, &mi))
 		{
-			const float WinCenterX = (float)(ClientOrigin.x - mi.rcMonitor.left) + WinPxW * 0.5f;
-			const float WinCenterY = (float)(ClientOrigin.y - mi.rcMonitor.top)  + WinPxH * 0.5f;
-			const float MonW = (float)(mi.rcMonitor.right - mi.rcMonitor.left);
-			const float MonH = (float)(mi.rcMonitor.bottom - mi.rcMonitor.top);
-
-			EyeOffsetX_m =  (WinCenterX - MonW * 0.5f) * PxSizeX;
-			EyeOffsetY_m = -(WinCenterY - MonH * 0.5f) * PxSizeY; // screen Y-down → OpenXR Y-up
+			// Monitor pixel dims (not DI's) keep rect center and display center
+			// in the same pixel space, self-consistent even if they disagree.
+			Placement.display_width_px  = (float)(mi.rcMonitor.right - mi.rcMonitor.left);
+			Placement.display_height_px = (float)(mi.rcMonitor.bottom - mi.rcMonitor.top);
+			Placement.rect_center_x_px  = (float)(ClientOrigin.x - mi.rcMonitor.left) + WinPxW * 0.5f;
+			Placement.rect_center_y_px  = (float)(ClientOrigin.y - mi.rcMonitor.top)  + WinPxH * 0.5f;
+			Placement.rect_width_px     = WinPxW;
+			Placement.rect_height_px    = WinPxH;
 		}
 	}
 #endif
-
-	// Shift raw eyes into window-relative display space (still meters, OpenXR convention).
-	RawEyes[0].x -= EyeOffsetX_m; RawEyes[0].y -= EyeOffsetY_m;
-	RawEyes[1].x -= EyeOffsetX_m; RawEyes[1].y -= EyeOffsetY_m;
 
 	// Nominal viewer position
 	XrVector3f NominalViewer = {
@@ -998,9 +993,16 @@ void FDisplayXRDevice::ComputeViews()
 	{
 		NominalViewer = {0.0f, 0.0f, 0.5f};
 	}
-	// Keep nominal in the same window-relative frame as RawEyes.
-	NominalViewer.x -= EyeOffsetX_m;
-	NominalViewer.y -= EyeOffsetY_m;
+
+	// Resolve rect → Kooima screen dims + rect-center-relative eye positions.
+	// The nominal viewer rides along as a third point so it stays in the same
+	// window-relative frame as the eyes.
+	XrVector3f RectPoints[3] = { RawEyes[0], RawEyes[1], NominalViewer };
+	Display3DScreen Screen;
+	display3d_resolve_window_rect(&Placement, RectPoints, 3, &Screen, RectPoints);
+	RawEyes[0] = RectPoints[0];
+	RawEyes[1] = RectPoints[1];
+	NominalViewer = RectPoints[2];
 
 	// Scene transform (display pose for Kooima)
 	FVector ScenePos;
@@ -1080,9 +1082,17 @@ void FDisplayXRDevice::ComputeViews()
 		DT.virtual_display_height = T.VirtualDisplayHeight > 0.0f
 			? T.VirtualDisplayHeight : DispH_m;
 
+		// ZDP-anchored clip offsets (superset API): near = ez - vH, far = ez +
+		// 1000*vH (opaque). Inert here — UE builds its own reverse-Z projection
+		// below (CalculateOffAxisProjectionMatrix) and only consumes eye_display,
+		// so the lib's projection_matrix/near_z/far_z outputs are discarded.
+		// vulkan_flip_y=0: clean +Y-up frame, matching the old no-flip behavior.
 		Display3DView OutViews[2];
 		display3d_compute_views(RawEyes, KooimaViewCount, &NominalViewer, &Screen,
-			&DT, &DisplayPose, T.NearZ, T.FarZ, OutViews);
+			&DT, &DisplayPose,
+			/*near_offset=*/DT.virtual_display_height,
+			/*far_offset=*/1000.0f * DT.virtual_display_height,
+			/*vulkan_flip_y=*/0, OutViews);
 
 		for (int32 i = 0; i < ViewCount; i++)
 		{

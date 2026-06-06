@@ -39,7 +39,13 @@ public class DisplayXREditor : ModuleRules
 		// Bundled OpenXR headers + DisplayXR extension definitions
 		PrivateIncludePaths.Add(Path.Combine(ModuleDirectory, "..", "DisplayXRCore", "Private", "Native"));
 
-		// DisplayXR stereo math helpers (DisplayXRStereoMath.h, display3d_view.h)
+		// DisplayXR stereo math helpers (DisplayXRStereoMath.h)
 		PrivateIncludePaths.Add(Path.Combine(ModuleDirectory, "..", "DisplayXRCore", "Private"));
+
+		// Shared displayxr::math (Kooima view/projection) from the
+		// displayxr-common submodule. The implementation is compiled into THIS
+		// module via the Private/*_impl.c shims (DisplayXRCore has its own copy
+		// but does not export it).
+		PrivateIncludePaths.Add(Path.Combine(ModuleDirectory, "..", "ThirdParty", "displayxr-common", "include"));
 	}
 }

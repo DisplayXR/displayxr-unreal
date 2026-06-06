@@ -39,7 +39,7 @@ There is **no** `DISPLAYXR_USE_UNREAL_OPENXR` compile flag. Platform differences
 `FDisplayXRDevice` extends `FHeadMountedDisplayBase` + `FXRRenderTargetManager` + `FSceneViewExtensionBase`. It:
 
 1. Polls the OpenXR session each frame to get eye positions.
-2. Feeds raw eyes through the Kooima C libraries (`camera3d_view.c`, `display3d_view.c`) for asymmetric frustum projection.
+2. Feeds raw eyes through the shared `displayxr::math` Kooima C library (`camera3d_view.c`, `display3d_view.c` from the `displayxr-common` submodule) for asymmetric frustum projection.
 3. Builds UE-native reverse-Z off-axis projection matrices via `DisplayXRStereoMath.h::CalculateOffAxisProjectionMatrix`.
 4. UE renders directly into the OpenXR swapchain (zero-copy atlas handoff — see `Docs/DisplayXR/AtlasHandoff.md`).
 
@@ -57,7 +57,9 @@ There is **no** `DISPLAYXR_USE_UNREAL_OPENXR` compile flag. Platform differences
 
 ## Shared native code
 
-`Source/DisplayXRCore/Private/Native/camera3d_view.{c,h}` and `display3d_view.{c,h}` are portable C libraries shared with the Unity sibling plugin (`displayxr-unity`). Keep them engine-agnostic — no UE types, no Unity types.
+The Kooima math (`display3d_view.{c,h}`, `camera3d_view.{c,h}`) comes from the shared [`displayxr-common`](https://github.com/DisplayXR/displayxr-common) library (`displayxr::math`), pinned as a **git submodule** at `Source/ThirdParty/displayxr-common` — run `git submodule update --init` after cloning. Don't edit the submodule contents; change the library upstream, tag, and bump the pin.
+
+Integration mechanism (UBT has no per-file source exclusion, so the submodule must live OUTSIDE the module dirs): `Source/ThirdParty/` has no `.Build.cs` → UBT never globs it (keeping the library's `tests/selftest.c`, which has a `main()`, out of the build), while `BuildPlugin`'s package filter includes all of `/Source/...` → the submodule ships in the packaged plugin. The implementation is compiled via one-line `#include` shims — `DisplayXRCore/Private/Native/{display3d_view,camera3d_view}_impl.c` and `DisplayXREditor/Private/{display3d_view,camera3d_view}_impl.c` (Core doesn't export the symbols, so the editor module compiles its own copy; the shims must stay `.c` TUs because the implementation uses C compound literals, which C++ rejects). Both Build.cs files add `Source/ThirdParty/displayxr-common/include` to `PrivateIncludePaths` for the headers. CI lint note: the vendor-name guard greps the filesystem, but `actions/checkout` doesn't init submodules, so the submodule's copyright headers don't trip it.
 
 ## CI/CD
 

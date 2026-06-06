@@ -43,5 +43,10 @@ public class DisplayXRCore : ModuleRules
 
 		// All platforms use our bundled OpenXR headers (no UE OpenXR dependency)
 		PrivateIncludePaths.Add(Path.Combine(ModuleDirectory, "Private", "Native"));
+
+		// Shared displayxr::math (Kooima view/projection) headers from the
+		// displayxr-common submodule. The implementation is compiled into this
+		// module via the Private/Native/*_impl.c shims.
+		PrivateIncludePaths.Add(Path.Combine(ModuleDirectory, "..", "ThirdParty", "displayxr-common", "include"));
 	}
 }
