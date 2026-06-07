@@ -52,7 +52,13 @@ public:
 	FDisplayXRSession();
 	~FDisplayXRSession();
 
-	/** Initialize: load OpenXR loader, create instance + session. */
+	/**
+	 * Initialize: load OpenXR loader, create instance, query display info.
+	 * On Windows, session creation is deferred to CreateSessionWithGraphics
+	 * (called from the compositor at first viewport draw) so the runtime's
+	 * expensive session init is paid exactly once. On Mac/Linux a bare
+	 * (graphics-less) session is created here — the only session path there.
+	 */
 	bool Initialize();
 
 	/** Shutdown: destroy session + instance, unload loader. */
@@ -96,7 +102,8 @@ public:
 	/** True if the runtime exported xrCaptureAtlasEXT and it resolved. */
 	bool HasAtlasCapture() const { return xrCaptureAtlasFunc != nullptr; }
 
-	/** Create the OpenXR session with D3D graphics binding and HWND.
+	/** Create the OpenXR session with D3D graphics binding and HWND, then
+	 *  begin it synchronously (the runtime posts READY at xrCreateSession).
 	 *  Must be called once the game viewport and RHI device are available. */
 	bool CreateSessionWithGraphics(void* D3DDevice, void* CommandQueue, void* WindowHandle);
 
@@ -127,6 +134,8 @@ private:
 	bool LoadOpenXRLoader();
 	void UnloadOpenXRLoader();
 	bool CreateInstance();
+	/** Bare (graphics-less) session — Mac/Linux only; Windows uses
+	 *  CreateSessionWithGraphics exclusively. */
 	bool CreateSession();
 	void QueryDisplayInfo();
 	void QueryRenderingModes();

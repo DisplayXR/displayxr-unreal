@@ -89,10 +89,23 @@ bool FDisplayXRSession::Initialize()
 			VC.TileColumns, VC.TileRows, VC.ScaleX, VC.ScaleY, VC.DisplayPixelW, VC.DisplayPixelH);
 	}
 
+#if PLATFORM_WINDOWS
+	// Do NOT create a bare (graphics-less) session here. The runtime pays its
+	// expensive init (compositor, display processor, eye-tracking pipeline) at
+	// xrCreateSession, and a bare session would have to be destroyed and
+	// recreated once the game window exists (CreateSessionWithGraphics) —
+	// paying that init twice and risking a 3D→2D→3D display flap. The session
+	// is created once, with the D3D12 + HWND binding, from the compositor at
+	// first viewport draw.
+	UE_LOG(LogDisplayXRSession, Log, TEXT("DisplayXR Session: Session creation deferred to first viewport (graphics binding)"));
+#else
+	// Mac/Linux: the D3D12 compositor path never runs (CreateRuntimeQueue fails),
+	// so this bare session is the only session path on these platforms.
 	if (!CreateSession())
 	{
 		UE_LOG(LogDisplayXRSession, Warning, TEXT("DisplayXR Session: Session creation failed, will retry"));
 	}
+#endif
 
 	bActive = true;
 	UE_LOG(LogDisplayXRSession, Log, TEXT("DisplayXR Session: Initialized"));
@@ -1117,6 +1130,59 @@ bool FDisplayXRSession::CreateSessionWithGraphics(void* D3DDevice, void* Command
 	QueryRenderingModes();
 
 	UE_LOG(LogDisplayXRSession, Log, TEXT("DisplayXR Session: Session created with graphics binding"));
+
+	// Begin the session synchronously. The runtime posts XR_SESSION_STATE_READY
+	// at xrCreateSession, so polling here (mirroring the editor preview's
+	// Start()) gets the session running — and the display into 3D mode — in
+	// the same call, instead of waiting on per-frame Tick() event polling.
+	{
+		PFN_xrPollEvent xrPollEventFunc = nullptr;
+		xrGetInstanceProcAddrFunc(Instance, "xrPollEvent", (PFN_xrVoidFunction*)&xrPollEventFunc);
+		PFN_xrBeginSession xrBeginSessionFunc = nullptr;
+		xrGetInstanceProcAddrFunc(Instance, "xrBeginSession", (PFN_xrVoidFunction*)&xrBeginSessionFunc);
+
+		if (xrPollEventFunc && xrBeginSessionFunc)
+		{
+			for (int i = 0; i < 100; i++)
+			{
+				XrEventDataBuffer EventData = {XR_TYPE_EVENT_DATA_BUFFER};
+				if (!XR_SUCCEEDED(xrPollEventFunc(Instance, &EventData)))
+				{
+					break;
+				}
+
+				if (EventData.type == XR_TYPE_EVENT_DATA_SESSION_STATE_CHANGED)
+				{
+					auto* StateChanged = (XrEventDataSessionStateChanged*)&EventData;
+					SessionState = StateChanged->state;
+
+					if (SessionState == XR_SESSION_STATE_READY)
+					{
+						XrSessionBeginInfo BeginInfo = {XR_TYPE_SESSION_BEGIN_INFO};
+						BeginInfo.primaryViewConfigurationType = XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO;
+						XrResult BeginResult = xrBeginSessionFunc(Session, &BeginInfo);
+						if (XR_SUCCEEDED(BeginResult))
+						{
+							bSessionRunning = true;
+							UE_LOG(LogDisplayXRSession, Log, TEXT("DisplayXR Session: Session running (begun synchronously at create)"));
+						}
+						else
+						{
+							UE_LOG(LogDisplayXRSession, Warning, TEXT("DisplayXR Session: xrBeginSession failed (%d)"), (int)BeginResult);
+						}
+						break;
+					}
+				}
+			}
+		}
+
+		if (!bSessionRunning)
+		{
+			// Non-fatal: Tick()'s per-frame event polling remains as fallback.
+			UE_LOG(LogDisplayXRSession, Warning, TEXT("DisplayXR Session: READY not posted synchronously; falling back to per-frame event polling"));
+		}
+	}
+
 	return true;
 }
 
