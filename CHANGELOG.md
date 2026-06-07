@@ -4,7 +4,10 @@ All notable changes to the DisplayXR Unreal plugin are documented here.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [0.4.1] - 2026-06-06
+
+### Added
+- CI drift-guard: fails the lint workflow if the shared `displayxr::math` Kooima sources are re-vendored into the plugin instead of consumed via the `displayxr-common` submodule (#396 W5).
 
 ### Changed
 - Atlas/screenshot capture restored to the runtime-owned `xrCaptureAtlasEXT` path (un-reverts the app-side RHI readback). The runtime bug that produced black/transparent and washed-out PNGs is fixed in `DisplayXR/displayxr-runtime#425` (opaque-alpha encode), so the EXT path from `ext-atlas-capture` is now the default again.
