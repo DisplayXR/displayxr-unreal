@@ -4,6 +4,11 @@ All notable changes to the DisplayXR Unreal plugin are documented here.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.4.2] - 2026-06-07
+
+### Fixed
+- Built apps / standalone games took several seconds for 3D mode and eye tracking to start: the game path created a bare (graphics-less) OpenXR session at module load, then destroyed and recreated it with the D3D12 + window binding at first viewport draw — paying the runtime's expensive session init twice. The session is now created once, with the graphics binding, and begun synchronously (the runtime posts READY at xrCreateSession), matching the editor preview's instant startup. Mac/Linux keep the bare-session path (the D3D12 compositor never runs there).
+
 ## [0.4.1] - 2026-06-06
 
 ### Added
