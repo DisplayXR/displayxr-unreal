@@ -8,7 +8,7 @@ jobs:
   checks:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Vendor-name guard
         run: |
@@ -46,7 +46,7 @@ jobs:
     # longer matches the pinned runtime, so drift is a red check, not a mystery.
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Vendored OpenXR extension headers match the pinned runtime
         run: |
