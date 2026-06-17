@@ -35,7 +35,7 @@ One unified session loads the DisplayXR OpenXR runtime directly on every platfor
 ## Requirements
 
 - Unreal Engine 5.3 or later
-- DisplayXR OpenXR runtime installed (see [openxr-3d-display](https://github.com/dfattal/openxr-3d-display))
+- DisplayXR OpenXR runtime installed (see [displayxr-runtime](https://github.com/DisplayXR/displayxr-runtime))
 - Windows, macOS, or Android target
 - Visual Studio (Windows) or Xcode (macOS) matching your UE version
 
@@ -88,5 +88,5 @@ In-depth docs live in [Docs/DisplayXR/](Docs/DisplayXR/):
 
 ## Related Repositories
 
-- **[dfattal/openxr-3d-display](https://github.com/dfattal/openxr-3d-display)** — DisplayXR OpenXR runtime. Extensions: `XR_EXT_display_info`, `XR_EXT_win32_window_binding`, `XR_EXT_cocoa_window_binding`.
+- **[DisplayXR/displayxr-runtime](https://github.com/DisplayXR/displayxr-runtime)** — DisplayXR OpenXR runtime. Extensions: `XR_EXT_display_info`, `XR_EXT_win32_window_binding`, `XR_EXT_cocoa_window_binding`.
 - **[DisplayXR/displayxr-unity](https://github.com/DisplayXR/displayxr-unity)** — Unity sibling plugin. Reference implementation for rig patterns, editor preview, and shared Kooima C libraries.
