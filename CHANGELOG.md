@@ -4,6 +4,14 @@ All notable changes to the DisplayXR Unreal plugin are documented here.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.4.3] - 2026-06-27
+
+### Fixed
+- Apps rendered **black** in every mode against runtimes with the CTS session-state contract (`DisplayXR/displayxr-runtime`#33): a graphics session no longer reaches FOCUSED at `xrBeginSession` — `READY→SYNCHRONIZED` fires on the first `xrBeginFrame`, and `SYNCHRONIZED→VISIBLE→FOCUSED` advances only via `xrPollEvent`. v0.4.2 began the session synchronously then stopped polling, so it stuck at SYNCHRONIZED → `xrWaitFrame` reported `shouldRender=false` → the compositor submitted empty frames forever. `CreateSessionWithGraphics` now **warms the session to VISIBLE/FOCUSED** (empty frame + event-drain loop) before the compositor thread starts, restoring the clean first-frame handshake. A new compositor-thread `PumpEvents()` drains lifecycle events (serialized with the frame calls; game-thread polling mid-frame deadlocks the in-process native compositor), and the editor preview gets the same warmup + per-tick drain. Event-drain loops now terminate on `== XR_SUCCESS` rather than `XR_SUCCEEDED` (`xrPollEvent` returns the positive `XR_EVENT_UNAVAILABLE` when the queue is empty, which `XR_SUCCEEDED` treats as success → infinite spin). Verified in-process on Leia hardware. (#21)
+
+### Known issues
+- Under the shell / forced-IPC, the session reaches FOCUSED and submits frames but content arrives black at the service compositor — a separate, UE-specific D3D12 IPC-swapchain issue (the native `cube_handle_d3d12_win` app renders fine over the same IPC path). Tracked as a follow-up.
+
 ## [0.4.2] - 2026-06-07
 
 ### Fixed
