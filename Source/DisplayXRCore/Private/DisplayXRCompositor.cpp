@@ -61,6 +61,16 @@ void FDisplayXRCompositor::CompositorLoop()
 	{
 		if (!Session->IsSessionRunning()) { FPlatformProcess::Sleep(0.01f); continue; }
 
+		// Pump lifecycle events (STOPPING, focus/visibility) on THIS thread,
+		// serialized with the frame calls below — polling on the game thread while
+		// we're mid-frame deadlocks the in-process native compositor. FOCUSED was
+		// already reached in the session's warmup (CreateSessionWithGraphics), so
+		// this only ever sees steady-state and cannot trigger the late-FOCUSED
+		// handshake livelock. On STOPPING it parks the loop; re-check before
+		// beginning a frame so we never xrBeginFrame on an ended session.
+		Session->PumpEvents();
+		if (!Session->IsSessionRunning()) { continue; }
+
 		FrameCount++;
 
 		// xrWaitFrame

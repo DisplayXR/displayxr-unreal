@@ -180,4 +180,8 @@ private:
 	PFN_xrWaitSwapchainImage xrWaitSwapchainImageFunc = nullptr;
 	PFN_xrReleaseSwapchainImage xrReleaseSwapchainImageFunc = nullptr;
 	PFN_xrLocateViews xrLocateViewsFunc = nullptr;
+	PFN_xrPollEvent xrPollEventFunc = nullptr;
+
+	// Current session state, tracked from xrPollEvent (single-threaded: game thread).
+	XrSessionState SessionState = XR_SESSION_STATE_UNKNOWN;
 };

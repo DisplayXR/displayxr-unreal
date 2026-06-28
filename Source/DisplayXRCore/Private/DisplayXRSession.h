@@ -64,8 +64,17 @@ public:
 	/** Shutdown: destroy session + instance, unload loader. */
 	void Shutdown();
 
-	/** Per-frame tick: poll events, locate views, store eye positions. */
+	/** Per-frame tick: locate views, store eye positions (game thread). */
 	void Tick();
+
+	/**
+	 * Drain xrPollEvent and advance the cached session state. MUST be called on
+	 * the compositor thread (serialized with xrWaitFrame/Begin/End) — polling on
+	 * the game thread while the compositor thread is mid-frame deadlocks the
+	 * in-process native compositor. Handles XR_SESSION_STATE_STOPPING by ending
+	 * the session and parking the frame loop. No-op until the session exists.
+	 */
+	void PumpEvents();
 
 	/** Check if the session is active (instance created, display info available). */
 	bool IsActive() const { return bActive; }
@@ -113,7 +122,7 @@ public:
 	XrInstance GetXrInstance() const { return Instance; }
 	XrSpace GetXrSpace() const { return ViewSpace; }
 	PFN_xrGetInstanceProcAddr GetXrGetInstanceProcAddr() const { return xrGetInstanceProcAddrFunc; }
-	bool IsSessionRunning() const { return bSessionRunning; }
+	bool IsSessionRunning() const { return bSessionRunning.Load(); }
 
 	/** Store predicted display time from compositor thread for xrLocateViews. */
 	void SetPredictedDisplayTime(int64 Time) { PredictedDisplayTime.Store(Time); }
@@ -150,14 +159,20 @@ private:
 	XrSession Session = XR_NULL_HANDLE;
 	XrSystemId SystemId = XR_NULL_SYSTEM_ID;
 	XrSpace ViewSpace = XR_NULL_HANDLE;
-	XrSessionState SessionState = XR_SESSION_STATE_UNKNOWN;
-	bool bSessionRunning = false;
+	// Atomic: written by the warmup loop (game thread, during setup) and the
+	// compositor-thread PumpEvents(); read by both threads (IsSessionRunning,
+	// CompositorLoop park gate, Tick LocateViews gate).
+	TAtomic<XrSessionState> SessionState{XR_SESSION_STATE_UNKNOWN};
+	TAtomic<bool> bSessionRunning{false};
 
 	// Function pointers (resolved via xrGetInstanceProcAddr)
 	PFN_xrGetInstanceProcAddr xrGetInstanceProcAddrFunc = nullptr;
 	PFN_xrRequestDisplayModeEXT xrRequestDisplayModeFunc = nullptr;
 	PFN_xrEnumerateDisplayRenderingModesEXT xrEnumerateDisplayRenderingModesFunc = nullptr;
 	PFN_xrCaptureAtlasEXT xrCaptureAtlasFunc = nullptr;
+	// Cached for the compositor-thread event pump (resolved lazily in PumpEvents).
+	PFN_xrPollEvent xrPollEventFunc = nullptr;
+	PFN_xrEndSession xrEndSessionFunc = nullptr;
 
 	// Display info (written once at init)
 	FDisplayXRDisplayInfo DisplayInfo;

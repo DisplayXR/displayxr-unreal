@@ -357,24 +357,28 @@ bool FDisplayXRPreviewSession::Start()
 		return false;
 	}
 
-	// 7. Poll events until READY, then xrBeginSession
+	// 7. Drain events until READY -> xrBeginSession, then WARM the session to
+	//    FOCUSED by pumping empty frames + polls. Per the runtime's CTS-compliant
+	//    session-state contract (#33): a graphics session stays at READY through
+	//    xrBeginSession; the first xrBeginFrame fires READY->SYNCHRONIZED, and a
+	//    subsequent xrPollEvent walks SYNCHRONIZED->VISIBLE->FOCUSED. Reaching
+	//    FOCUSED here means the first real Tick() frame renders instead of black.
 	{
-		PFN_xrPollEvent xrPollEventFunc = nullptr;
-		xrGetInstanceProcAddrFunc(Instance, "xrPollEvent", (PFN_xrVoidFunction*)&xrPollEventFunc);
 		PFN_xrBeginSession xrBeginSessionFunc = nullptr;
 		xrGetInstanceProcAddrFunc(Instance, "xrBeginSession", (PFN_xrVoidFunction*)&xrBeginSessionFunc);
 
+		bool bBegan = false;
 		if (xrPollEventFunc && xrBeginSessionFunc)
 		{
-			for (int i = 0; i < 100; i++)
+			for (int i = 0; i < 100 && !bBegan; i++)
 			{
 				XrEventDataBuffer EventData = {XR_TYPE_EVENT_DATA_BUFFER};
-				XrResult r = xrPollEventFunc(Instance, &EventData);
-				if (!XR_SUCCEEDED(r)) break;
+				if (!XR_SUCCEEDED(xrPollEventFunc(Instance, &EventData))) break;
 
 				if (EventData.type == XR_TYPE_EVENT_DATA_SESSION_STATE_CHANGED)
 				{
 					auto* SC = (XrEventDataSessionStateChanged*)&EventData;
+					SessionState = SC->state;
 					if (SC->state == XR_SESSION_STATE_READY)
 					{
 						XrSessionBeginInfo BeginInfo = {XR_TYPE_SESSION_BEGIN_INFO};
@@ -382,20 +386,56 @@ bool FDisplayXRPreviewSession::Start()
 						XrResult BeginResult = xrBeginSessionFunc(Session, &BeginInfo);
 						if (XR_SUCCEEDED(BeginResult))
 						{
-							bSessionRunning = true;
-							UE_LOG(LogDisplayXRPreviewSession, Log, TEXT("DisplayXR Preview: Session running"));
+							bBegan = true;
 						}
 						else
 						{
 							UE_LOG(LogDisplayXRPreviewSession, Error, TEXT("DisplayXR Preview: xrBeginSession failed (%d)"), (int)BeginResult);
 						}
-						break;
 					}
 				}
 			}
 		}
 
-		if (!bSessionRunning)
+		// Warm to FOCUSED with empty (0-layer) frames — no swapchain yet (created
+		// at step 9). Bounded so a non-focusing runtime can't hang PIE start.
+		if (bBegan && xrWaitFrameFunc && xrBeginFrameFunc && xrEndFrameFunc)
+		{
+			for (int i = 0; i < 60; i++)
+			{
+				// VISIBLE is enough — shouldRender is true once visible.
+				if (SessionState == XR_SESSION_STATE_VISIBLE || SessionState == XR_SESSION_STATE_FOCUSED) break;
+
+				XrFrameWaitInfo WI = {XR_TYPE_FRAME_WAIT_INFO};
+				XrFrameState FS = {XR_TYPE_FRAME_STATE};
+				if (!XR_SUCCEEDED(xrWaitFrameFunc(Session, &WI, &FS))) continue;
+				XrFrameBeginInfo BI = {XR_TYPE_FRAME_BEGIN_INFO};
+				if (!XR_SUCCEEDED(xrBeginFrameFunc(Session, &BI))) continue;
+				XrFrameEndInfo EI = {XR_TYPE_FRAME_END_INFO};
+				EI.displayTime = FS.predictedDisplayTime;
+				EI.environmentBlendMode = XR_ENVIRONMENT_BLEND_MODE_OPAQUE;
+				xrEndFrameFunc(Session, &EI);
+
+				XrEventDataBuffer EventData = {XR_TYPE_EVENT_DATA_BUFFER};
+				// NB: drain on == XR_SUCCESS, NOT XR_SUCCEEDED — xrPollEvent returns
+		// XR_EVENT_UNAVAILABLE (a POSITIVE/"succeeded" code) when the queue is empty.
+		while (xrPollEventFunc(Instance, &EventData) == XR_SUCCESS)
+				{
+					if (EventData.type == XR_TYPE_EVENT_DATA_SESSION_STATE_CHANGED)
+					{
+						SessionState = ((XrEventDataSessionStateChanged*)&EventData)->state;
+					}
+					EventData = {XR_TYPE_EVENT_DATA_BUFFER};
+				}
+			}
+		}
+
+		if (bBegan)
+		{
+			bSessionRunning = true;
+			UE_LOG(LogDisplayXRPreviewSession, Log, TEXT("DisplayXR Preview: Session running (warmed to state %d)"), (int)SessionState);
+		}
+		else
 		{
 			UE_LOG(LogDisplayXRPreviewSession, Error, TEXT("DisplayXR Preview: Session did not reach READY state"));
 			DestroyXrSession();
@@ -516,6 +556,24 @@ void FDisplayXRPreviewSession::Tick()
 
 	// Update canvas rect every tick (catches resize/move even if WndProc is delayed)
 	UpdateCanvasRect();
+
+	// Drain lifecycle events each tick (single-threaded — safe on the game thread,
+	// serialized with the frame calls below). Keeps SessionState current and lets
+	// the runtime state machine advance past any transient SYNCHRONIZED re-entry.
+	if (xrPollEventFunc)
+	{
+		XrEventDataBuffer EventData = {XR_TYPE_EVENT_DATA_BUFFER};
+		// NB: drain on == XR_SUCCESS, NOT XR_SUCCEEDED — xrPollEvent returns
+		// XR_EVENT_UNAVAILABLE (a POSITIVE/"succeeded" code) when the queue is empty.
+		while (xrPollEventFunc(Instance, &EventData) == XR_SUCCESS)
+		{
+			if (EventData.type == XR_TYPE_EVENT_DATA_SESSION_STATE_CHANGED)
+			{
+				SessionState = ((XrEventDataSessionStateChanged*)&EventData)->state;
+			}
+			EventData = {XR_TYPE_EVENT_DATA_BUFFER};
+		}
+	}
 
 	// xrWaitFrame (blocks for vsync — acceptable on editor game thread)
 	XrFrameWaitInfo WaitInfo = {XR_TYPE_FRAME_WAIT_INFO};
@@ -1378,6 +1436,7 @@ bool FDisplayXRPreviewSession::ResolveXrFunctions()
 	ok &= R("xrWaitSwapchainImage", (PFN_xrVoidFunction*)&xrWaitSwapchainImageFunc);
 	ok &= R("xrReleaseSwapchainImage", (PFN_xrVoidFunction*)&xrReleaseSwapchainImageFunc);
 	ok &= R("xrLocateViews", (PFN_xrVoidFunction*)&xrLocateViewsFunc);
+	ok &= R("xrPollEvent", (PFN_xrVoidFunction*)&xrPollEventFunc);
 	return ok;
 }
 

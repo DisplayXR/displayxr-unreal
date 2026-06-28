@@ -158,7 +158,7 @@ void FDisplayXRSession::Shutdown()
 
 	UnloadOpenXRLoader();
 	bActive = false;
-	bSessionRunning = false;
+	bSessionRunning.Store(false);
 	UE_LOG(LogDisplayXRSession, Log, TEXT("DisplayXR Session: Shut down"));
 }
 
@@ -702,72 +702,15 @@ void FDisplayXRSession::Tick()
 		return;
 	}
 
-	// Skip xrPollEvent entirely once the session is running and the compositor
-	// thread is active. The runtime's xrPollEvent blocks on the game thread
-	// because the in-process compositor expects all interaction via xrWaitFrame.
-	static int32 SkipPollCount = 0;
-	if (SkipPollCount > 0)
-	{
-		SkipPollCount--;
-	}
-	else if (!bSessionRunning)
-	{
-		// Only poll events during session setup (before RUNNING state).
-		// Once running, the compositor thread handles the runtime.
-		PFN_xrPollEvent xrPollEventFunc = nullptr;
-		xrGetInstanceProcAddrFunc(Instance, "xrPollEvent", (PFN_xrVoidFunction*)&xrPollEventFunc);
-		if (xrPollEventFunc)
-		{
-			XrEventDataBuffer EventData = {XR_TYPE_EVENT_DATA_BUFFER};
-			while (XR_SUCCEEDED(xrPollEventFunc(Instance, &EventData)))
-			{
-				if (EventData.type == XR_TYPE_EVENT_DATA_SESSION_STATE_CHANGED)
-				{
-					auto* StateChanged = (XrEventDataSessionStateChanged*)&EventData;
-					SessionState = StateChanged->state;
-
-					if (SessionState == XR_SESSION_STATE_READY)
-					{
-						PFN_xrBeginSession xrBeginSessionFunc = nullptr;
-						xrGetInstanceProcAddrFunc(Instance, "xrBeginSession",
-							(PFN_xrVoidFunction*)&xrBeginSessionFunc);
-						if (xrBeginSessionFunc)
-						{
-							XrSessionBeginInfo BeginInfo = {XR_TYPE_SESSION_BEGIN_INFO};
-							BeginInfo.primaryViewConfigurationType = XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO;
-							UE_LOG(LogDisplayXRSession, Log, TEXT("DisplayXR Session: Calling xrBeginSession..."));
-							GLog->Flush();
-							XrResult BeginResult = xrBeginSessionFunc(Session, &BeginInfo);
-							UE_LOG(LogDisplayXRSession, Log, TEXT("DisplayXR Session: xrBeginSession returned %d"), (int)BeginResult);
-							GLog->Flush();
-							bSessionRunning = true;
-							UE_LOG(LogDisplayXRSession, Log, TEXT("DisplayXR Session: Session running"));
-							GLog->Flush();
-							// Skip xrPollEvent for several ticks to let the compositor
-							// thread start its frame loop before we poll again.
-							SkipPollCount = 60;
-							break; // Exit the while loop
-						}
-					}
-					else if (SessionState == XR_SESSION_STATE_STOPPING)
-					{
-						PFN_xrEndSession xrEndSessionFunc = nullptr;
-						xrGetInstanceProcAddrFunc(Instance, "xrEndSession",
-							(PFN_xrVoidFunction*)&xrEndSessionFunc);
-						if (xrEndSessionFunc)
-						{
-							xrEndSessionFunc(Session);
-						}
-						bSessionRunning = false;
-					}
-				}
-				EventData = {XR_TYPE_EVENT_DATA_BUFFER};
-			}
-		}
-	}
+	// NOTE: the game thread does NOT poll xrPollEvent. The session is begun and
+	// driven to FOCUSED synchronously in CreateSessionWithGraphics (warmup loop,
+	// before the compositor thread starts), and ongoing lifecycle events are
+	// pumped on the compositor thread via PumpEvents() — serialized with the
+	// frame calls. Polling here (game thread) while the compositor thread is
+	// mid-frame deadlocks the in-process native compositor.
 
 	// Locate views for eye tracking data
-	if (bSessionRunning && Session != XR_NULL_HANDLE && ViewSpace != XR_NULL_HANDLE)
+	if (bSessionRunning.Load() && Session != XR_NULL_HANDLE && ViewSpace != XR_NULL_HANDLE)
 	{
 		static bool bFirstLocate = true;
 		if (bFirstLocate)
@@ -993,16 +936,18 @@ bool FDisplayXRSession::CreateSessionWithGraphics(void* D3DDevice, void* Command
 		// Destroy existing bare session to replace with graphics-bound session
 		UE_LOG(LogDisplayXRSession, Log, TEXT("DisplayXR Session: Destroying existing session to create one with graphics binding"));
 
-		if (bSessionRunning)
+		if (bSessionRunning.Load())
 		{
-			PFN_xrEndSession xrEndSessionFunc = nullptr;
-			xrGetInstanceProcAddrFunc(Instance, "xrEndSession",
-				(PFN_xrVoidFunction*)&xrEndSessionFunc);
+			if (!xrEndSessionFunc)
+			{
+				xrGetInstanceProcAddrFunc(Instance, "xrEndSession",
+					(PFN_xrVoidFunction*)&xrEndSessionFunc);
+			}
 			if (xrEndSessionFunc)
 			{
 				xrEndSessionFunc(Session);
 			}
-			bSessionRunning = false;
+			bSessionRunning.Store(false);
 		}
 
 		if (ViewSpace != XR_NULL_HANDLE)
@@ -1025,7 +970,7 @@ bool FDisplayXRSession::CreateSessionWithGraphics(void* D3DDevice, void* Command
 			xrDestroySessionFunc(Session);
 		}
 		Session = XR_NULL_HANDLE;
-		SessionState = XR_SESSION_STATE_UNKNOWN;
+		SessionState.Store(XR_SESSION_STATE_UNKNOWN);
 	}
 
 	if (Instance == XR_NULL_HANDLE || !xrGetInstanceProcAddrFunc)
@@ -1131,59 +1076,181 @@ bool FDisplayXRSession::CreateSessionWithGraphics(void* D3DDevice, void* Command
 
 	UE_LOG(LogDisplayXRSession, Log, TEXT("DisplayXR Session: Session created with graphics binding"));
 
-	// Begin the session synchronously. The runtime posts XR_SESSION_STATE_READY
-	// at xrCreateSession, so polling here (mirroring the editor preview's
-	// Start()) gets the session running — and the display into 3D mode — in
-	// the same call, instead of waiting on per-frame Tick() event polling.
+	// Begin the session and warm it to FOCUSED synchronously, on the game thread,
+	// BEFORE the compositor thread starts its free-running frame loop.
+	//
+	// Per the runtime's CTS-compliant session-state contract (#33): a graphics
+	// session stays at READY through xrBeginSession; the FIRST xrBeginFrame fires
+	// READY->SYNCHRONIZED, and a subsequent xrPollEvent then walks
+	// SYNCHRONIZED->VISIBLE->FOCUSED (the native compositor reports
+	// visible/focused = true). So reaching FOCUSED needs a running frame loop AND
+	// polling. We pump a few empty frames + polls here so the session is already
+	// FOCUSED (xrWaitFrame -> shouldRender=true) by the time the compositor thread
+	// takes over — restoring the clean frame-1 handshake. Reaching FOCUSED *late*,
+	// after the compositor loop has started submitting empty frames, livelocks the
+	// 3-thread image handshake, so it must happen up front, here.
 	{
-		PFN_xrPollEvent xrPollEventFunc = nullptr;
-		xrGetInstanceProcAddrFunc(Instance, "xrPollEvent", (PFN_xrVoidFunction*)&xrPollEventFunc);
+		if (!xrPollEventFunc)
+		{
+			xrGetInstanceProcAddrFunc(Instance, "xrPollEvent", (PFN_xrVoidFunction*)&xrPollEventFunc);
+		}
 		PFN_xrBeginSession xrBeginSessionFunc = nullptr;
 		xrGetInstanceProcAddrFunc(Instance, "xrBeginSession", (PFN_xrVoidFunction*)&xrBeginSessionFunc);
+		PFN_xrWaitFrame xrWaitFrameFunc = nullptr;
+		xrGetInstanceProcAddrFunc(Instance, "xrWaitFrame", (PFN_xrVoidFunction*)&xrWaitFrameFunc);
+		PFN_xrBeginFrame xrBeginFrameFunc = nullptr;
+		xrGetInstanceProcAddrFunc(Instance, "xrBeginFrame", (PFN_xrVoidFunction*)&xrBeginFrameFunc);
+		PFN_xrEndFrame xrEndFrameFunc = nullptr;
+		xrGetInstanceProcAddrFunc(Instance, "xrEndFrame", (PFN_xrVoidFunction*)&xrEndFrameFunc);
 
+		// 1. Drain events until READY, then xrBeginSession.
+		bool bBegan = false;
 		if (xrPollEventFunc && xrBeginSessionFunc)
 		{
-			for (int i = 0; i < 100; i++)
+			for (int i = 0; i < 100 && !bBegan; i++)
 			{
 				XrEventDataBuffer EventData = {XR_TYPE_EVENT_DATA_BUFFER};
 				if (!XR_SUCCEEDED(xrPollEventFunc(Instance, &EventData)))
 				{
 					break;
 				}
-
 				if (EventData.type == XR_TYPE_EVENT_DATA_SESSION_STATE_CHANGED)
 				{
-					auto* StateChanged = (XrEventDataSessionStateChanged*)&EventData;
-					SessionState = StateChanged->state;
-
-					if (SessionState == XR_SESSION_STATE_READY)
+					auto* SC = (XrEventDataSessionStateChanged*)&EventData;
+					SessionState.Store(SC->state);
+					if (SC->state == XR_SESSION_STATE_READY)
 					{
 						XrSessionBeginInfo BeginInfo = {XR_TYPE_SESSION_BEGIN_INFO};
 						BeginInfo.primaryViewConfigurationType = XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO;
 						XrResult BeginResult = xrBeginSessionFunc(Session, &BeginInfo);
 						if (XR_SUCCEEDED(BeginResult))
 						{
-							bSessionRunning = true;
-							UE_LOG(LogDisplayXRSession, Log, TEXT("DisplayXR Session: Session running (begun synchronously at create)"));
+							bBegan = true;
 						}
 						else
 						{
 							UE_LOG(LogDisplayXRSession, Warning, TEXT("DisplayXR Session: xrBeginSession failed (%d)"), (int)BeginResult);
 						}
-						break;
 					}
 				}
 			}
 		}
 
-		if (!bSessionRunning)
+		// 2. Warm to FOCUSED by pumping empty frames + draining events. Bounded so
+		//    a runtime that never focuses cannot hang session setup.
+		if (bBegan && xrWaitFrameFunc && xrBeginFrameFunc && xrEndFrameFunc && xrPollEventFunc)
 		{
-			// Non-fatal: Tick()'s per-frame event polling remains as fallback.
-			UE_LOG(LogDisplayXRSession, Warning, TEXT("DisplayXR Session: READY not posted synchronously; falling back to per-frame event polling"));
+			for (int i = 0; i < 60; i++)
+			{
+				// VISIBLE is enough: shouldRender is true once visible, so content
+				// renders even if the workspace hasn't granted input focus yet; the
+				// compositor-thread pump advances VISIBLE->FOCUSED afterwards.
+				const XrSessionState s = SessionState.Load();
+				if (s == XR_SESSION_STATE_VISIBLE || s == XR_SESSION_STATE_FOCUSED) break;
+
+				XrFrameWaitInfo WI = {XR_TYPE_FRAME_WAIT_INFO};
+				XrFrameState FS = {XR_TYPE_FRAME_STATE};
+				if (!XR_SUCCEEDED(xrWaitFrameFunc(Session, &WI, &FS)))
+				{
+					continue;
+				}
+				XrFrameBeginInfo BI = {XR_TYPE_FRAME_BEGIN_INFO};
+				if (!XR_SUCCEEDED(xrBeginFrameFunc(Session, &BI)))
+				{
+					continue;
+				}
+				// Empty (0-layer) frame — legal; no swapchain exists yet. The first
+				// xrBeginFrame above fired READY->SYNCHRONIZED; the poll below then
+				// advances toward FOCUSED.
+				XrFrameEndInfo EI = {XR_TYPE_FRAME_END_INFO};
+				EI.displayTime = FS.predictedDisplayTime;
+				EI.environmentBlendMode = XR_ENVIRONMENT_BLEND_MODE_OPAQUE;
+				xrEndFrameFunc(Session, &EI);
+
+				XrEventDataBuffer EventData = {XR_TYPE_EVENT_DATA_BUFFER};
+				// NB: drain on == XR_SUCCESS, NOT XR_SUCCEEDED — xrPollEvent returns
+				// XR_EVENT_UNAVAILABLE (a POSITIVE/"succeeded" code) when the queue is
+				// empty, so XR_SUCCEEDED would spin forever.
+				while (xrPollEventFunc(Instance, &EventData) == XR_SUCCESS)
+				{
+					if (EventData.type == XR_TYPE_EVENT_DATA_SESSION_STATE_CHANGED)
+					{
+						SessionState.Store(((XrEventDataSessionStateChanged*)&EventData)->state);
+					}
+					EventData = {XR_TYPE_EVENT_DATA_BUFFER};
+				}
+			}
+		}
+
+		if (bBegan)
+		{
+			bSessionRunning.Store(true);
+			UE_LOG(LogDisplayXRSession, Log, TEXT("DisplayXR Session: Session running (warmed to state %d)"), (int)SessionState.Load());
+			const XrSessionState Warmed = SessionState.Load();
+			if (Warmed != XR_SESSION_STATE_VISIBLE && Warmed != XR_SESSION_STATE_FOCUSED)
+			{
+				// Non-fatal: the compositor-thread PumpEvents() keeps advancing the
+				// state; the first few frames may be empty until VISIBLE is reached.
+				UE_LOG(LogDisplayXRSession, Warning, TEXT("DisplayXR Session: warmup did not reach VISIBLE (state %d); relying on compositor-thread poll"), (int)Warmed);
+			}
+		}
+		else
+		{
+			UE_LOG(LogDisplayXRSession, Warning, TEXT("DisplayXR Session: READY not posted; session not begun"));
 		}
 	}
 
 	return true;
+}
+
+// =============================================================================
+// Compositor-thread event pump (lifecycle: STOPPING, focus/visibility changes)
+// =============================================================================
+void FDisplayXRSession::PumpEvents()
+{
+	if (Instance == XR_NULL_HANDLE || Session == XR_NULL_HANDLE || !xrGetInstanceProcAddrFunc)
+	{
+		return;
+	}
+	if (!xrPollEventFunc)
+	{
+		xrGetInstanceProcAddrFunc(Instance, "xrPollEvent", (PFN_xrVoidFunction*)&xrPollEventFunc);
+		if (!xrPollEventFunc)
+		{
+			return;
+		}
+	}
+
+	// NB: drain on == XR_SUCCESS, NOT XR_SUCCEEDED — xrPollEvent returns
+	// XR_EVENT_UNAVAILABLE (a POSITIVE/"succeeded" code) when the queue is empty,
+	// so XR_SUCCEEDED would spin this thread forever.
+	XrEventDataBuffer EventData = {XR_TYPE_EVENT_DATA_BUFFER};
+	while (xrPollEventFunc(Instance, &EventData) == XR_SUCCESS)
+	{
+		if (EventData.type == XR_TYPE_EVENT_DATA_SESSION_STATE_CHANGED)
+		{
+			auto* SC = (XrEventDataSessionStateChanged*)&EventData;
+			SessionState.Store(SC->state);
+
+			if (SC->state == XR_SESSION_STATE_STOPPING)
+			{
+				// End the session and park the compositor loop. Final teardown
+				// (xrDestroySession) happens in Shutdown() on the game thread,
+				// serialized after StopCompositorThread() joins this thread.
+				if (!xrEndSessionFunc)
+				{
+					xrGetInstanceProcAddrFunc(Instance, "xrEndSession", (PFN_xrVoidFunction*)&xrEndSessionFunc);
+				}
+				if (xrEndSessionFunc)
+				{
+					xrEndSessionFunc(Session);
+				}
+				bSessionRunning.Store(false);
+				UE_LOG(LogDisplayXRSession, Log, TEXT("DisplayXR Session: STOPPING — session ended, frame loop parked"));
+			}
+		}
+		EventData = {XR_TYPE_EVENT_DATA_BUFFER};
+	}
 }
 
 void FDisplayXRSession::SetSceneTransform(const FTransform& InTransform, bool bEnabled)
