@@ -65,6 +65,12 @@ public:
 	uint32 GetSwapchainWidth() const { return SwapchainWidth; }
 	uint32 GetSwapchainHeight() const { return SwapchainHeight; }
 
+	/** True on the IPC array path: each eye renders at the FIXED per-view slice
+	 *  size (content fills the slice). AdjustViewRect must NOT window-scale tiles
+	 *  there, else a smaller-than-display window underfills the fixed slice
+	 *  (black band / shifted tile). Window-relative perspective is via Kooima. */
+	bool UsesArrayCopyPath() const { return bUseCopyPath; }
+
 private:
 	bool CreateChildWindow(void* InParentHWND);
 	void DestroyChildWindow();

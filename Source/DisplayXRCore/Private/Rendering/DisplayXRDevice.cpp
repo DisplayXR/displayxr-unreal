@@ -329,8 +329,21 @@ void FDisplayXRDevice::AdjustViewRect(const int32 ViewIndex, int32& X, int32& Y,
 	// logical RT size was the source of the prior eye-content bleed, not the
 	// tile offsets themselves.
 	CacheWindowSize();
-	const int32 TileW = FMath::Max(1, FMath::RoundToInt(CachedWindowW * CachedViewConfig.ScaleX));
-	const int32 TileH = FMath::Max(1, FMath::RoundToInt(CachedWindowH * CachedViewConfig.ScaleY));
+	int32 TileW, TileH;
+	if (Compositor.IsValid() && Compositor->UsesArrayCopyPath())
+	{
+		// IPC array path: each eye fills a FIXED per-view slice. Window-scaling
+		// the tile here would underfill the fixed slice on a smaller window
+		// (black band / shift); the window-relative perspective is applied by
+		// the runtime's Kooima projection instead.
+		TileW = FMath::Max(1, CachedViewConfig.GetTileW());
+		TileH = FMath::Max(1, CachedViewConfig.GetTileH());
+	}
+	else
+	{
+		TileW = FMath::Max(1, FMath::RoundToInt(CachedWindowW * CachedViewConfig.ScaleX));
+		TileH = FMath::Max(1, FMath::RoundToInt(CachedWindowH * CachedViewConfig.ScaleY));
+	}
 
 	const int32 Cols = FMath::Max(CachedViewConfig.TileColumns, 1);
 	const int32 Col = ViewIndex % Cols;

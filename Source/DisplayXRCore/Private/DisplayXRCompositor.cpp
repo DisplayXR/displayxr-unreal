@@ -158,7 +158,11 @@ void FDisplayXRCompositor::CompositorLoop()
 						SWP_NOZORDER | SWP_NOACTIVATE);
 				}
 
-				if (ParentW > 0 && ParentH > 0)
+				// Single-tiled (in-process) path: window-scale the tile sub-rect.
+				// IPC array path keeps FIXED slice dims (TW/TH = GetTileW/H) so
+				// content always fills the fixed slice — a window-scaled tile would
+				// underfill it (black band / shift); AdjustViewRect matches this.
+				if (!bUseCopyPath && ParentW > 0 && ParentH > 0)
 				{
 					// Clamp against the physical swapchain (worst-case panel size).
 					// Spec: swapchain is never reallocated — if the user drags
