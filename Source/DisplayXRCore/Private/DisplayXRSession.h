@@ -93,6 +93,12 @@ public:
 	/** Get latest eye positions in OpenXR display-local space (meters). */
 	void GetEyePositions(FVector& OutLeft, FVector& OutRight, bool& bOutTracked) const;
 
+	/** Get the runtime-located per-view pose (position + orientation) and the
+	 *  off-axis (Kooima) fov for view i (0=left, 1=right) from xrLocateViews.
+	 *  Submit these in the projection layer (matches cube_handle_d3d12_win).
+	 *  Returns false if ViewIndex is out of range. */
+	bool GetViewData(int32 ViewIndex, FVector& OutPos, FQuat& OutOrient, XrFovf& OutFov) const;
+
 	/** Request 2D or 3D display mode. Updates ViewConfig on success. */
 	bool RequestDisplayMode(bool bMode3D);
 
@@ -204,6 +210,13 @@ private:
 	{
 		FVector LeftEye = FVector::ZeroVector;
 		FVector RightEye = FVector::ZeroVector;
+		// Runtime-located per-view orientation + off-axis (Kooima) fov from
+		// xrLocateViews — submit these in the projection layer instead of a
+		// hardcoded fov, else the image is off-center / wrong aspect.
+		FQuat LeftOrient = FQuat::Identity;
+		FQuat RightOrient = FQuat::Identity;
+		XrFovf LeftFov = {};
+		XrFovf RightFov = {};
 		bool bTracked = false;
 	};
 	FEyeData EyeDataBuffer[2];

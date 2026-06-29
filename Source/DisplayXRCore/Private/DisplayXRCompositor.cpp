@@ -180,10 +180,20 @@ void FDisplayXRCompositor::CompositorLoop()
 		PV.SetNum(NV);
 		for (int32 i = 0; i < NV; i++) {
 			PV[i] = {}; PV[i].type = XR_TYPE_COMPOSITION_LAYER_PROJECTION_VIEW;
-			FVector E = (i == 0) ? LE : RE;
-			PV[i].pose.position = {(float)E.X, (float)E.Y, (float)E.Z};
-			PV[i].pose.orientation = {0,0,0,1};
-			PV[i].fov = {-0.5f, 0.5f, 0.3f, -0.3f};
+			// Submit the runtime's located pose + off-axis (Kooima) fov from
+			// xrLocateViews (matches cube_handle_d3d12_win). A hardcoded fov is
+			// off-center / wrong-aspect. Fall back only if locate data is missing.
+			FVector P; FQuat Q; XrFovf F;
+			if (Session->GetViewData(i, P, Q, F)) {
+				PV[i].pose.position = {(float)P.X, (float)P.Y, (float)P.Z};
+				PV[i].pose.orientation = {(float)Q.X, (float)Q.Y, (float)Q.Z, (float)Q.W};
+				PV[i].fov = F;
+			} else {
+				FVector E = (i == 0) ? LE : RE;
+				PV[i].pose.position = {(float)E.X, (float)E.Y, (float)E.Z};
+				PV[i].pose.orientation = {0,0,0,1};
+				PV[i].fov = {-0.5f, 0.5f, 0.3f, -0.3f};
+			}
 			PV[i].subImage.swapchain = Swapchain;
 			if (bUseCopyPath) {
 				// IPC array: each eye is its own slice; content copied to slice origin.
