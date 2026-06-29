@@ -110,6 +110,12 @@ private:
 	// that. In-process keeps the v0.4.3 single-tiled zero-copy path unchanged.
 	bool bUseCopyPath = false;                 // XRT_FORCE_MODE=ipc / DISPLAYXR_WORKSPACE_SESSION
 	TArray<FTextureRHIRef> ArraySwapchainRHI;  // wrapped imported arraySize=2 images (copy DEST)
+	// Per-view (per-slice) dims for the IPC array swapchain. MUST equal the tile
+	// dims (content fills the slice, like Unity) — an oversized slice trips the
+	// service's needs_scale → workspace scale-blit path which flips V (UE-only
+	// upside-down under the shell). The private RT stays display-sized for SBS.
+	uint32 SliceW = 0;
+	uint32 SliceH = 0;
 
 	// Compositor thread
 	FRunnableThread* Thread = nullptr;

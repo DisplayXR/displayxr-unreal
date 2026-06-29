@@ -748,11 +748,23 @@ bool FDisplayXRCompositor::CreateSwapchain()
 		for (auto F : Fmts) { if (F == 87) { SwapchainFormat = F; break; } if (F == 28) SwapchainFormat = F; }
 	}
 
+	// IPC: each array slice is PER-VIEW sized so content fills it (matches Unity).
+	// The private RT UE renders into stays display-sized (SwapchainWidth/Height).
+	uint32 CreateW = SwapchainWidth, CreateH = SwapchainHeight;
+	if (bUseCopyPath) {
+		FDisplayXRViewConfig VC = Session->GetViewConfig();
+		SliceW = VC.GetTileW() > 0 ? (uint32)VC.GetTileW() : (SwapchainWidth / 2);
+		SliceH = VC.GetTileH() > 0 ? (uint32)VC.GetTileH() : (SwapchainHeight / 2);
+		CreateW = SliceW; CreateH = SliceH;
+		UE_LOG(LogDisplayXRCompositor, Log, TEXT("Compositor: IPC array slice dims %ux%u (private RT %ux%u)"),
+			SliceW, SliceH, SwapchainWidth, SwapchainHeight);
+	}
+
 	const uint32 ArrSize = bUseCopyPath ? 2u : 1u;
 	XrSwapchainCreateInfo CI = {XR_TYPE_SWAPCHAIN_CREATE_INFO};
 	CI.usageFlags = XR_SWAPCHAIN_USAGE_COLOR_ATTACHMENT_BIT | XR_SWAPCHAIN_USAGE_SAMPLED_BIT;
 	CI.format = SwapchainFormat;
-	CI.sampleCount = 1; CI.width = SwapchainWidth; CI.height = SwapchainHeight;
+	CI.sampleCount = 1; CI.width = CreateW; CI.height = CreateH;
 	CI.faceCount = 1; CI.arraySize = ArrSize; CI.mipCount = 1;
 
 	XrResult r = xrCreateSwapchainFunc(S, &CI, &Swapchain);
