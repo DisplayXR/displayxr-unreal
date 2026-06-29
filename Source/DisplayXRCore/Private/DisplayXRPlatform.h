@@ -65,4 +65,12 @@ struct FDisplayXRPlatform
 	/** Override HWND for compositor: if non-null, the compositor uses this window
 	 *  instead of the game viewport's HWND. Set by the editor preview module. */
 	DISPLAYXRCORE_API static void* OverrideCompositorHWND;
+
+	/** The OS foreground window captured at module load (PostConfigInit) — under
+	 *  the shell this is the shell/launcher that spawned us. UE grabs foreground
+	 *  when it shows its game window on launch, which makes the shell stop
+	 *  displaying the app until the user alt-tabs back; the compositor hands
+	 *  foreground back to this window once it hides UE's window. Win32 HWND as
+	 *  void*; null off-Windows / outside a shell session. */
+	DISPLAYXRCORE_API static void* SavedShellForegroundHWND;
 };

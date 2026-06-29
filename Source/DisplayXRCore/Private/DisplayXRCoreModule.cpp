@@ -130,6 +130,13 @@ void FDisplayXRCoreModule::StartupModule()
 			CVarIdle->Set(0, ECVF_SetByCode);
 			UE_LOG(LogDisplayXRCore, Log, TEXT("DisplayXR: t.IdleWhenNotForeground=0 (shell: render while unfocused)"));
 		}
+#if PLATFORM_WINDOWS
+		// Capture the shell's foreground window NOW (module load, before UE creates
+		// and shows its game window and steals foreground). The compositor hands it
+		// back after hiding UE's window so the shell keeps displaying the app
+		// without the user having to alt-tab back.
+		FDisplayXRPlatform::SavedShellForegroundHWND = (void*)::GetForegroundWindow();
+#endif
 	}
 
 	// Set HMD priority higher than OpenXR/SteamVR so UE picks us
@@ -254,5 +261,6 @@ FDisplayXRSession* FDisplayXRCoreModule::GetSession()
 
 bool FDisplayXRPlatform::bSuppressCompositor = false;
 void* FDisplayXRPlatform::OverrideCompositorHWND = nullptr;
+void* FDisplayXRPlatform::SavedShellForegroundHWND = nullptr;
 
 IMPLEMENT_MODULE(FDisplayXRCoreModule, DisplayXRCore)

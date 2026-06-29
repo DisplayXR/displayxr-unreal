@@ -307,6 +307,16 @@ void FDisplayXRCompositor::CompositorLoop()
 		{
 			::SetWindowRgn((HWND)ParentHWND, ::CreateRectRgn(0, 0, 0, 0), true);
 			bWorkspaceWindowHidden = true;
+			// UE grabbed OS foreground when it showed its game window on launch,
+			// which makes the shell stop displaying the app until the user alt-tabs
+			// back. Now that the window is hidden, hand foreground back to the shell
+			// (captured at module load) so the app shows immediately. UE needs no
+			// foreground here: input arrives via the runtime forward + AddYawInput,
+			// and rendering is kept alive by t.IdleWhenNotForeground 0.
+			if (HWND ShellFg = (HWND)FDisplayXRPlatform::SavedShellForegroundHWND)
+			{
+				if (::IsWindow(ShellFg)) ::SetForegroundWindow(ShellFg);
+			}
 		}
 #endif
 		int32 Cols = FMath::Max(VC.TileColumns, 1);
