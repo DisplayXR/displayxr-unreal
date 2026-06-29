@@ -618,8 +618,11 @@ void FDisplayXRCompositor::ReleaseImage_RenderThread(FRHICommandListImmediate& R
 				RHICmdList.CopyTexture(SwapchainTexture, Dst, CopyInfo);
 			}
 			RHICmdList.Transition(FRHITransitionInfo(Dst, ERHIAccess::CopyDest, ERHIAccess::Present));
+			// Flush so the copy is queued before xrReleaseSwapchainImage; rely on
+			// the runtime's swapchain-release GPU sync rather than a full CPU stall
+			// (BlockUntilGPUIdle halved the framerate). If the service ever reads a
+			// torn/incomplete slice, reinstate a *targeted* fence wait here.
 			RHICmdList.SubmitCommandsHint();
-			RHICmdList.BlockUntilGPUIdle();
 		}
 	}
 	else if (SwapchainTexture)
