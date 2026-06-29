@@ -26,6 +26,30 @@ struct XrSwapchainImageD3D12KHR { XrStructureType type; void* next; void* textur
 static const wchar_t* OVERLAY_CLASS = L"DisplayXROverlay";
 static bool bClassReg = false;
 static LRESULT CALLBACK OverlayProc(HWND h, UINT m, WPARAM w, LPARAM l) {
+	// The runtime forwards focused-app input (keyboard/mouse) via PostMessage to
+	// the HWND bound through XR_EXT_win32_window_binding — which for us is this
+	// inert child overlay. Relay that input to UE's REAL window (our parent) so
+	// WASD/mouse actually drive the app; otherwise every forwarded key/click hits
+	// DefWindowProcW and is dropped (native apps that bind their real window work).
+	switch (m) {
+	case WM_KEYDOWN: case WM_KEYUP: case WM_SYSKEYDOWN: case WM_SYSKEYUP:
+	case WM_CHAR: case WM_SYSCHAR: {
+		HWND tgt = GetParent(h);
+		// Strip the runtime's modifier-marker bits (25-28, reserved in WM_KEY*
+		// lParam) so UE sees a clean message.
+		if (tgt) PostMessageW(tgt, m, w, l & ~(LPARAM)(0xFu << 25));
+		return 0;
+	}
+	case WM_MOUSEMOVE:
+	case WM_LBUTTONDOWN: case WM_LBUTTONUP: case WM_LBUTTONDBLCLK:
+	case WM_RBUTTONDOWN: case WM_RBUTTONUP: case WM_RBUTTONDBLCLK:
+	case WM_MBUTTONDOWN: case WM_MBUTTONUP: case WM_MBUTTONDBLCLK:
+	case WM_MOUSEWHEEL: case WM_MOUSEHWHEEL: {
+		HWND tgt = GetParent(h);
+		if (tgt) PostMessageW(tgt, m, w, l);
+		return 0;
+	}
+	}
 	return m == WM_NCHITTEST ? HTTRANSPARENT : DefWindowProcW(h, m, w, l);
 }
 static bool RegClass() {
