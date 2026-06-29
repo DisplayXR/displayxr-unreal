@@ -101,6 +101,16 @@ private:
 	uint32 SwapchainHeight = 0;
 	int64 SwapchainFormat = 0;
 
+	// --- IPC array path ---
+	// The single-tiled arraySize=1 shared texture is non-coherent cross-process
+	// from UE's process (proven: even a dedicated device's writes don't reach the
+	// D3D11 service). The canonical stereo arraySize=2 swapchain IS coherent
+	// (proven on UE's own device). So over IPC we render UE's two eyes SBS into a
+	// private RT, then CopyTexture each eye into an arraySize=2 slice and submit
+	// that. In-process keeps the v0.4.3 single-tiled zero-copy path unchanged.
+	bool bUseCopyPath = false;                 // XRT_FORCE_MODE=ipc / DISPLAYXR_WORKSPACE_SESSION
+	TArray<FTextureRHIRef> ArraySwapchainRHI;  // wrapped imported arraySize=2 images (copy DEST)
+
 	// Compositor thread
 	FRunnableThread* Thread = nullptr;
 	TAtomic<bool> bThreadRunning{false};

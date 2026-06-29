@@ -185,8 +185,15 @@ void FDisplayXRCompositor::CompositorLoop()
 			PV[i].pose.orientation = {0,0,0,1};
 			PV[i].fov = {-0.5f, 0.5f, 0.3f, -0.3f};
 			PV[i].subImage.swapchain = Swapchain;
-			PV[i].subImage.imageRect.offset = {(i % Cols) * TW, (i / Cols) * TH};
-			PV[i].subImage.imageRect.extent = {TW, TH};
+			if (bUseCopyPath) {
+				// IPC array: each eye is its own slice; content copied to slice origin.
+				PV[i].subImage.imageArrayIndex = (uint32_t)i;
+				PV[i].subImage.imageRect.offset = {0, 0};
+				PV[i].subImage.imageRect.extent = {TW, TH};
+			} else {
+				PV[i].subImage.imageRect.offset = {(i % Cols) * TW, (i / Cols) * TH};
+				PV[i].subImage.imageRect.extent = {TW, TH};
+			}
 		}
 
 		XrCompositionLayerProjection PL = {XR_TYPE_COMPOSITION_LAYER_PROJECTION};
@@ -240,6 +247,16 @@ bool FDisplayXRCompositor::Initialize(void* InParentHWND, void* InD3DDevice, voi
 	// would corrupt UE's RHI command-list tracking.
 	if (!CreateRuntimeQueue()) return false;
 
+	// IPC vs in-process: over IPC the single-tiled shared texture is non-coherent
+	// cross-process from UE's process, so we take the arraySize=2 copy path.
+	{
+		const FString ForceMode = FPlatformMisc::GetEnvironmentVariable(TEXT("XRT_FORCE_MODE"));
+		const FString Workspace = FPlatformMisc::GetEnvironmentVariable(TEXT("DISPLAYXR_WORKSPACE_SESSION"));
+		bUseCopyPath = ForceMode.Equals(TEXT("ipc"), ESearchCase::IgnoreCase) || !Workspace.IsEmpty();
+		UE_LOG(LogDisplayXRCompositor, Log, TEXT("Compositor: swapchain path = %s"),
+			bUseCopyPath ? TEXT("IPC array copy (arraySize=2 slice/eye)") : TEXT("in-process single-tiled zero-copy"));
+	}
+
 	// Child-window strategy:
 	//  - Game mode (OverrideCompositorHWND null): keep the historical child
 	//    window. The fullscreen game window has no visible pixels behind it
@@ -276,6 +293,7 @@ void FDisplayXRCompositor::Shutdown()
 {
 	StopCompositorThread();
 	SwapchainImagesRHI.Empty();
+	ArraySwapchainRHI.Empty();
 	DestroySwapchain();
 	DestroyChildWindow();
 #if PLATFORM_WINDOWS
@@ -374,13 +392,51 @@ bool FDisplayXRCompositor::WrapSwapchainImagesAsRHI()
 #if PLATFORM_WINDOWS
 	if (SwapchainImages.Num() == 0) return false;
 
-	SwapchainImagesRHI.Empty(SwapchainImages.Num());
-
 	ID3D12DynamicRHI* DynamicRHI = GetID3D12DynamicRHI();
 	if (!DynamicRHI) {
 		UE_LOG(LogDisplayXRCompositor, Error, TEXT("Compositor: GetID3D12DynamicRHI returned null"));
 		return false;
 	}
+
+	// IPC array path: UE renders both eyes SBS into a PRIVATE RT (display-sized,
+	// so the existing AdjustViewRect tiling is unchanged); we later CopyTexture
+	// each eye into an arraySize=2 slice of the imported image. Wrap the imported
+	// array images separately as the copy DEST.
+	if (bUseCopyPath)
+	{
+		SwapchainImagesRHI.Empty(SwapchainImages.Num());
+		ArraySwapchainRHI.Empty(SwapchainImages.Num());
+		const uint32 W = SwapchainWidth, H = SwapchainHeight;
+		TArray<FTextureRHIRef>& OutPrivate = SwapchainImagesRHI;
+		TArray<FTextureRHIRef>& OutArray   = ArraySwapchainRHI;
+		TArray<FSwapchainImage> InImages = SwapchainImages;
+		ENQUEUE_RENDER_COMMAND(WrapDisplayXRArraySwapchain)(
+			[&OutPrivate, &OutArray, InImages, DynamicRHI, W, H](FRHICommandListImmediate& RHICmdList)
+			{
+				for (const FSwapchainImage& Img : InImages)
+				{
+					const FRHITextureCreateDesc Desc =
+						FRHITextureCreateDesc::Create2D(TEXT("DisplayXRPrivateRT"), (int32)W, (int32)H, PF_R8G8B8A8)
+							.SetFlags(ETextureCreateFlags::RenderTargetable | ETextureCreateFlags::ShaderResource)
+							.SetClearValue(FClearValueBinding::Black)
+							.SetInitialState(ERHIAccess::SRVMask);
+					OutPrivate.Add(RHICmdList.CreateTexture(Desc));
+
+					ID3D12Resource* Res = static_cast<ID3D12Resource*>(Img.D3D12Resource);
+					OutArray.Add(DynamicRHI->RHICreateTexture2DArrayFromResource(
+						PF_R8G8B8A8,
+						ETextureCreateFlags::RenderTargetable | ETextureCreateFlags::ShaderResource,
+						FClearValueBinding::Transparent, Res));
+				}
+			});
+		FlushRenderingCommands();
+		UE_LOG(LogDisplayXRCompositor, Log, TEXT("Compositor: IPC array path — %d private RTs + %d array images"),
+			SwapchainImagesRHI.Num(), ArraySwapchainRHI.Num());
+		GLog->Flush();
+		return SwapchainImagesRHI.Num() > 0 && ArraySwapchainRHI.Num() == SwapchainImagesRHI.Num();
+	}
+
+	SwapchainImagesRHI.Empty(SwapchainImages.Num());
 
 	const ETextureCreateFlags Flags =
 		ETextureCreateFlags::RenderTargetable |
@@ -519,9 +575,42 @@ void FDisplayXRCompositor::ReleaseImage_RenderThread(FRHICommandListImmediate& R
 	}
 	if (Swapchain == XR_NULL_HANDLE || !xrReleaseSwapchainImageFunc) return;
 
-	// Transition swapchain texture to Present before releasing to the runtime.
-	if (SwapchainTexture)
+	if (bUseCopyPath)
 	{
+		// IPC: UE rendered both eyes SBS into the private RT (SwapchainTexture).
+		// Copy each eye's tile into its arraySize=2 slice of the imported image,
+		// then drain so the writes are GPU-complete (cross-process coherence)
+		// before xrReleaseSwapchainImage.
+		const uint32 Idx = AcquiredImageIndex.Load();
+		if (SwapchainTexture && Idx < (uint32)ArraySwapchainRHI.Num() && ArraySwapchainRHI[Idx].IsValid())
+		{
+			FRHITexture* Dst = ArraySwapchainRHI[Idx].GetReference();
+			FDisplayXRViewConfig VC = Session->GetViewConfig();
+			const int32 NV = VC.GetViewCount();
+			const int32 TW = VC.GetTileW();
+			const int32 TH = VC.GetTileH();
+			const int32 Cols = FMath::Max(VC.TileColumns, 1);
+
+			RHICmdList.Transition(FRHITransitionInfo(SwapchainTexture, ERHIAccess::Unknown, ERHIAccess::CopySrc));
+			RHICmdList.Transition(FRHITransitionInfo(Dst, ERHIAccess::Unknown, ERHIAccess::CopyDest));
+			for (int32 i = 0; i < NV; i++)
+			{
+				FRHICopyTextureInfo CopyInfo;
+				CopyInfo.Size = FIntVector(TW, TH, 1);
+				CopyInfo.SourcePosition = FIntVector((i % Cols) * TW, (i / Cols) * TH, 0);
+				CopyInfo.DestPosition = FIntVector(0, 0, 0);
+				CopyInfo.DestSliceIndex = (uint32)i;
+				CopyInfo.NumSlices = 1;
+				RHICmdList.CopyTexture(SwapchainTexture, Dst, CopyInfo);
+			}
+			RHICmdList.Transition(FRHITransitionInfo(Dst, ERHIAccess::CopyDest, ERHIAccess::Present));
+			RHICmdList.SubmitCommandsHint();
+			RHICmdList.BlockUntilGPUIdle();
+		}
+	}
+	else if (SwapchainTexture)
+	{
+		// In-process: UE rendered directly into the swapchain image (zero-copy).
 		RHICmdList.Transition(FRHITransitionInfo(SwapchainTexture, ERHIAccess::Unknown, ERHIAccess::Present));
 		RHICmdList.SubmitCommandsHint();
 	}
@@ -649,14 +738,22 @@ bool FDisplayXRCompositor::CreateSwapchain()
 	TArray<int64_t> Fmts; Fmts.SetNum(FC);
 	xrEnumerateSwapchainFormatsFunc(S, FC, &FC, Fmts.GetData());
 
-	SwapchainFormat = Fmts[0];
-	for (auto F : Fmts) { if (F == 87) { SwapchainFormat = F; break; } if (F == 28) SwapchainFormat = F; }
+	// In-process single-tiled prefers BGRA(87); the IPC array path uses RGBA(28)
+	// (proven coherent cross-process) so the private-RT→slice copy is straight.
+	if (bUseCopyPath) {
+		SwapchainFormat = 28;
+		for (auto F : Fmts) { if (F == 28) { SwapchainFormat = 28; break; } }
+	} else {
+		SwapchainFormat = Fmts[0];
+		for (auto F : Fmts) { if (F == 87) { SwapchainFormat = F; break; } if (F == 28) SwapchainFormat = F; }
+	}
 
+	const uint32 ArrSize = bUseCopyPath ? 2u : 1u;
 	XrSwapchainCreateInfo CI = {XR_TYPE_SWAPCHAIN_CREATE_INFO};
 	CI.usageFlags = XR_SWAPCHAIN_USAGE_COLOR_ATTACHMENT_BIT | XR_SWAPCHAIN_USAGE_SAMPLED_BIT;
 	CI.format = SwapchainFormat;
 	CI.sampleCount = 1; CI.width = SwapchainWidth; CI.height = SwapchainHeight;
-	CI.faceCount = 1; CI.arraySize = 1; CI.mipCount = 1;
+	CI.faceCount = 1; CI.arraySize = ArrSize; CI.mipCount = 1;
 
 	XrResult r = xrCreateSwapchainFunc(S, &CI, &Swapchain);
 	if (!XR_SUCCEEDED(r)) { UE_LOG(LogDisplayXRCompositor, Error, TEXT("xrCreateSwapchain failed %d"), (int)r); return false; }
