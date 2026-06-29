@@ -48,6 +48,36 @@ public:
 	FDisplayXRCompositor* Owner;
 };
 
+void FDisplayXRCompositor::ComputeTileDims(int32& OutTW, int32& OutTH) const
+{
+	FDisplayXRViewConfig VC = Session->GetViewConfig();
+	OutTW = FMath::Max(1, VC.GetTileW());
+	OutTH = FMath::Max(1, VC.GetTileH());
+#if PLATFORM_WINDOWS
+	// Measure the BOUND window (overlay) — under the shell the runtime sizes it to
+	// the workspace window, so this tracks a resize. The device's CacheWindowSize
+	// reads the same HWND, so UE's render rect, the copy source rect, and the
+	// submitted imageRect all agree and the content aspect tracks the window.
+	HWND BoundHWND = (HWND)GetBoundHWND();
+	if (BoundHWND)
+	{
+		RECT pcr = {};
+		if (::GetClientRect(BoundHWND, &pcr))
+		{
+			const int32 BoundW = pcr.right - pcr.left;
+			const int32 BoundH = pcr.bottom - pcr.top;
+			if (BoundW > 0 && BoundH > 0)
+			{
+				const int32 ClampedW = FMath::Min<int32>(BoundW, (int32)SwapchainWidth);
+				const int32 ClampedH = FMath::Min<int32>(BoundH, (int32)SwapchainHeight);
+				OutTW = FMath::Max(1, FMath::RoundToInt(ClampedW * VC.ScaleX));
+				OutTH = FMath::Max(1, FMath::RoundToInt(ClampedH * VC.ScaleY));
+			}
+		}
+	}
+#endif
+}
+
 void FDisplayXRCompositor::CompositorLoop()
 {
 #if PLATFORM_WINDOWS
@@ -136,19 +166,23 @@ void FDisplayXRCompositor::CompositorLoop()
 		// the current window size, and so that both sides agree on tile dims.
 		FDisplayXRViewConfig VC = Session->GetViewConfig();
 		int32 NV = VC.GetViewCount();
-		int32 TW = VC.GetTileW();
-		int32 TH = VC.GetTileH();
+		// Window-relative tile dims (both paths) — the SAME helper the copy uses,
+		// so UE's render rect, the copy source, and this imageRect all agree and
+		// the content aspect tracks the window (correct under resize).
+		int32 TW, TH;
+		ComputeTileDims(TW, TH);
 #if PLATFORM_WINDOWS
-		if (ParentHWND && ChildHWND)
+		// In-process / forced-IPC: keep ChildHWND sized to UE's main window so the
+		// runtime's GetClientRect(ChildHWND) sees it. Under the SHELL we do NOT do
+		// this — the runtime sizes the overlay to the workspace window (it owns the
+		// size), and we measure that (GetBoundHWND) so content tracks the resize.
+		if (!bWorkspaceSession && ParentHWND && ChildHWND)
 		{
 			RECT pcr = {};
 			if (::GetClientRect((HWND)ParentHWND, &pcr))
 			{
 				const int32 ParentW = pcr.right - pcr.left;
 				const int32 ParentH = pcr.bottom - pcr.top;
-
-				// Keep ChildHWND sized to match the parent so runtime's
-				// GetClientRect(ChildHWND) sees the current size.
 				RECT ccr = {};
 				::GetClientRect((HWND)ChildHWND, &ccr);
 				if (ParentW > 0 && ParentH > 0 &&
@@ -156,21 +190,6 @@ void FDisplayXRCompositor::CompositorLoop()
 				{
 					::SetWindowPos((HWND)ChildHWND, nullptr, 0, 0, ParentW, ParentH,
 						SWP_NOZORDER | SWP_NOACTIVATE);
-				}
-
-				// Single-tiled (in-process) path: window-scale the tile sub-rect.
-				// IPC array path keeps FIXED slice dims (TW/TH = GetTileW/H) so
-				// content always fills the fixed slice — a window-scaled tile would
-				// underfill it (black band / shift); AdjustViewRect matches this.
-				if (!bUseCopyPath && ParentW > 0 && ParentH > 0)
-				{
-					// Clamp against the physical swapchain (worst-case panel size).
-					// Spec: swapchain is never reallocated — if the user drags
-					// larger than the panel, cap tile dims at panel scale × view_scale.
-					const int32 ClampedW = FMath::Min<int32>(ParentW, (int32)SwapchainWidth);
-					const int32 ClampedH = FMath::Min<int32>(ParentH, (int32)SwapchainHeight);
-					TW = FMath::Max(1, FMath::RoundToInt(ClampedW * VC.ScaleX));
-					TH = FMath::Max(1, FMath::RoundToInt(ClampedH * VC.ScaleY));
 				}
 			}
 		}
@@ -266,7 +285,8 @@ bool FDisplayXRCompositor::Initialize(void* InParentHWND, void* InD3DDevice, voi
 	{
 		const FString ForceMode = FPlatformMisc::GetEnvironmentVariable(TEXT("XRT_FORCE_MODE"));
 		const FString Workspace = FPlatformMisc::GetEnvironmentVariable(TEXT("DISPLAYXR_WORKSPACE_SESSION"));
-		bUseCopyPath = ForceMode.Equals(TEXT("ipc"), ESearchCase::IgnoreCase) || !Workspace.IsEmpty();
+		bWorkspaceSession = !Workspace.IsEmpty();
+		bUseCopyPath = ForceMode.Equals(TEXT("ipc"), ESearchCase::IgnoreCase) || bWorkspaceSession;
 		UE_LOG(LogDisplayXRCompositor, Log, TEXT("Compositor: swapchain path = %s"),
 			bUseCopyPath ? TEXT("IPC array copy (arraySize=2 slice/eye)") : TEXT("in-process single-tiled zero-copy"));
 	}
@@ -601,8 +621,11 @@ void FDisplayXRCompositor::ReleaseImage_RenderThread(FRHICommandListImmediate& R
 			FRHITexture* Dst = ArraySwapchainRHI[Idx].GetReference();
 			FDisplayXRViewConfig VC = Session->GetViewConfig();
 			const int32 NV = VC.GetViewCount();
-			const int32 TW = VC.GetTileW();
-			const int32 TH = VC.GetTileH();
+			// Window-relative — MUST match UE's AdjustViewRect render rect and the
+			// projection imageRect (same helper, same window), else the copy reads
+			// a different region than UE drew (black band / shifted tile).
+			int32 TW, TH;
+			ComputeTileDims(TW, TH);
 			const int32 Cols = FMath::Max(VC.TileColumns, 1);
 
 			RHICmdList.Transition(FRHITransitionInfo(SwapchainTexture, ERHIAccess::Unknown, ERHIAccess::CopySrc));

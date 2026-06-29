@@ -65,6 +65,13 @@ public:
 	uint32 GetSwapchainWidth() const { return SwapchainWidth; }
 	uint32 GetSwapchainHeight() const { return SwapchainHeight; }
 
+	/** The HWND bound to the OpenXR session (the child overlay, or the parent in
+	 *  the editor-override case). Under the shell the RUNTIME sizes this to the
+	 *  workspace window, so UE + the plugin must measure THIS window (not UE's
+	 *  own top-level window) for render/tile dims, else content can't track a
+	 *  workspace resize. */
+	void* GetBoundHWND() const { return ChildHWND ? ChildHWND : ParentHWND; }
+
 	/** True on the IPC array path: each eye renders at the FIXED per-view slice
 	 *  size (content fills the slice). AdjustViewRect must NOT window-scale tiles
 	 *  there, else a smaller-than-display window underfills the fixed slice
@@ -74,6 +81,11 @@ public:
 private:
 	bool CreateChildWindow(void* InParentHWND);
 	void DestroyChildWindow();
+	// Window-relative per-view tile dims from ParentHWND's client rect (matches the
+	// device's AdjustViewRect math). The IPC array copy AND projection both call
+	// this so UE's rendered tile, the copy source rect, and the submitted imageRect
+	// all agree → content aspect tracks the window (correct under resize).
+	void ComputeTileDims(int32& OutTW, int32& OutTH) const;
 	bool CreateSwapchain();
 	void DestroySwapchain();
 	bool WrapSwapchainImagesAsRHI();
@@ -115,6 +127,7 @@ private:
 	// private RT, then CopyTexture each eye into an arraySize=2 slice and submit
 	// that. In-process keeps the v0.4.3 single-tiled zero-copy path unchanged.
 	bool bUseCopyPath = false;                 // XRT_FORCE_MODE=ipc / DISPLAYXR_WORKSPACE_SESSION
+	bool bWorkspaceSession = false;            // DISPLAYXR_WORKSPACE_SESSION (shell) — runtime owns the overlay size
 	TArray<FTextureRHIRef> ArraySwapchainRHI;  // wrapped imported arraySize=2 images (copy DEST)
 	// Per-view (per-slice) dims for the IPC array swapchain. MUST equal the tile
 	// dims (content fills the slice, like Unity) — an oversized slice trips the
