@@ -1266,6 +1266,22 @@ void FDisplayXRSession::PumpEvents()
 				bSessionRunning.Store(false);
 				UE_LOG(LogDisplayXRSession, Log, TEXT("DisplayXR Session: STOPPING — session ended, frame loop parked"));
 			}
+			else if (SC->state == XR_SESSION_STATE_EXITING)
+			{
+				// The runtime asked the app to terminate (shell close drives
+				// EXIT_REQUEST -> STOPPING -> EXITING; xrEndSession above queues
+				// EXITING because the runtime set sess->exiting). End state
+				// reached: request UE engine shutdown so the PROCESS actually
+				// exits, instead of spinning a parked, session-less frame loop
+				// forever (the teardown "hang"). Guarded to request exit once.
+				bSessionRunning.Store(false);
+				if (!bExitRequested)
+				{
+					bExitRequested = true;
+					UE_LOG(LogDisplayXRSession, Log, TEXT("DisplayXR Session: EXITING - requesting app exit"));
+					FPlatformMisc::RequestExit(false);
+				}
+			}
 		}
 		EventData = {XR_TYPE_EVENT_DATA_BUFFER};
 	}

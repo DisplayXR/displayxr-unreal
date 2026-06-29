@@ -3,6 +3,7 @@
 
 #include "DisplayXRCompositor.h"
 #include "DisplayXRPlatform.h"
+#include "HAL/IConsoleManager.h"
 
 #if PLATFORM_WINDOWS
 #include "Windows/AllowWindowsPlatformTypes.h"
@@ -113,17 +114,32 @@ void FDisplayXRCompositor::CompositorLoop()
 
 	while (!bStopRequested.Load())
 	{
-		if (!Session->IsSessionRunning()) { FPlatformProcess::Sleep(0.01f); continue; }
-
-		// Pump lifecycle events (STOPPING, focus/visibility) on THIS thread,
-		// serialized with the frame calls below — polling on the game thread while
-		// we're mid-frame deadlocks the in-process native compositor. FOCUSED was
-		// already reached in the session's warmup (CreateSessionWithGraphics), so
-		// this only ever sees steady-state and cannot trigger the late-FOCUSED
-		// handshake livelock. On STOPPING it parks the loop; re-check before
-		// beginning a frame so we never xrBeginFrame on an ended session.
+		// Pump lifecycle events (STOPPING, EXITING, focus/visibility) on THIS
+		// (compositor) thread, serialized with the frame calls below. FOCUSED was
+		// already reached in the session warmup (CreateSessionWithGraphics), so this
+		// only ever sees steady-state and cannot trigger the late-FOCUSED handshake
+		// livelock. CRITICAL: this MUST run even when the session is parked. On a
+		// shell close the runtime drives EXIT_REQUEST → STOPPING; we call
+		// xrEndSession (parking the session), which makes the runtime queue
+		// EXITING — but EXITING is only delivered on a SUBSEQUENT poll. The old code
+		// gated PumpEvents behind IsSessionRunning and parked first, so after
+		// STOPPING it never polled again: EXITING was stranded, nothing requested
+		// app exit, and the process spun a parked, session-less loop forever (the
+		// teardown "hang"). Pump first, unconditionally.
 		Session->PumpEvents();
-		if (!Session->IsSessionRunning()) { continue; }
+
+		// Parked (session ended, e.g. post-STOPPING / awaiting EXITING). Wake any
+		// game thread blocked in AcquireImage_GameThread (manual-reset
+		// BeginFrameReadyEvent) so it bails with -1 instead of crawling at its
+		// 500ms timeout while UE shuts down. Keep looping so PumpEvents above can
+		// still receive EXITING and request exit. The loop exits when UE's HMD
+		// shutdown calls StopCompositorThread (bStopRequested).
+		if (!Session->IsSessionRunning())
+		{
+			if (BeginFrameReadyEvent) BeginFrameReadyEvent->Trigger();
+			FPlatformProcess::Sleep(0.01f);
+			continue;
+		}
 
 		FrameCount++;
 
@@ -216,6 +232,25 @@ void FDisplayXRCompositor::CompositorLoop()
 						SWP_NOZORDER | SWP_NOACTIVATE);
 				}
 			}
+		}
+		// Under the shell, UE's own top-level window would otherwise show its
+		// fullscreen mono mirror on the desktop, over the shell. Hide it WITHOUT
+		// changing its style, size, or position — every other approach perturbs the
+		// 3D content:
+		//   - off-screen park / shrink drags or clips the WS_CHILD overlay the
+		//     runtime measures -> DISTORTED content;
+		//   - WS_EX_LAYERED (transparent) breaks UE's flip-model present to the
+		//     window, UE falls back to a differently-aligned render -> WRONG POV
+		//     (camera too low). (Confirmed: hidden-via-layered <-> POV shifted.)
+		// Instead clip the window to an EMPTY region: the window rect stays
+		// full-size at its origin (overlay geometry + runtime Kooima untouched, the
+		// swapchain present is NOT redirected) but nothing composites to the
+		// desktop. UE keeps rendering its scene (which the plugin copies into the
+		// array swapchain) — paired with t.IdleWhenNotForeground 0. Applied once.
+		else if (bWorkspaceSession && ParentHWND && !bWorkspaceWindowHidden)
+		{
+			::SetWindowRgn((HWND)ParentHWND, ::CreateRectRgn(0, 0, 0, 0), true);
+			bWorkspaceWindowHidden = true;
 		}
 #endif
 		int32 Cols = FMath::Max(VC.TileColumns, 1);
@@ -313,6 +348,21 @@ bool FDisplayXRCompositor::Initialize(void* InParentHWND, void* InD3DDevice, voi
 		bUseCopyPath = ForceMode.Equals(TEXT("ipc"), ESearchCase::IgnoreCase) || bWorkspaceSession;
 		UE_LOG(LogDisplayXRCompositor, Log, TEXT("Compositor: swapchain path = %s"),
 			bUseCopyPath ? TEXT("IPC array copy (arraySize=2 slice/eye)") : TEXT("in-process single-tiled zero-copy"));
+	}
+
+	// Under the shell UE's top-level window is never the foreground window (the
+	// shell's workspace window is), so by default UE throttles its render loop to
+	// a few fps when it loses focus — which starves the compositor thread of real
+	// frames. Keep it rendering at full rate: UE's equivalent of Unity's "Run in
+	// Background". Paired with the off-screen window park in CompositorLoop so the
+	// still-rendering window shows nothing on the desktop.
+	if (bWorkspaceSession)
+	{
+		if (IConsoleVariable* CVarIdle =
+		        IConsoleManager::Get().FindConsoleVariable(TEXT("t.IdleWhenNotForeground")))
+		{
+			CVarIdle->Set(0, ECVF_SetByCode);
+		}
 	}
 
 	// Child-window strategy:
@@ -574,6 +624,16 @@ int32 FDisplayXRCompositor::AcquireImage_GameThread()
 			UE_LOG(LogDisplayXRCompositor, Warning, TEXT("AcquireColorTexture #%d: BeginFrameReady timeout"), LocalCallCount);
 			GLog->Flush();
 		}
+		return -1;
+	}
+
+	// Session parked / stopping (e.g. the shell closed the app, driving STOPPING).
+	// The compositor thread wakes us via BeginFrameReadyEvent on park, but there is
+	// no live session to acquire from — return no-image so UE completes the frame
+	// and proceeds to shut down, rather than acquiring/waiting on a dead swapchain
+	// (which would crawl at the 500ms timeout and look hung).
+	if (bStopRequested.Load() || (Session && !Session->IsSessionRunning()))
+	{
 		return -1;
 	}
 

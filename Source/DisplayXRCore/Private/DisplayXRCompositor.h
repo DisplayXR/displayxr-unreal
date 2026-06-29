@@ -104,6 +104,9 @@ private:
 	// Child window
 	void* ChildHWND = nullptr;
 	void* ParentHWND = nullptr;
+	// Shell: set once after clipping ParentHWND to an empty region to hide UE's
+	// top-level mono window from the desktop without moving/resizing/restyling it.
+	bool bWorkspaceWindowHidden = false;
 
 	// UE's D3D12 device (borrowed, not owned) + dedicated runtime queue (owned)
 	void* UEDevice = nullptr;

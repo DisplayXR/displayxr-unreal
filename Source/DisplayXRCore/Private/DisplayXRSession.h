@@ -170,6 +170,9 @@ private:
 	// CompositorLoop park gate, Tick LocateViews gate).
 	TAtomic<XrSessionState> SessionState{XR_SESSION_STATE_UNKNOWN};
 	TAtomic<bool> bSessionRunning{false};
+	// Set once when XR_SESSION_STATE_EXITING is handled, so the app requests
+	// engine exit exactly once (PumpEvents runs every parked-loop iteration).
+	bool bExitRequested = false;
 
 	// Function pointers (resolved via xrGetInstanceProcAddr)
 	PFN_xrGetInstanceProcAddr xrGetInstanceProcAddrFunc = nullptr;
