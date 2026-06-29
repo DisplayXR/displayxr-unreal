@@ -4,6 +4,10 @@
 #include "DisplayXRCompositor.h"
 #include "DisplayXRPlatform.h"
 #include "HAL/IConsoleManager.h"
+#include "Engine/Engine.h"
+#include "Engine/GameViewportClient.h"
+#include "Engine/World.h"
+#include "GameFramework/PlayerController.h"
 
 #if PLATFORM_WINDOWS
 #include "Windows/AllowWindowsPlatformTypes.h"
@@ -26,6 +30,35 @@ struct XrSwapchainImageD3D12KHR { XrStructureType type; void* next; void* textur
 #if PLATFORM_WINDOWS
 static const wchar_t* OVERLAY_CLASS = L"DisplayXROverlay";
 static bool bClassReg = false;
+
+// Camera-look drag state for OverlayProc (game thread only). The runtime forwards
+// WM_MOUSEMOVE with wParam=0 (no MK_* bits — it synthesizes moves from the shell's
+// IPC cursor stream), so we latch the held state from the button events instead.
+static bool sOverlayBtnHeld = false;
+static bool sOverlayTracking = false;
+static int sOverlayLastX = 0;
+static int sOverlayLastY = 0;
+
+// Drive camera-look straight on the local PlayerController. Under the shell UE's
+// window is never OS-foreground and the cursor lives over the shell window, so
+// Slate routes mouse input (raw OR cursor-based) AWAY from UE's viewport — the
+// look axis never sees it no matter how we inject at the input layer. Skip that
+// layer entirely: AddYaw/PitchInput accumulates onto the controller's rotation
+// input the same way the game's own look mapping does (Pawn::AddControllerYawInput
+// forwards here), so it works regardless of focus/capture/cursor position. Game
+// thread only (OverlayProc runs in UE's message pump). Scale = degrees per pixel.
+static void DisplayXRFeedLook(int dx, int dy)
+{
+	if (!GEngine || !GEngine->GameViewport) return;
+	UWorld* W = GEngine->GameViewport->GetWorld();
+	if (!W) return;
+	APlayerController* PC = W->GetFirstPlayerController();
+	if (!PC) return;
+	const float kScale = 0.15f;
+	if (dx != 0) PC->AddYawInput(dx * kScale);
+	if (dy != 0) PC->AddPitchInput(dy * kScale);
+}
+
 static LRESULT CALLBACK OverlayProc(HWND h, UINT m, WPARAM w, LPARAM l) {
 	// The runtime forwards focused-app input (keyboard/mouse) via PostMessage to
 	// the HWND bound through XR_EXT_win32_window_binding — which for us is this
@@ -41,10 +74,33 @@ static LRESULT CALLBACK OverlayProc(HWND h, UINT m, WPARAM w, LPARAM l) {
 		if (tgt) PostMessageW(tgt, m, w, l & ~(LPARAM)(0xFu << 25));
 		return 0;
 	}
-	case WM_MOUSEMOVE:
-	case WM_LBUTTONDOWN: case WM_LBUTTONUP: case WM_LBUTTONDBLCLK:
-	case WM_RBUTTONDOWN: case WM_RBUTTONUP: case WM_RBUTTONDBLCLK:
-	case WM_MBUTTONDOWN: case WM_MBUTTONUP: case WM_MBUTTONDBLCLK:
+	case WM_MOUSEMOVE: {
+		// While a drag is held (the shell's "left-drag = app input" gesture), feed
+		// the frame-to-frame delta to the camera. wParam has NO button bits here, so
+		// held comes from the latched button events below; seed on the first move.
+		const int mx = (int)(int16_t)(l & 0xFFFF);          // GET_X_LPARAM, no <windowsx.h>
+		const int my = (int)(int16_t)((l >> 16) & 0xFFFF);  // GET_Y_LPARAM (signed)
+		if (sOverlayBtnHeld) {
+			if (sOverlayTracking) DisplayXRFeedLook(mx - sOverlayLastX, my - sOverlayLastY);
+			sOverlayLastX = mx; sOverlayLastY = my; sOverlayTracking = true;
+		}
+		HWND tgt = GetParent(h);
+		if (tgt) PostMessageW(tgt, m, w, l);
+		return 0;
+	}
+	case WM_LBUTTONDOWN: case WM_RBUTTONDOWN: case WM_MBUTTONDOWN:
+	case WM_LBUTTONDBLCLK: case WM_RBUTTONDBLCLK: case WM_MBUTTONDBLCLK: {
+		sOverlayBtnHeld = true; sOverlayTracking = false;  // next move seeds the origin
+		HWND tgt = GetParent(h);
+		if (tgt) PostMessageW(tgt, m, w, l);
+		return 0;
+	}
+	case WM_LBUTTONUP: case WM_RBUTTONUP: case WM_MBUTTONUP: {
+		sOverlayBtnHeld = false; sOverlayTracking = false;
+		HWND tgt = GetParent(h);
+		if (tgt) PostMessageW(tgt, m, w, l);
+		return 0;
+	}
 	case WM_MOUSEWHEEL: case WM_MOUSEHWHEEL: {
 		HWND tgt = GetParent(h);
 		if (tgt) PostMessageW(tgt, m, w, l);

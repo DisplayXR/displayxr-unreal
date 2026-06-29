@@ -116,6 +116,22 @@ void FDisplayXRCoreModule::StartupModule()
 	UE_LOG(LogDisplayXRCore, Log, TEXT("DisplayXR: Set DPI awareness to per-monitor"));
 #endif
 
+	// Under the shell (DISPLAYXR_WORKSPACE_SESSION) UE's window is never the OS
+	// foreground window, so UE idles its render + STARTUP when unfocused — the app
+	// comes up stuck on the loading spinner until you alt-tab in. Disable the
+	// not-foreground idle here at module load (PostConfigInit — before the engine
+	// can idle), not in the compositor's late xrCreateSession path. Code-set via
+	// IConsoleManager because t.IdleWhenNotForeground is an ECVF_Cheat cvar the
+	// engine refuses to read from DefaultEngine.ini.
+	if (!FPlatformMisc::GetEnvironmentVariable(TEXT("DISPLAYXR_WORKSPACE_SESSION")).IsEmpty())
+	{
+		if (IConsoleVariable* CVarIdle = IConsoleManager::Get().FindConsoleVariable(TEXT("t.IdleWhenNotForeground")))
+		{
+			CVarIdle->Set(0, ECVF_SetByCode);
+			UE_LOG(LogDisplayXRCore, Log, TEXT("DisplayXR: t.IdleWhenNotForeground=0 (shell: render while unfocused)"));
+		}
+	}
+
 	// Set HMD priority higher than OpenXR/SteamVR so UE picks us
 	float HighestXrPluginPriority = 0.0f;
 	TArray<FString> XrPlugins = { TEXT("OpenXRHMD"), TEXT("SteamVR") };
