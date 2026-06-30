@@ -9,6 +9,9 @@
 #include "SceneViewExtension.h"
 #include "Modules/ModuleManager.h"
 #include "HAL/IConsoleManager.h"
+#include "HAL/Runnable.h"
+#include "HAL/RunnableThread.h"
+#include "HAL/ThreadSafeBool.h"
 #include "Framework/Application/IInputProcessor.h"
 #include "Framework/Application/SlateApplication.h"
 #include "GameFramework/PlayerController.h"
@@ -24,6 +27,73 @@
 #endif
 
 DEFINE_LOG_CATEGORY_STATIC(LogDisplayXRCore, Log, All);
+
+#if PLATFORM_WINDOWS
+#include "Windows/AllowWindowsPlatformTypes.h"
+#include <windows.h>
+#include "Windows/HideWindowsPlatformTypes.h"
+
+// Hide UE's own top-level desktop windows under the shell, from a thread that is
+// INDEPENDENT of the game thread. During UE's BLOCKING startup load (shaders /
+// level) the game thread is stalled, so the compositor loop — which normally hides
+// the window — hasn't started yet, and UE's black window covers the shell + other
+// apps for several seconds. This watcher clips every top-level visible window owned
+// by our process to an empty region the moment it appears (and hands OS foreground
+// back to the shell once), regardless of the game thread's state. Cross-thread
+// SetWindowRgn is allowed and does not require the owning thread to pump messages.
+// Clipping only hides the desktop composite — UE keeps rendering to the swapchain.
+class FDisplayXRWindowHider : public FRunnable
+{
+public:
+	explicit FDisplayXRWindowHider(void* InShellHWND) : ShellHWND(InShellHWND) {}
+	virtual bool Init() override { return true; }
+	virtual uint32 Run() override
+	{
+		bool bHandedBack = false;
+		int Iter = 0;
+		while (!bStop)
+		{
+			const int Hid = HideProcessTopLevelWindows();
+			if (Hid > 0 && !bHandedBack && ShellHWND && ::IsWindow((HWND)ShellHWND))
+			{
+				::SetForegroundWindow((HWND)ShellHWND);
+				bHandedBack = true;
+			}
+			// Poll fast during the startup-load window, then back off to keep
+			// steady-state overhead negligible (still catches a later re-show).
+			::Sleep(Iter < 1000 ? 30 : 500);
+			++Iter;
+		}
+		return 0;
+	}
+	virtual void Stop() override { bStop = true; }
+
+private:
+	static int HideProcessTopLevelWindows()
+	{
+		struct FCtx { DWORD Pid; int Hid; } Ctx{ ::GetCurrentProcessId(), 0 };
+		::EnumWindows([](HWND Hwnd, LPARAM Lp) -> BOOL
+		{
+			FCtx* C = reinterpret_cast<FCtx*>(Lp);
+			DWORD WPid = 0; ::GetWindowThreadProcessId(Hwnd, &WPid);
+			if (WPid != C->Pid) return 1;                      // other processes
+			if (::GetWindow(Hwnd, GW_OWNER) != nullptr) return 1; // owned popups
+			if (!::IsWindowVisible(Hwnd)) return 1;
+			RECT Box; const int T = ::GetWindowRgnBox(Hwnd, &Box);
+			if (T == NULLREGION) return 1;                     // already clipped empty
+			::SetWindowRgn(Hwnd, ::CreateRectRgn(0, 0, 0, 0), true);
+			++C->Hid;
+			return 1;
+		}, reinterpret_cast<LPARAM>(&Ctx));
+		return Ctx.Hid;
+	}
+	FThreadSafeBool bStop{ false };
+	void* ShellHWND = nullptr;
+};
+
+static FDisplayXRWindowHider* GWindowHider = nullptr;
+static FRunnableThread* GWindowHiderThread = nullptr;
+#endif
 
 // =============================================================================
 // Dev-mode input preprocessor: SHIFT+F1 toggles mouse cursor / input mode on
@@ -136,6 +206,12 @@ void FDisplayXRCoreModule::StartupModule()
 		// back after hiding UE's window so the shell keeps displaying the app
 		// without the user having to alt-tab back.
 		FDisplayXRPlatform::SavedShellForegroundHWND = (void*)::GetForegroundWindow();
+		// Start the window-hider watcher NOW (before UE creates + shows its game
+		// window), so UE's black window is clipped the instant it appears even while
+		// the game thread is blocked loading — it otherwise covers the shell and
+		// other apps for seconds.
+		GWindowHider = new FDisplayXRWindowHider(FDisplayXRPlatform::SavedShellForegroundHWND);
+		GWindowHiderThread = FRunnableThread::Create(GWindowHider, TEXT("DisplayXRWindowHider"));
 #endif
 	}
 
@@ -201,6 +277,16 @@ void FDisplayXRCoreModule::RegisterDevInputProcessor()
 
 void FDisplayXRCoreModule::ShutdownModule()
 {
+#if PLATFORM_WINDOWS
+	if (GWindowHiderThread)
+	{
+		GWindowHiderThread->Kill(true);  // Stop() + wait
+		delete GWindowHiderThread;
+		GWindowHiderThread = nullptr;
+	}
+	if (GWindowHider) { delete GWindowHider; GWindowHider = nullptr; }
+#endif
+
 	AtlasCaptureCmd.Reset();
 
 	if (PostEngineInitHandle.IsValid())
