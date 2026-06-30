@@ -197,6 +197,30 @@ void FDisplayXRCompositor::CompositorLoop()
 			continue;
 		}
 
+#if PLATFORM_WINDOWS
+		// Hide UE's own top-level window from the desktop (it otherwise shows its
+		// fullscreen mono mirror over the shell). Do it HERE — early, before the
+		// shouldRender gate below — so it's hidden during UE's load/shader phase too
+		// (shouldRender is false then; the old projection-section placement left the
+		// black window visible for several seconds). Clip to an EMPTY region: the
+		// window stays full-size at its origin (the WS_CHILD overlay geometry +
+		// runtime Kooima are untouched and the swapchain present is not redirected)
+		// but shows nothing. Then hand OS foreground back to the shell (captured at
+		// module load) — UE grabbed it when it showed its window, which otherwise
+		// keeps the shell from displaying the app until the user alt-tabs back. UE
+		// needs no foreground: input is the runtime forward + AddYawInput and render
+		// stays alive via t.IdleWhenNotForeground 0. Applied once.
+		if (bWorkspaceSession && ParentHWND && !bWorkspaceWindowHidden)
+		{
+			::SetWindowRgn((HWND)ParentHWND, ::CreateRectRgn(0, 0, 0, 0), true);
+			bWorkspaceWindowHidden = true;
+			if (HWND ShellFg = (HWND)FDisplayXRPlatform::SavedShellForegroundHWND)
+			{
+				if (::IsWindow(ShellFg)) ::SetForegroundWindow(ShellFg);
+			}
+		}
+#endif
+
 		FrameCount++;
 
 		// xrWaitFrame
@@ -289,35 +313,8 @@ void FDisplayXRCompositor::CompositorLoop()
 				}
 			}
 		}
-		// Under the shell, UE's own top-level window would otherwise show its
-		// fullscreen mono mirror on the desktop, over the shell. Hide it WITHOUT
-		// changing its style, size, or position — every other approach perturbs the
-		// 3D content:
-		//   - off-screen park / shrink drags or clips the WS_CHILD overlay the
-		//     runtime measures -> DISTORTED content;
-		//   - WS_EX_LAYERED (transparent) breaks UE's flip-model present to the
-		//     window, UE falls back to a differently-aligned render -> WRONG POV
-		//     (camera too low). (Confirmed: hidden-via-layered <-> POV shifted.)
-		// Instead clip the window to an EMPTY region: the window rect stays
-		// full-size at its origin (overlay geometry + runtime Kooima untouched, the
-		// swapchain present is NOT redirected) but nothing composites to the
-		// desktop. UE keeps rendering its scene (which the plugin copies into the
-		// array swapchain) — paired with t.IdleWhenNotForeground 0. Applied once.
-		else if (bWorkspaceSession && ParentHWND && !bWorkspaceWindowHidden)
-		{
-			::SetWindowRgn((HWND)ParentHWND, ::CreateRectRgn(0, 0, 0, 0), true);
-			bWorkspaceWindowHidden = true;
-			// UE grabbed OS foreground when it showed its game window on launch,
-			// which makes the shell stop displaying the app until the user alt-tabs
-			// back. Now that the window is hidden, hand foreground back to the shell
-			// (captured at module load) so the app shows immediately. UE needs no
-			// foreground here: input arrives via the runtime forward + AddYawInput,
-			// and rendering is kept alive by t.IdleWhenNotForeground 0.
-			if (HWND ShellFg = (HWND)FDisplayXRPlatform::SavedShellForegroundHWND)
-			{
-				if (::IsWindow(ShellFg)) ::SetForegroundWindow(ShellFg);
-			}
-		}
+		// (UE's stray top-level window is hidden + foreground handed back to the
+		// shell earlier in the loop, before the shouldRender gate — see above.)
 #endif
 		int32 Cols = FMath::Max(VC.TileColumns, 1);
 
