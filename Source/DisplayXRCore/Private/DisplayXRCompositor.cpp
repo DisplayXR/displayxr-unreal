@@ -66,11 +66,22 @@ static LRESULT CALLBACK OverlayProc(HWND h, UINT m, WPARAM w, LPARAM l) {
 	// WASD/mouse actually drive the app; otherwise every forwarded key/click hits
 	// DefWindowProcW and is dropped (native apps that bind their real window work).
 	switch (m) {
-	case WM_KEYDOWN: case WM_KEYUP: case WM_SYSKEYDOWN: case WM_SYSKEYUP:
-	case WM_CHAR: case WM_SYSCHAR: {
+	case WM_KEYDOWN: case WM_KEYUP: case WM_SYSKEYDOWN: case WM_SYSKEYUP: {
+		// The shell reserves Ctrl for its own chords (Ctrl+L launcher, Ctrl+1/2/3
+		// layouts, Ctrl+Space). The runtime still forwards the lone Ctrl keystroke,
+		// and UE's default pawn binds LeftControl to the MoveUp axis
+		// (ADefaultPawn::InitializeDefaultPawnInputBindings) — so pressing Ctrl
+		// (e.g. for Ctrl+L) jerks the camera vertically. Swallow Ctrl so it never
+		// drives the app under the shell. (Other modifiers still pass through.)
+		if (w == VK_CONTROL || w == VK_LCONTROL || w == VK_RCONTROL) return 0;
 		HWND tgt = GetParent(h);
 		// Strip the runtime's modifier-marker bits (25-28, reserved in WM_KEY*
 		// lParam) so UE sees a clean message.
+		if (tgt) PostMessageW(tgt, m, w, l & ~(LPARAM)(0xFu << 25));
+		return 0;
+	}
+	case WM_CHAR: case WM_SYSCHAR: {
+		HWND tgt = GetParent(h);
 		if (tgt) PostMessageW(tgt, m, w, l & ~(LPARAM)(0xFu << 25));
 		return 0;
 	}
