@@ -160,6 +160,33 @@ This prints because `GetUnrealInstallPath.bat` probes the registry first and fal
 ### Step 3.2: Strip binaries we don't want to ship (optional)
 Remove `Packages\DisplayXR_5.7\Intermediate\` if UAT left it behind — the shipped ZIP should only contain source + `Binaries/Win64/*`, `Resources/`, `Config/`, `DisplayXR.uplugin`.
 
+### Step 3.2.5: Code-sign the packaged binaries (capability-gated)
+The packaged plugin ships **precompiled** `Binaries\Win64\*.dll` (the
+DisplayXR UE module DLLs for engine 5.7) — these load into the user's
+UE editor, so Smart App Control blocks them unsigned. Sign them here,
+**before** zipping. (Unreal is the simplest of the three plugin repos —
+everything is already local, no CI asset to replace.)
+
+Gated on `SIGN_CMD`, set only on a signing-capable build machine.
+Without it, the build is unsigned exactly as before — no failure.
+
+```bash
+if [ -n "$SIGN_CMD" ] && uname -s | grep -qiE 'mingw|msys|cygwin|windows'; then
+  echo "=== Signing packaged Unreal binaries ==="
+  powershell -NoProfile -ExecutionPolicy Bypass -File Scripts\\sign-release.ps1 \
+    -Path "Packages\\DisplayXR_5.7\\Binaries\\Win64" -SignCmd "$SIGN_CMD"
+  # exit non-zero from the script fails the release — do not zip unsigned
+  SIGNED=yes
+else
+  echo "⚠  SIGNING SKIPPED — no signing capability; ZIP will be UNSIGNED."
+  SIGNED=no
+fi
+```
+Carry `SIGNED` into the final report. Note: when a UE developer recompiles
+the plugin for a different engine version or for their packaged game, UE
+regenerates those DLLs — those rebuilt binaries are the developer's to
+sign (their distribution), the same as any UE plugin.
+
 ### Step 3.3: Zip the packaged plugin
 Use pwsh:
 ```powershell
