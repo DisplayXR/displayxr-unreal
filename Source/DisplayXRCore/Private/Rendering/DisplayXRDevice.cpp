@@ -329,6 +329,10 @@ void FDisplayXRDevice::AdjustViewRect(const int32 ViewIndex, int32& X, int32& Y,
 	// logical RT size was the source of the prior eye-content bleed, not the
 	// tile offsets themselves.
 	CacheWindowSize();
+	// Window-relative tile dims (both paths). The IPC array copy + projection use
+	// the SAME window-relative dims (compositor's ComputeTileDims, same HWND), so
+	// the content aspect tracks the window → correct under resize (like the cube),
+	// while the array slice stays fixed-size so it never trips needs_scale.
 	const int32 TileW = FMath::Max(1, FMath::RoundToInt(CachedWindowW * CachedViewConfig.ScaleX));
 	const int32 TileH = FMath::Max(1, FMath::RoundToInt(CachedWindowH * CachedViewConfig.ScaleY));
 
@@ -558,10 +562,19 @@ void FDisplayXRDevice::CacheWindowSize() const
 	uint32 H = DI.DisplayPixelHeight > 0 ? (uint32)DI.DisplayPixelHeight : 1080;
 
 #if PLATFORM_WINDOWS
-	if (GameHWND)
+	// Measure the BOUND window (overlay) once the compositor exists — under the
+	// shell the runtime sizes it to the workspace window, so UE renders at the
+	// workspace size and content tracks a resize. Falls back to UE's own window
+	// (GameHWND) before the compositor/overlay exists.
+	HWND MeasureHWND = (HWND)GameHWND;
+	if (Compositor.IsValid() && Compositor->GetBoundHWND())
+	{
+		MeasureHWND = (HWND)Compositor->GetBoundHWND();
+	}
+	if (MeasureHWND)
 	{
 		RECT rc = {};
-		if (::GetClientRect((HWND)GameHWND, &rc))
+		if (::GetClientRect(MeasureHWND, &rc))
 		{
 			const int32 RectW = rc.right  - rc.left;
 			const int32 RectH = rc.bottom - rc.top;
@@ -941,10 +954,17 @@ void FDisplayXRDevice::ComputeViews()
 	Placement.rect_height_px    = DispPxH;
 
 #if PLATFORM_WINDOWS
-	if (GameHWND)
+	// Use the BOUND overlay (runtime-sized to the workspace window under the shell)
+	// for the render Kooima frustum, so UE renders at the WORKSPACE aspect — not
+	// its own fullscreen window. Otherwise the tile tracks the resize but the
+	// render projection stays 16:9 → content stretches. Falls back to UE's window.
+	HWND Hwnd = (HWND)GameHWND;
+	if (Compositor.IsValid() && Compositor->GetBoundHWND())
 	{
-		HWND Hwnd = (HWND)GameHWND;
-
+		Hwnd = (HWND)Compositor->GetBoundHWND();
+	}
+	if (Hwnd)
+	{
 		RECT rc;
 		GetClientRect(Hwnd, &rc);
 		const float WinPxW = (float)(rc.right - rc.left);

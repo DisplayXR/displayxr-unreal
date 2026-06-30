@@ -4,6 +4,20 @@ All notable changes to the DisplayXR Unreal plugin are documented here.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.5.0] - 2026-06-29
+
+UE is now a first-class DisplayXR shell citizen — it renders correctly over IPC and behaves correctly under the workspace shell.
+
+### Added
+- **Render over IPC (shell / forced-IPC).** The single-tiled `arraySize=1` shared-texture swapchain is non-coherent cross-process from UE's process (proven: even a dedicated device's writes don't reach the D3D11 service). Over IPC, UE now renders both eyes side-by-side into a private RT and `CopyTexture`s each eye into a slice of a canonical `arraySize=2` RGBA swapchain (robust on an engine device). In-process keeps the single-tiled zero-copy path. Resolves the 0.4.3 "content arrives black at the service compositor" known issue. (#23)
+- **Camera-look under the shell.** UE routes mouse by capture/cursor-position, not focus, so under the shell (cursor over the shell window, UE never foreground) injected input is dropped. The plugin now feeds the forwarded drag delta straight to the local `PlayerController` (`AddYaw/PitchInput`, the same path the game's own look mapping uses), driving look regardless of focus/capture.
+- **Keyboard input under the shell.** Forwarded `WM_KEY*`/`WM_MOUSE*` are relayed from the bound overlay to UE's real window (WASD/QE). Ctrl is intentionally swallowed — the shell reserves it for its chords (Ctrl+L / Ctrl+1/2/3 / Ctrl+Space) and UE's default pawn binds LeftControl to vertical movement.
+
+### Fixed
+- **Teardown hang.** Closing the app under the shell hung forever — the runtime drives `EXIT_REQUEST → STOPPING`; `xrEndSession` then queues `EXITING`, but the compositor loop parked on STOPPING before polling again, so EXITING was never received and the app spun a parked session-less loop. The loop now pumps events every iteration (before the park gate), requests engine exit on `EXITING`, and wakes/bails the game thread on park. Closes instantly.
+- **Stray fullscreen window over the shell.** UE's own top-level window showed its mono mirror on the desktop. It is now clipped to an empty region (full-size at its origin so the overlay geometry + Kooima and the swapchain present are untouched), and — because UE's blocking startup load stalls the game thread — a small watcher thread (independent of the game thread) hides it the instant it appears, so it no longer covers the shell during load.
+- **App didn't show until alt-tab.** UE renders the whole time but grabs OS foreground on launch, so the shell stopped displaying it. The shell's foreground window is captured at module load and handed back after the window is hidden; the app now appears on launch without an alt-tab. Also keeps UE rendering while unfocused (`t.IdleWhenNotForeground=0`, set at module load).
+
 ## [0.4.3] - 2026-06-27
 
 ### Fixed

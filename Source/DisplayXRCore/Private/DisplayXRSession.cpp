@@ -793,15 +793,22 @@ void FDisplayXRSession::LocateViews()
 	{
 		const int32 WriteIdx = 1 - EyeDataReadIndex.Load();
 		FEyeData& ED = EyeDataBuffer[WriteIdx];
+		auto Quat = [](const XrQuaternionf& q) { return FQuat(q.x, q.y, q.z, q.w); };
 		if (ViewCount >= 2)
 		{
 			ED.LeftEye = FVector(Views[0].pose.position.x, Views[0].pose.position.y, Views[0].pose.position.z);
 			ED.RightEye = FVector(Views[1].pose.position.x, Views[1].pose.position.y, Views[1].pose.position.z);
+			ED.LeftOrient = Quat(Views[0].pose.orientation);
+			ED.RightOrient = Quat(Views[1].pose.orientation);
+			ED.LeftFov = Views[0].fov;
+			ED.RightFov = Views[1].fov;
 		}
 		else if (ViewCount >= 1)
 		{
 			ED.LeftEye = FVector(Views[0].pose.position.x, Views[0].pose.position.y, Views[0].pose.position.z);
 			ED.RightEye = ED.LeftEye;
+			ED.LeftOrient = ED.RightOrient = Quat(Views[0].pose.orientation);
+			ED.LeftFov = ED.RightFov = Views[0].fov;
 		}
 		ED.bTracked = bTracked;
 		EyeDataReadIndex.Store(WriteIdx);
@@ -858,6 +865,17 @@ void FDisplayXRSession::GetEyePositions(FVector& OutLeft, FVector& OutRight, boo
 	OutLeft = ED.LeftEye;
 	OutRight = ED.RightEye;
 	bOutTracked = ED.bTracked;
+}
+
+bool FDisplayXRSession::GetViewData(int32 ViewIndex, FVector& OutPos, FQuat& OutOrient, XrFovf& OutFov) const
+{
+	if (ViewIndex < 0 || ViewIndex > 1) return false;
+	const int32 ReadIdx = EyeDataReadIndex.Load();
+	const FEyeData& ED = EyeDataBuffer[ReadIdx];
+	OutPos    = (ViewIndex == 0) ? ED.LeftEye    : ED.RightEye;
+	OutOrient = (ViewIndex == 0) ? ED.LeftOrient : ED.RightOrient;
+	OutFov    = (ViewIndex == 0) ? ED.LeftFov    : ED.RightFov;
+	return true;
 }
 
 bool FDisplayXRSession::RequestDisplayMode(bool bMode3D)
@@ -1247,6 +1265,22 @@ void FDisplayXRSession::PumpEvents()
 				}
 				bSessionRunning.Store(false);
 				UE_LOG(LogDisplayXRSession, Log, TEXT("DisplayXR Session: STOPPING — session ended, frame loop parked"));
+			}
+			else if (SC->state == XR_SESSION_STATE_EXITING)
+			{
+				// The runtime asked the app to terminate (shell close drives
+				// EXIT_REQUEST -> STOPPING -> EXITING; xrEndSession above queues
+				// EXITING because the runtime set sess->exiting). End state
+				// reached: request UE engine shutdown so the PROCESS actually
+				// exits, instead of spinning a parked, session-less frame loop
+				// forever (the teardown "hang"). Guarded to request exit once.
+				bSessionRunning.Store(false);
+				if (!bExitRequested)
+				{
+					bExitRequested = true;
+					UE_LOG(LogDisplayXRSession, Log, TEXT("DisplayXR Session: EXITING - requesting app exit"));
+					FPlatformMisc::RequestExit(false);
+				}
 			}
 		}
 		EventData = {XR_TYPE_EVENT_DATA_BUFFER};

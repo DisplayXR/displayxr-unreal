@@ -65,9 +65,27 @@ public:
 	uint32 GetSwapchainWidth() const { return SwapchainWidth; }
 	uint32 GetSwapchainHeight() const { return SwapchainHeight; }
 
+	/** The HWND bound to the OpenXR session (the child overlay, or the parent in
+	 *  the editor-override case). Under the shell the RUNTIME sizes this to the
+	 *  workspace window, so UE + the plugin must measure THIS window (not UE's
+	 *  own top-level window) for render/tile dims, else content can't track a
+	 *  workspace resize. */
+	void* GetBoundHWND() const { return ChildHWND ? ChildHWND : ParentHWND; }
+
+	/** True on the IPC array path: each eye renders at the FIXED per-view slice
+	 *  size (content fills the slice). AdjustViewRect must NOT window-scale tiles
+	 *  there, else a smaller-than-display window underfills the fixed slice
+	 *  (black band / shifted tile). Window-relative perspective is via Kooima. */
+	bool UsesArrayCopyPath() const { return bUseCopyPath; }
+
 private:
 	bool CreateChildWindow(void* InParentHWND);
 	void DestroyChildWindow();
+	// Window-relative per-view tile dims from ParentHWND's client rect (matches the
+	// device's AdjustViewRect math). The IPC array copy AND projection both call
+	// this so UE's rendered tile, the copy source rect, and the submitted imageRect
+	// all agree → content aspect tracks the window (correct under resize).
+	void ComputeTileDims(int32& OutTW, int32& OutTH) const;
 	bool CreateSwapchain();
 	void DestroySwapchain();
 	bool WrapSwapchainImagesAsRHI();
@@ -86,6 +104,9 @@ private:
 	// Child window
 	void* ChildHWND = nullptr;
 	void* ParentHWND = nullptr;
+	// Shell: set once after clipping ParentHWND to an empty region to hide UE's
+	// top-level mono window from the desktop without moving/resizing/restyling it.
+	bool bWorkspaceWindowHidden = false;
 
 	// UE's D3D12 device (borrowed, not owned) + dedicated runtime queue (owned)
 	void* UEDevice = nullptr;
@@ -100,6 +121,23 @@ private:
 	uint32 SwapchainWidth = 0;
 	uint32 SwapchainHeight = 0;
 	int64 SwapchainFormat = 0;
+
+	// --- IPC array path ---
+	// The single-tiled arraySize=1 shared texture is non-coherent cross-process
+	// from UE's process (proven: even a dedicated device's writes don't reach the
+	// D3D11 service). The canonical stereo arraySize=2 swapchain IS coherent
+	// (proven on UE's own device). So over IPC we render UE's two eyes SBS into a
+	// private RT, then CopyTexture each eye into an arraySize=2 slice and submit
+	// that. In-process keeps the v0.4.3 single-tiled zero-copy path unchanged.
+	bool bUseCopyPath = false;                 // XRT_FORCE_MODE=ipc / DISPLAYXR_WORKSPACE_SESSION
+	bool bWorkspaceSession = false;            // DISPLAYXR_WORKSPACE_SESSION (shell) — runtime owns the overlay size
+	TArray<FTextureRHIRef> ArraySwapchainRHI;  // wrapped imported arraySize=2 images (copy DEST)
+	// Per-view (per-slice) dims for the IPC array swapchain. MUST equal the tile
+	// dims (content fills the slice, like Unity) — an oversized slice trips the
+	// service's needs_scale → workspace scale-blit path which flips V (UE-only
+	// upside-down under the shell). The private RT stays display-sized for SBS.
+	uint32 SliceW = 0;
+	uint32 SliceH = 0;
 
 	// Compositor thread
 	FRunnableThread* Thread = nullptr;
