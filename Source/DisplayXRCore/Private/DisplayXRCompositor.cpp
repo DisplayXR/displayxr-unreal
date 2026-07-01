@@ -67,13 +67,15 @@ static LRESULT CALLBACK OverlayProc(HWND h, UINT m, WPARAM w, LPARAM l) {
 	// DefWindowProcW and is dropped (native apps that bind their real window work).
 	switch (m) {
 	case WM_KEYDOWN: case WM_KEYUP: case WM_SYSKEYDOWN: case WM_SYSKEYUP: {
-		// The shell reserves Ctrl for its own chords (Ctrl+L launcher, Ctrl+1/2/3
-		// layouts, Ctrl+Space). The runtime still forwards the lone Ctrl keystroke,
-		// and UE's default pawn binds LeftControl to the MoveUp axis
-		// (ADefaultPawn::InitializeDefaultPawnInputBindings) — so pressing Ctrl
-		// (e.g. for Ctrl+L) jerks the camera vertically. Swallow Ctrl so it never
-		// drives the app under the shell. (Other modifiers still pass through.)
-		if (w == VK_CONTROL || w == VK_LCONTROL || w == VK_RCONTROL) return 0;
+		// Ctrl flows through to UE like every other key. The shell reserves its own
+		// Ctrl chords (Ctrl+L/1/2/3, Ctrl+Shift+O/C, Ctrl+Space) and the runtime now
+		// buffers the bare Ctrl prefix until the chord disambiguates (#667), so a
+		// shell chord's Ctrl never reaches us — while genuine Ctrl combos the app
+		// wants (Ctrl+Z, a held Ctrl) still arrive. This replaces the old blanket
+		// Ctrl swallow, which blocked ALL Ctrl input under the shell. REQUIRES a
+		// runtime build with the #667 arbitration (runtime ≥ the release noted in
+		// CHANGELOG); against an older runtime, shell-chord Ctrl will again drive
+		// UE's ADefaultPawn MoveUp.
 		HWND tgt = GetParent(h);
 		// Strip the runtime's modifier-marker bits (25-28, reserved in WM_KEY*
 		// lParam) so UE sees a clean message.
