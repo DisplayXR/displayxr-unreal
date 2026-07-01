@@ -1,7 +1,7 @@
 # DisplayXR — Unreal Plugin
 
 [![lint](https://github.com/DisplayXR/displayxr-unreal/actions/workflows/lint.yml/badge.svg)](https://github.com/DisplayXR/displayxr-unreal/actions/workflows/lint.yml)
-[![License: BSL-1.0](https://img.shields.io/badge/License-BSL--1.0-blue.svg)](LICENSE)
+[![License: Apache-2.0](https://img.shields.io/badge/License-Apache--2.0-blue.svg)](LICENSE)
 
 Unreal Engine plugin for rendering on eye-tracked 3D light field displays via the DisplayXR OpenXR runtime. Works with any OpenXR-compatible 3D display.
 
