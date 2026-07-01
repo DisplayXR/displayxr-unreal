@@ -167,15 +167,18 @@ UE editor, so Smart App Control blocks them unsigned. Sign them here,
 **before** zipping. (Unreal is the simplest of the three plugin repos —
 everything is already local, no CI asset to replace.)
 
-Gated on `SIGN_CMD`, set only on a signing-capable build machine.
-Without it, the build is unsigned exactly as before — no failure.
+Gated on `$DXR_SIGN_HOOK` (remote) or `$SIGN_CMD` (local); neither names a
+signing endpoint. Without either, the build is unsigned exactly as before.
 
 ```bash
-if [ -n "$SIGN_CMD" ] && uname -s | grep -qiE 'mingw|msys|cygwin|windows'; then
-  echo "=== Signing packaged Unreal binaries ==="
+if [ -n "$DXR_SIGN_HOOK" ] && [ -x "$DXR_SIGN_HOOK" ]; then
+  echo "=== Signing packaged Unreal binaries (remote hook) ==="
+  "$DXR_SIGN_HOOK" "Packages/DisplayXR_5.7/Binaries/Win64"   # signs in place; non-zero fails the release
+  SIGNED=yes
+elif [ -n "$SIGN_CMD" ] && uname -s | grep -qiE 'mingw|msys|cygwin|windows'; then
+  echo "=== Signing packaged Unreal binaries (local SIGN_CMD) ==="
   powershell -NoProfile -ExecutionPolicy Bypass -File Scripts\\sign-release.ps1 \
     -Path "Packages\\DisplayXR_5.7\\Binaries\\Win64" -SignCmd "$SIGN_CMD"
-  # exit non-zero from the script fails the release — do not zip unsigned
   SIGNED=yes
 else
   echo "⚠  SIGNING SKIPPED — no signing capability; ZIP will be UNSIGNED."
