@@ -181,7 +181,9 @@ SIGNED=no
 if [ -n "$SIGN_REPO" ] && gh workflow view sign-artifact -R "$SIGN_REPO" >/dev/null 2>&1; then
   echo "=== Signing Unreal binaries on the provider runner ($SIGN_REPO) ==="
   D=$(mktemp -d)
-  ( cd "$BIN" && zip -qr "$D/unsigned.zip" . )                 # zip the folder contents
+  # portable zip: git-bash on Windows has no `zip` — fall back to PowerShell.
+  if command -v zip >/dev/null; then ( cd "$BIN" && zip -qr "$D/unsigned.zip" . )
+  else powershell -NoProfile -Command "Compress-Archive -Path '$(cygpath -w "$BIN")\*' -DestinationPath '$(cygpath -w "$D/unsigned.zip")' -Force"; fi
   TMP="sign-unreal-$(date +%s)-$$"
   gh release create "$TMP" -R "$SIGN_REPO" --prerelease --title "$TMP" \
      --notes "temp unreal-signing payload (auto-deleted)" "$D/unsigned.zip"
@@ -196,7 +198,9 @@ if [ -n "$SIGN_REPO" ] && gh workflow view sign-artifact -R "$SIGN_REPO" >/dev/n
   done
   if [ -n "$RID" ] && gh run watch "$RID" -R "$SIGN_REPO" --interval 15 --exit-status; then
     gh run download "$RID" -R "$SIGN_REPO" -n signed -D "$D/out"
-    unzip -qo "$D/out/signed.zip" -d "$BIN"                    # overwrite DLLs in place with signed ones
+    # portable unzip (git-bash on Windows has no `unzip`) — overwrite DLLs in place with signed ones.
+    if command -v unzip >/dev/null; then unzip -qo "$D/out/signed.zip" -d "$BIN"
+    else powershell -NoProfile -Command "Expand-Archive -Path '$(cygpath -w "$D/out/signed.zip")' -DestinationPath '$(cygpath -w "$BIN")' -Force"; fi
     SIGNED=yes
   else
     echo "⚠ sign-artifact run failed/absent — ZIP will be UNSIGNED."
