@@ -4,6 +4,15 @@ All notable changes to the DisplayXR Unreal plugin are documented here.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.5.1] - 2026-07-03
+
+### Changed
+- Removed the blanket Ctrl swallow so Ctrl now reaches UE. The runtime + shell arbitrate the Ctrl-prefixed chords (Ctrl+L / Ctrl+1/2/3 / Ctrl+Space), so the plugin no longer swallows Ctrl. Requires DisplayXR runtime v1.27.0+ for the chord arbitration. (#667)
+- Relicensed to Apache-2.0; vendored OpenXR extension headers remain BSL-1.0.
+
+### Added
+- Packaged `Binaries/Win64/*.dll` are now EV code-signed before zipping. (#666)
+
 ## [0.5.0] - 2026-06-29
 
 UE is now a first-class DisplayXR shell citizen — it renders correctly over IPC and behaves correctly under the workspace shell.
