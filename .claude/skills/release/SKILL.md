@@ -164,25 +164,54 @@ Remove `Packages\DisplayXR_5.7\Intermediate\` if UAT left it behind — the ship
 The packaged plugin ships **precompiled** `Binaries\Win64\*.dll` (the
 DisplayXR UE module DLLs for engine 5.7) — these load into the user's
 UE editor, so Smart App Control blocks them unsigned. Sign them here,
-**before** zipping. (Unreal is the simplest of the three plugin repos —
-everything is already local, no CI asset to replace.)
+**before** zipping.
 
-Gated on `SIGN_CMD`, set only on a signing-capable build machine.
-Without it, the build is unsigned exactly as before — no failure.
+**Primary path — sign on the provider runner (no local cert, portable to any OS
+with `gh`).** The signing provider is named by the **`DXR_SIGN_REPO` local env
+var** (set it in your box's env; this public repo hardcodes no provider path).
+Its `sign-artifact` workflow signs a folder of files with the runner-held EV cert
+— we hand it `Binaries\Win64`, then unpack the signed DLLs back in place. Unset
+env → unsigned (never fails the build). A **local `SIGN_CMD`** (a box that holds
+the cert directly) is kept as a fallback.
 
 ```bash
-if [ -n "$SIGN_CMD" ] && uname -s | grep -qiE 'mingw|msys|cygwin|windows'; then
-  echo "=== Signing packaged Unreal binaries ==="
+BIN="Packages/DisplayXR_5.7/Binaries/Win64"
+SIGN_REPO="${DXR_SIGN_REPO}"   # local env only; the public repo names no provider
+SIGNED=no
+if [ -n "$SIGN_REPO" ] && gh workflow view sign-artifact -R "$SIGN_REPO" >/dev/null 2>&1; then
+  echo "=== Signing Unreal binaries on the provider runner ($SIGN_REPO) ==="
+  D=$(mktemp -d)
+  ( cd "$BIN" && zip -qr "$D/unsigned.zip" . )                 # zip the folder contents
+  TMP="sign-unreal-$(date +%s)-$$"
+  gh release create "$TMP" -R "$SIGN_REPO" --prerelease --title "$TMP" \
+     --notes "temp unreal-signing payload (auto-deleted)" "$D/unsigned.zip"
+  SINCE="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  gh workflow run sign-artifact -R "$SIGN_REPO" -f release_tag="$TMP"
+  RID=""
+  for _ in $(seq 1 20); do
+    RID=$(gh run list -R "$SIGN_REPO" --workflow sign-artifact --event workflow_dispatch \
+            --limit 8 --json databaseId,createdAt \
+            --jq "[.[]|select(.createdAt>=\"$SINCE\")]|sort_by(.createdAt)|last|.databaseId // empty")
+    [ -n "$RID" ] && break; sleep 4
+  done
+  if [ -n "$RID" ] && gh run watch "$RID" -R "$SIGN_REPO" --interval 15 --exit-status; then
+    gh run download "$RID" -R "$SIGN_REPO" -n signed -D "$D/out"
+    unzip -qo "$D/out/signed.zip" -d "$BIN"                    # overwrite DLLs in place with signed ones
+    SIGNED=yes
+  else
+    echo "⚠ sign-artifact run failed/absent — ZIP will be UNSIGNED."
+  fi
+  gh release delete "$TMP" -R "$SIGN_REPO" --yes --cleanup-tag >/dev/null 2>&1 || true
+elif [ -n "$SIGN_CMD" ] && uname -s | grep -qiE 'mingw|msys|cygwin|windows'; then
+  echo "=== Signing Unreal binaries locally via SIGN_CMD (local cert) ==="
   powershell -NoProfile -ExecutionPolicy Bypass -File Scripts\\sign-release.ps1 \
-    -Path "Packages\\DisplayXR_5.7\\Binaries\\Win64" -SignCmd "$SIGN_CMD"
-  # exit non-zero from the script fails the release — do not zip unsigned
-  SIGNED=yes
+    -Path "Packages\\DisplayXR_5.7\\Binaries\\Win64" -SignCmd "$SIGN_CMD" && SIGNED=yes
 else
-  echo "⚠  SIGNING SKIPPED — no signing capability; ZIP will be UNSIGNED."
-  SIGNED=no
+  echo "⚠  SIGNING SKIPPED — set DXR_SIGN_REPO (provider runner) or SIGN_CMD (local cert); ZIP will be UNSIGNED."
 fi
 ```
-Carry `SIGNED` into the final report. Note: when a UE developer recompiles
+Verify after: `Get-AuthenticodeSignature` on a `Binaries\Win64\*.dll` should be
+`Valid`. Carry `SIGNED` into the final report. Note: when a UE developer recompiles
 the plugin for a different engine version or for their packaged game, UE
 regenerates those DLLs — those rebuilt binaries are the developer's to
 sign (their distribution), the same as any UE plugin.

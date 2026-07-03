@@ -48,7 +48,13 @@ function Test-Signed($file) {
 function Invoke-Sign($file) {
     $parts = $SignCmd -split '\s+'
     $exe   = $parts[0]
-    $args  = @($parts[1..($parts.Length - 1)]) + $file
+    # A single-token SIGN_CMD (a bare signer path, no extra args) would make
+    # $parts[1..($parts.Length-1)] the range 1..0, which PowerShell evaluates
+    # DESCENDING (1,0) and thus injects the signer path back as a bogus arg (it
+    # ends up signing the .bat itself). Guard on Count so a lone token passes
+    # ONLY the file path.
+    $rest  = if ($parts.Count -gt 1) { $parts[1..($parts.Count - 1)] } else { @() }
+    $args  = @($rest) + $file
     & $exe @args
     if ($LASTEXITCODE -ne 0) { throw "Signing failed for $file (exit $LASTEXITCODE)" }
 }
