@@ -118,7 +118,7 @@ The Kooima math (`{camera3d_view, display3d_view}.{c,h}`) is the shared [display
 ## Platform notes
 
 - **Windows / D3D12** is the primary development path. Session loads the runtime DLL via `LoadLibraryW` + the OpenXR `XrNegotiateLoaderRuntimeInterface`, which gives us an **in-process compositor** (not `openxr_loader.dll` + IPC). DPI awareness is set to per-monitor at module startup so the backbuffer uses physical pixels.
-- **macOS** loads the runtime `.so`/`.dylib` via `dlopen` and binds via `XR_EXT_cocoa_window_binding`. Current code is stubbed on Mac for the compositor path; validation tracked in [TODO.md](./TODO.md) §5.
+- **macOS** loads the runtime `.so`/`.dylib` via `dlopen` and binds via `XR_DXR_cocoa_window_binding`. Current code is stubbed on Mac for the compositor path; validation tracked in [TODO.md](./TODO.md) §5.
 - **Android** shares the runtime-loading pattern but validation is also pending; tracked in [TODO.md](./TODO.md) §5.
 
 ## Common gotchas for agents

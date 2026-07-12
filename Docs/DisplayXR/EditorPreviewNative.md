@@ -96,7 +96,7 @@ Steps:
 5. Skip `CreateChildWindow` in `FDisplayXRCompositor::Initialize` when
    `OverrideCompositorHWND` is set (already done in
    `DisplayXRCompositor.cpp:485-510`).
-6. Keep `xrSetSharedTextureOutputRectEXT` wired (already done in the
+6. Keep `xrSetSharedTextureOutputRectDXR` wired (already done in the
    WIP; per-frame call is required for the runtime's D3D12 native
    compositor to route swapchain present correctly).
 
@@ -108,7 +108,7 @@ windowed-game code path exactly.
 
 From `wip/mirror-swapchain-exploration`, the parts we keep:
 
-- `DisplayXRCompositor.cpp` changes: `xrSetSharedTextureOutputRectEXT`
+- `DisplayXRCompositor.cpp` changes: `xrSetSharedTextureOutputRectDXR`
   resolution + per-tick call; conditional child-window skip when
   `OverrideCompositorHWND` is set.
 - `DisplayXRPlatform.h`: `OverrideCompositorHWND` hook.
@@ -190,7 +190,7 @@ Bundle with Phase 4:
 - `Source/DisplayXRCore/Private/DisplayXRPlatform.h` —
   `OverrideCompositorHWND`, `MirrorPresent` function-pointer hook.
 - `Source/DisplayXRCore/Private/DisplayXRCompositor.cpp` —
-  `xrSetSharedTextureOutputRectEXT` resolution + per-tick call;
+  `xrSetSharedTextureOutputRectDXR` resolution + per-tick call;
   conditional child-window skip.
 - `Source/DisplayXREditor/Private/DisplayXREditorModule.cpp` (at
   tagged commit) — raw-Win32 mirror window, DXGI swapchain attempt,

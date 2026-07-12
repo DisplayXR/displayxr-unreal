@@ -61,7 +61,7 @@ static void DisplayXRFeedLook(int dx, int dy)
 
 static LRESULT CALLBACK OverlayProc(HWND h, UINT m, WPARAM w, LPARAM l) {
 	// The runtime forwards focused-app input (keyboard/mouse) via PostMessage to
-	// the HWND bound through XR_EXT_win32_window_binding — which for us is this
+	// the HWND bound through XR_DXR_win32_window_binding — which for us is this
 	// inert child overlay. Relay that input to UE's REAL window (our parent) so
 	// WASD/mouse actually drive the app; otherwise every forwarded key/click hits
 	// DefWindowProcW and is dropped (native apps that bind their real window work).
@@ -292,7 +292,7 @@ void FDisplayXRCompositor::CompositorLoop()
 		// sample rect straddles two of UE's tiles and one eye sees the other's
 		// content (right-eye-in-left-eye bleed).
 		//
-		// HWND identity: we bind ChildHWND via XR_EXT_win32_window_binding, so
+		// HWND identity: we bind ChildHWND via XR_DXR_win32_window_binding, so
 		// the runtime calls GetClientRect(ChildHWND). ChildHWND is created at a
 		// fixed size at session-init and does NOT auto-track the parent resize
 		// — we have to sync it explicitly here each frame so the runtime sees
@@ -877,9 +877,9 @@ bool FDisplayXRCompositor::ResolveXrFunctions()
 	// Optional — only present on DisplayXR runtimes with the shared-texture
 	// output-rect extension. Not gated on `ok`: game-mode fullscreen still
 	// works without it.
-	xrGetInstanceProcAddrFunc(Inst, "xrSetSharedTextureOutputRectEXT",
+	xrGetInstanceProcAddrFunc(Inst, "xrSetSharedTextureOutputRectDXR",
 		(PFN_xrVoidFunction*)&xrSetOutputRectFunc);
-	UE_LOG(LogDisplayXRCompositor, Log, TEXT("Compositor: xrSetSharedTextureOutputRectEXT resolved=%s"),
+	UE_LOG(LogDisplayXRCompositor, Log, TEXT("Compositor: xrSetSharedTextureOutputRectDXR resolved=%s"),
 		xrSetOutputRectFunc ? TEXT("yes") : TEXT("no"));
 
 	return ok;

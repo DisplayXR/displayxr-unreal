@@ -61,7 +61,7 @@ Menu: **Window > DisplayXR Preview**
 Controls:
 - **Start/Stop button** — Enables/disables editor stereo preview
 - **Camera dropdown** — Lists all `UDisplayXRCamera` and `UDisplayXRDisplay` rigs in the scene
-- **Rendering mode selector** — Enumerates modes from runtime via `xrEnumerateDisplayRenderingModesEXT`
+- **Rendering mode selector** — Enumerates modes from runtime via `xrEnumerateDisplayRenderingModesDXR`
 - **Status footer** — Resolution, display dimensions, tracking status, current mode
 - **Shared texture display** — Shows composited 3D output from the runtime
 

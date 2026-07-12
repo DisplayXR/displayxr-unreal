@@ -50,7 +50,7 @@ ls -la /usr/local/lib/libopenxr_displayxr.dylib
 
 ## Mac-specific quirk 3: graphics binding
 
-On Windows the session uses `XrGraphicsBindingD3D12KHR`. On Mac it uses `XR_EXT_cocoa_window_binding` via Metal. The session handles this internally via `#if PLATFORM_MAC` — you don't set any compile flag. If you're touching session code and need the Mac path, look for `PLATFORM_MAC || PLATFORM_LINUX` branches in `DisplayXRSession.cpp`.
+On Windows the session uses `XrGraphicsBindingD3D12KHR`. On Mac it uses `XR_DXR_cocoa_window_binding` via Metal. The session handles this internally via `#if PLATFORM_MAC` — you don't set any compile flag. If you're touching session code and need the Mac path, look for `PLATFORM_MAC || PLATFORM_LINUX` branches in `DisplayXRSession.cpp`.
 
 ## Install + build
 

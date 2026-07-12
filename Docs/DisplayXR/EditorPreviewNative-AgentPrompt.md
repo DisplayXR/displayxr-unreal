@@ -52,7 +52,7 @@ native HWND to the compositor. Plan doc has the concrete steps.
 1. Read `Docs/DisplayXR/EditorPreviewNative.md` fully.
 2. Launch a Plan agent (or plan yourself) with the goal:
    *implement Phase 4 per the plan doc — `SWindow` mirror bound to the
-   compositor, cherry-picking the `xrSetSharedTextureOutputRectEXT` +
+   compositor, cherry-picking the `xrSetSharedTextureOutputRectDXR` +
    `OverrideCompositorHWND` + conditional-child-window changes from the
    WIP tag, dropping the raw-Win32 and DXGI-swapchain parts*.
 3. Before coding, examine the WIP commits to decide exactly which
@@ -101,7 +101,7 @@ Fix in Phase 4:
 - UE 5.7, Windows, DX12 only.
 - DisplayXR terminology — atlas/tiles/3D mode. Never SBS/stereo.
   Treat the atlas layout as N-view (the DP dictates it via
-  `XR_EXT_display_info` — current test mode is 2×1 tiles but don't
+  `XR_DXR_display_info` — current test mode is 2×1 tiles but don't
   hardcode that count).
 - Build path:
   ```

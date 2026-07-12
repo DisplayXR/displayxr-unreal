@@ -88,5 +88,5 @@ In-depth docs live in [Docs/DisplayXR/](Docs/DisplayXR/):
 
 ## Related Repositories
 
-- **[DisplayXR/displayxr-runtime](https://github.com/DisplayXR/displayxr-runtime)** — DisplayXR OpenXR runtime. Extensions: `XR_EXT_display_info`, `XR_EXT_win32_window_binding`, `XR_EXT_cocoa_window_binding`.
+- **[DisplayXR/displayxr-runtime](https://github.com/DisplayXR/displayxr-runtime)** — DisplayXR OpenXR runtime. Extensions: `XR_DXR_display_info`, `XR_DXR_win32_window_binding`, `XR_DXR_cocoa_window_binding`.
 - **[DisplayXR/displayxr-unity](https://github.com/DisplayXR/displayxr-unity)** — Unity sibling plugin. Reference implementation for rig patterns, editor preview, and shared Kooima C libraries.

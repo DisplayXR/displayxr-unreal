@@ -13,7 +13,7 @@
 // grows a field — the runtime parses next-chain structs by `type` only (no
 // size check), so a short struct here makes it read trailing fields from
 // uninitialized stack. That caused the black-window regression
-// (XrWin32WindowBindingCreateInfoEXT grew transparentBackgroundEnabled /
+// (XrWin32WindowBindingCreateInfoDXR grew transparentBackgroundEnabled /
 // chromaKeyColor) and the rendering-mode stride bug (#234). Verbatim copies +
 // a CI diff make any such drift a red check instead of a runtime mystery.
 //
@@ -33,14 +33,14 @@
 #include <openxr/openxr.h>
 
 // Cross-platform DisplayXR extensions.
-#include <openxr/XR_EXT_display_info.h>
-#include <openxr/XR_EXT_atlas_capture.h>
+#include <openxr/XR_DXR_display_info.h>
+#include <openxr/XR_DXR_atlas_capture.h>
 
 // Window binding is platform-specific. Include exactly one — the Win32 and
 // Cocoa headers both define PFN_xrReadbackCallback and XrCompositionLayer
 // WindowSpaceEXT, so including both would be a duplicate-definition error.
 #if PLATFORM_WINDOWS
-#include <openxr/XR_EXT_win32_window_binding.h>
+#include <openxr/XR_DXR_win32_window_binding.h>
 #elif PLATFORM_MAC
-#include <openxr/XR_EXT_cocoa_window_binding.h>
+#include <openxr/XR_DXR_cocoa_window_binding.h>
 #endif

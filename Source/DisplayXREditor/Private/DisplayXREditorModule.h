@@ -24,7 +24,7 @@ private:
 
 	// Native-PIE mirror: raw-Win32 top-level popup on the 3D display. The
 	// runtime's native compositor presents the atlas into this HWND via
-	// XR_EXT_win32_window_binding + xrSetSharedTextureOutputRectEXT. No
+	// XR_DXR_win32_window_binding + xrSetSharedTextureOutputRectDXR. No
 	// app-side swapchain, no Slate — opaque presentation is handled by the
 	// DisplayXR runtime (see displayxr-runtime-pvt issue #163).
 	void CreateMirrorWindow();

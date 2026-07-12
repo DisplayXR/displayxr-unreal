@@ -740,7 +740,7 @@ void FDisplayXRDevice::PostRenderViewFamily_RenderThread(FRDGBuilder& GraphBuild
 		SrcTextureRHI = InViewFamily.RenderTarget->GetRenderTargetTexture();
 	}
 
-	// Atlas capture is now runtime-owned (xrCaptureAtlasEXT, driven from
+	// Atlas capture is now runtime-owned (xrCaptureAtlasDXR, driven from
 	// FDisplayXRAtlasCapture::RequestCapture); no app-side RHI readback here.
 	GraphBuilder.AddPass(
 		RDG_EVENT_NAME("DisplayXR_ReleaseSwapchain"),

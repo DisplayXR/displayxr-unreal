@@ -110,8 +110,8 @@ private:
 	void* PreviewHWND = nullptr;  // standalone WS_OVERLAPPEDWINDOW
 	bool bWindowClosed = false;
 
-	// --- Canvas rect (for xrSetSharedTextureOutputRectEXT) ---
-	PFN_xrSetSharedTextureOutputRectEXT xrSetOutputRectFunc = nullptr;
+	// --- Canvas rect (for xrSetSharedTextureOutputRectDXR) ---
+	PFN_xrSetSharedTextureOutputRectDXR xrSetOutputRectFunc = nullptr;
 
 	// --- Swapchain ---
 	XrSwapchain Swapchain = XR_NULL_HANDLE;
@@ -153,8 +153,8 @@ private:
 	int32 FrameCount = 0;
 
 	// --- DisplayXR extension function pointers ---
-	PFN_xrRequestDisplayModeEXT xrRequestDisplayModeFunc = nullptr;
-	PFN_xrEnumerateDisplayRenderingModesEXT xrEnumerateDisplayRenderingModesFunc = nullptr;
+	PFN_xrRequestDisplayModeDXR xrRequestDisplayModeFunc = nullptr;
+	PFN_xrEnumerateDisplayRenderingModesDXR xrEnumerateDisplayRenderingModesFunc = nullptr;
 
 	// --- OpenXR frame loop function pointers ---
 	typedef XrResult(XRAPI_PTR* PFN_xrWaitFrame)(XrSession, const XrFrameWaitInfo*, XrFrameState*);
