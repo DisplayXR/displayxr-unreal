@@ -1,7 +1,7 @@
 # Runtime OpenXR wire-protocol ABI pin.
 #
 # The DisplayXR OpenXR extension headers vendored under
-#   Source/DisplayXRCore/Private/Native/openxr/XR_EXT_*.h
+#   Source/DisplayXRCore/Private/Native/openxr/XR_DXR_*.h
 # are copied VERBATIM from DisplayXR/displayxr-runtime at the commit below.
 # The `abi-guard` CI job (.github/workflows/lint.yml) fetches those headers at
 # this ref and fails the build if the vendored copies have drifted — that drift
@@ -10,7 +10,7 @@
 # bug (#234).
 #
 # To adopt new runtime protocol: set this SHA to the new runtime commit, re-copy
-# the four XR_EXT_*.h headers from displayxr-runtime at that SHA into
+# the four XR_DXR_*.h headers from displayxr-runtime at that SHA into
 # Source/DisplayXRCore/Private/Native/openxr/, and rebuild. Keep this as a full
 # 40-char commit SHA (immutable) — not a branch name.
 #
@@ -18,4 +18,5 @@
 # matrix: this plugin is a downstream consumer of the wire protocol, released on
 # its own cadence. This file is the only coupling between the two repos.
 
-964277f5ec5fd727c9ac2a62ae90bd06178a7609
+# TEMPORARY (#734): dxr-rename branch SHA — swap to released tag before merge
+7bd2dccc8bf4d6446e2402a3a7c75718ec7e22f6

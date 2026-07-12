@@ -35,7 +35,7 @@ namespace DisplayXRAtlasCaptureNS
 		return UserProfile / TEXT("Pictures") / TEXT("DisplayXR");
 	}
 
-	// Path PREFIX (bare — no layout tokens, no extension) for xrCaptureAtlasEXT.
+	// Path PREFIX (bare — no layout tokens, no extension) for xrCaptureAtlasDXR.
 	// The runtime owns the suffix and appends "_atlas_<viewCount>_<cols>x<rows>.png"
 	// (see DisplayXR/displayxr-runtime#425). The prefix must NOT repeat the layout
 	// or the final name duplicates it (..._2x1_atlas_2_2x1.png). Numbers against

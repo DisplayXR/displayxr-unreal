@@ -59,7 +59,7 @@ jobs:
           echo "Pinned displayxr-runtime ABI ref: $PIN"
           BASE="https://raw.githubusercontent.com/DisplayXR/displayxr-runtime/$PIN/src/external/openxr_includes/openxr"
           VEND="Source/DisplayXRCore/Private/Native/openxr"
-          HEADERS="XR_EXT_display_info.h XR_EXT_atlas_capture.h XR_EXT_win32_window_binding.h XR_EXT_cocoa_window_binding.h"
+          HEADERS="XR_DXR_display_info.h XR_DXR_atlas_capture.h XR_DXR_win32_window_binding.h XR_DXR_cocoa_window_binding.h"
           rc=0
           for h in $HEADERS; do
             if ! curl -fsSL "$BASE/$h" -o "/tmp/$h"; then

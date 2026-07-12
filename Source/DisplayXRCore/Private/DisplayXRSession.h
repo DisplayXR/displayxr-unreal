@@ -103,7 +103,7 @@ public:
 	bool RequestDisplayMode(bool bMode3D);
 
 	/**
-	 * Runtime-owned atlas capture (XR_EXT_atlas_capture). Latches a request for
+	 * Runtime-owned atlas capture (XR_DXR_atlas_capture). Latches a request for
 	 * the runtime to write the session's multi-view atlas to
 	 * "<PathPrefix>_atlas_<viewCount>_<cols>x<rows>.png" at the given stage.
 	 * Non-blocking; the PNG lands at the next composed frame. Returns false if the
@@ -114,7 +114,7 @@ public:
 	 */
 	bool CaptureAtlas(const FString& PathPrefixUtf8, bool bProjectionOnly = true);
 
-	/** True if the runtime exported xrCaptureAtlasEXT and it resolved. */
+	/** True if the runtime exported xrCaptureAtlasDXR and it resolved. */
 	bool HasAtlasCapture() const { return xrCaptureAtlasFunc != nullptr; }
 
 	/** Create the OpenXR session with D3D graphics binding and HWND, then
@@ -176,9 +176,9 @@ private:
 
 	// Function pointers (resolved via xrGetInstanceProcAddr)
 	PFN_xrGetInstanceProcAddr xrGetInstanceProcAddrFunc = nullptr;
-	PFN_xrRequestDisplayModeEXT xrRequestDisplayModeFunc = nullptr;
-	PFN_xrEnumerateDisplayRenderingModesEXT xrEnumerateDisplayRenderingModesFunc = nullptr;
-	PFN_xrCaptureAtlasEXT xrCaptureAtlasFunc = nullptr;
+	PFN_xrRequestDisplayModeDXR xrRequestDisplayModeFunc = nullptr;
+	PFN_xrEnumerateDisplayRenderingModesDXR xrEnumerateDisplayRenderingModesFunc = nullptr;
+	PFN_xrCaptureAtlasDXR xrCaptureAtlasFunc = nullptr;
 	// Cached for the compositor-thread event pump (resolved lazily in PumpEvents).
 	PFN_xrPollEvent xrPollEventFunc = nullptr;
 	PFN_xrEndSession xrEndSessionFunc = nullptr;

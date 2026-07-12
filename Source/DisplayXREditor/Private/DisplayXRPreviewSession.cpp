@@ -990,10 +990,10 @@ bool FDisplayXRPreviewSession::CreateXrInstance()
 	}
 
 	const char* Extensions[] = {
-		XR_EXT_DISPLAY_INFO_EXTENSION_NAME,
+		XR_DXR_DISPLAY_INFO_EXTENSION_NAME,
 #if PLATFORM_WINDOWS
 		"XR_KHR_D3D12_enable",
-		XR_EXT_WIN32_WINDOW_BINDING_EXTENSION_NAME,
+		XR_DXR_WIN32_WINDOW_BINDING_EXTENSION_NAME,
 #endif
 	};
 
@@ -1060,8 +1060,8 @@ void FDisplayXRPreviewSession::QueryDisplayInfo()
 	}
 
 	XrSystemProperties SystemProps = {XR_TYPE_SYSTEM_PROPERTIES};
-	XrDisplayInfoEXT DisplayInfoExt = {};
-	DisplayInfoExt.type = (XrStructureType)XR_TYPE_DISPLAY_INFO_EXT;
+	XrDisplayInfoDXR DisplayInfoExt = {};
+	DisplayInfoExt.type = (XrStructureType)XR_TYPE_DISPLAY_INFO_DXR;
 	SystemProps.next = &DisplayInfoExt;
 
 	XrResult Result = xrGetSystemPropertiesFunc(Instance, SystemId, &SystemProps);
@@ -1101,11 +1101,11 @@ void FDisplayXRPreviewSession::QueryRenderingModes()
 		return;
 	}
 
-	TArray<XrDisplayRenderingModeInfoEXT> Modes;
+	TArray<XrDisplayRenderingModeInfoDXR> Modes;
 	Modes.SetNum(ModeCount);
 	for (uint32_t i = 0; i < ModeCount; i++)
 	{
-		Modes[i].type = (XrStructureType)XR_TYPE_DISPLAY_RENDERING_MODE_INFO_EXT;
+		Modes[i].type = (XrStructureType)XR_TYPE_DISPLAY_RENDERING_MODE_INFO_DXR;
 		Modes[i].next = nullptr;
 	}
 
@@ -1304,8 +1304,8 @@ bool FDisplayXRPreviewSession::CreateXrSession()
 	D3D12Binding.queue = RuntimeQueue;
 
 	// Chain Win32 window binding — use the native preview window
-	XrWin32WindowBindingCreateInfoEXT Win32Binding = {};
-	Win32Binding.type = (XrStructureType)XR_TYPE_WIN32_WINDOW_BINDING_CREATE_INFO_EXT;
+	XrWin32WindowBindingCreateInfoDXR Win32Binding = {};
+	Win32Binding.type = (XrStructureType)XR_TYPE_WIN32_WINDOW_BINDING_CREATE_INFO_DXR;
 	Win32Binding.windowHandle = PreviewHWND;
 
 	if (PreviewHWND)
@@ -1370,11 +1370,11 @@ bool FDisplayXRPreviewSession::CreateXrSession()
 	}
 
 	// Resolve extension function pointers
-	xrGetInstanceProcAddrFunc(Instance, "xrRequestDisplayModeEXT",
+	xrGetInstanceProcAddrFunc(Instance, "xrRequestDisplayModeDXR",
 		(PFN_xrVoidFunction*)&xrRequestDisplayModeFunc);
-	xrGetInstanceProcAddrFunc(Instance, "xrEnumerateDisplayRenderingModesEXT",
+	xrGetInstanceProcAddrFunc(Instance, "xrEnumerateDisplayRenderingModesDXR",
 		(PFN_xrVoidFunction*)&xrEnumerateDisplayRenderingModesFunc);
-	xrGetInstanceProcAddrFunc(Instance, "xrSetSharedTextureOutputRectEXT",
+	xrGetInstanceProcAddrFunc(Instance, "xrSetSharedTextureOutputRectDXR",
 		(PFN_xrVoidFunction*)&xrSetOutputRectFunc);
 
 	// Push initial canvas rect

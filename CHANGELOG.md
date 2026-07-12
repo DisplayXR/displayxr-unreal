@@ -46,9 +46,9 @@ UE is now a first-class DisplayXR shell citizen — it renders correctly over IP
 - CI drift-guard: fails the lint workflow if the shared `displayxr::math` Kooima sources are re-vendored into the plugin instead of consumed via the `displayxr-common` submodule (#396 W5).
 
 ### Changed
-- Atlas/screenshot capture restored to the runtime-owned `xrCaptureAtlasEXT` path (un-reverts the app-side RHI readback). The runtime bug that produced black/transparent and washed-out PNGs is fixed in `DisplayXR/displayxr-runtime#425` (opaque-alpha encode), so the EXT path from `ext-atlas-capture` is now the default again.
+- Atlas/screenshot capture restored to the runtime-owned `xrCaptureAtlasDXR` path (un-reverts the app-side RHI readback). The runtime bug that produced black/transparent and washed-out PNGs is fixed in `DisplayXR/displayxr-runtime#425` (opaque-alpha encode), so the EXT path from `ext-atlas-capture` is now the default again.
 - Capture filenames adopt the runtime-owned suffix `<Project>-<N>_atlas_<viewCount>_<cols>x<rows>.png`: the plugin passes a bare `<Project>-<N>` prefix (no pre-baked layout tokens) and the runtime appends the layout, so the final name no longer duplicates it. Sequence numbering scans the `<Project>-<N>_atlas_*.png` names.
-- ABI pin (`.displayxr-runtime-abi`) bumped to runtime `964277f` (the displayxr-runtime#432 merge): vendored `XR_EXT_atlas_capture.h` updated to SPEC_VERSION 2 (struct-identical to v1 — the bump documents the opaque-alpha encode and the layout-encoded filename suffix). Requires runtime ≥ v1.12.0 for correct (non-transparent) captures.
+- ABI pin (`.displayxr-runtime-abi`) bumped to runtime `964277f` (the displayxr-runtime#432 merge): vendored `XR_DXR_atlas_capture.h` updated to SPEC_VERSION 2 (struct-identical to v1 — the bump documents the opaque-alpha encode and the layout-encoded filename suffix). Requires runtime ≥ v1.12.0 for correct (non-transparent) captures.
 
 ## [0.4.0] - 2026-06-05
 
@@ -68,7 +68,7 @@ UE is now a first-class DisplayXR shell citizen — it renders correctly over IP
 - Crash on close (`EXCEPTION_ACCESS_VIOLATION`): the session was destroyed before its child space. Shutdown now destroys ViewSpace → Session → Instance in order.
 
 ### Changed
-- Atlas/screenshot capture reverted to app-side RHI readback. The runtime `xrCaptureAtlasEXT` path washes out the D3D12/BGRA swapchain (runtime bug DisplayXR/displayxr-runtime#425); the EXT variant lives on branch `ext-atlas-capture`.
+- Atlas/screenshot capture reverted to app-side RHI readback. The runtime `xrCaptureAtlasDXR` path washes out the D3D12/BGRA swapchain (runtime bug DisplayXR/displayxr-runtime#425); the EXT variant lives on branch `ext-atlas-capture`.
 
 ## [0.2.1] - 2026-05-07
 

@@ -67,7 +67,7 @@ bool FDisplayXRSession::Initialize()
 	QueryDisplayInfo();
 
 	// Initialize view config.
-	// displayPixelWidth/Height from XR_EXT_display_info SHOULD be the physical
+	// displayPixelWidth/Height from XR_DXR_display_info SHOULD be the physical
 	// resolution (3840x2160), but some runtimes report DPI-scaled logical pixels.
 	// If session creates successfully, QueryRenderingModes will override with
 	// accurate dimensions from viewWidthPixels/viewScaleX.
@@ -499,13 +499,13 @@ bool FDisplayXRSession::CreateInstance()
 	}
 
 	const char* Extensions[] = {
-		XR_EXT_DISPLAY_INFO_EXTENSION_NAME,
-		XR_EXT_ATLAS_CAPTURE_EXTENSION_NAME,
+		XR_DXR_DISPLAY_INFO_EXTENSION_NAME,
+		XR_DXR_ATLAS_CAPTURE_EXTENSION_NAME,
 #if PLATFORM_WINDOWS
 		"XR_KHR_D3D12_enable",
-		XR_EXT_WIN32_WINDOW_BINDING_EXTENSION_NAME,
+		XR_DXR_WIN32_WINDOW_BINDING_EXTENSION_NAME,
 #elif PLATFORM_MAC
-		XR_EXT_COCOA_WINDOW_BINDING_EXTENSION_NAME,
+		XR_DXR_COCOA_WINDOW_BINDING_EXTENSION_NAME,
 #endif
 	};
 
@@ -553,8 +553,8 @@ void FDisplayXRSession::QueryDisplayInfo()
 	}
 
 	XrSystemProperties SystemProps = {XR_TYPE_SYSTEM_PROPERTIES};
-	XrDisplayInfoEXT DisplayInfoExt = {};
-	DisplayInfoExt.type = (XrStructureType)XR_TYPE_DISPLAY_INFO_EXT;
+	XrDisplayInfoDXR DisplayInfoExt = {};
+	DisplayInfoExt.type = (XrStructureType)XR_TYPE_DISPLAY_INFO_DXR;
 	SystemProps.next = &DisplayInfoExt;
 
 	XrResult Result = xrGetSystemPropertiesFunc(Instance, SystemId, &SystemProps);
@@ -594,11 +594,11 @@ void FDisplayXRSession::QueryRenderingModes()
 		return;
 	}
 
-	TArray<XrDisplayRenderingModeInfoEXT> Modes;
+	TArray<XrDisplayRenderingModeInfoDXR> Modes;
 	Modes.SetNum(ModeCount);
 	for (uint32_t i = 0; i < ModeCount; i++)
 	{
-		Modes[i].type = (XrStructureType)XR_TYPE_DISPLAY_RENDERING_MODE_INFO_EXT;
+		Modes[i].type = (XrStructureType)XR_TYPE_DISPLAY_RENDERING_MODE_INFO_DXR;
 		Modes[i].next = nullptr;
 	}
 
@@ -653,7 +653,7 @@ bool FDisplayXRSession::CreateSession()
 	XrSessionCreateInfo SessionCreateInfo = {XR_TYPE_SESSION_CREATE_INFO};
 	SessionCreateInfo.systemId = SystemId;
 	// No graphics binding chain — the runtime will use its own compositor.
-	// HWND can be provided later via xrSetSharedTextureOutputRectEXT or
+	// HWND can be provided later via xrSetSharedTextureOutputRectDXR or
 	// by re-creating the session once the game window is available.
 
 	XrResult Result = xrCreateSessionFunc(Instance, &SessionCreateInfo, &Session);
@@ -677,11 +677,11 @@ bool FDisplayXRSession::CreateSession()
 	}
 
 	// Resolve extension function pointers
-	xrGetInstanceProcAddrFunc(Instance, "xrRequestDisplayModeEXT",
+	xrGetInstanceProcAddrFunc(Instance, "xrRequestDisplayModeDXR",
 		(PFN_xrVoidFunction*)&xrRequestDisplayModeFunc);
-	xrGetInstanceProcAddrFunc(Instance, "xrEnumerateDisplayRenderingModesEXT",
+	xrGetInstanceProcAddrFunc(Instance, "xrEnumerateDisplayRenderingModesDXR",
 		(PFN_xrVoidFunction*)&xrEnumerateDisplayRenderingModesFunc);
-	xrGetInstanceProcAddrFunc(Instance, "xrCaptureAtlasEXT",
+	xrGetInstanceProcAddrFunc(Instance, "xrCaptureAtlasDXR",
 		(PFN_xrVoidFunction*)&xrCaptureAtlasFunc);
 
 	// Query rendering modes to get tile layout and view dimensions
@@ -882,7 +882,7 @@ bool FDisplayXRSession::RequestDisplayMode(bool bMode3D)
 {
 	if (xrRequestDisplayModeFunc && Session != XR_NULL_HANDLE)
 	{
-		XrDisplayModeEXT Mode = bMode3D ? XR_DISPLAY_MODE_3D_EXT : XR_DISPLAY_MODE_2D_EXT;
+		XrDisplayModeDXR Mode = bMode3D ? XR_DISPLAY_MODE_3D_DXR : XR_DISPLAY_MODE_2D_DXR;
 		XrResult Result = xrRequestDisplayModeFunc(Session, Mode);
 		if (XR_SUCCEEDED(Result))
 		{
@@ -900,7 +900,7 @@ bool FDisplayXRSession::CaptureAtlas(const FString& PathPrefixUtf8, bool bProjec
 	if (!xrCaptureAtlasFunc)
 	{
 		UE_LOG(LogDisplayXRSession, Warning,
-			TEXT("DisplayXR Session: xrCaptureAtlasEXT unavailable — capture skipped"));
+			TEXT("DisplayXR Session: xrCaptureAtlasDXR unavailable — capture skipped"));
 		return false;
 	}
 	if (Session == XR_NULL_HANDLE)
@@ -910,22 +910,22 @@ bool FDisplayXRSession::CaptureAtlas(const FString& PathPrefixUtf8, bool bProjec
 		return false;
 	}
 
-	XrAtlasCaptureInfoEXT Info = {XR_TYPE_ATLAS_CAPTURE_INFO_EXT};
+	XrAtlasCaptureInfoDXR Info = {XR_TYPE_ATLAS_CAPTURE_INFO_DXR};
 	Info.next = nullptr;
 	Info.stage = bProjectionOnly
-		? XR_ATLAS_CAPTURE_STAGE_PROJECTION_ONLY_EXT
-		: XR_ATLAS_CAPTURE_STAGE_POST_COMPOSE_EXT;
+		? XR_ATLAS_CAPTURE_STAGE_PROJECTION_ONLY_DXR
+		: XR_ATLAS_CAPTURE_STAGE_POST_COMPOSE_DXR;
 	// Runtime appends "_atlas_<viewCount>_<cols>x<rows>.png" to pathPrefix
 	// (DisplayXR/displayxr-runtime#425). The field is a fixed in-struct char array
 	// (it crosses the IPC schema), so truncate to its capacity.
 	FCStringAnsi::Strncpy(Info.pathPrefix, TCHAR_TO_ANSI(*PathPrefixUtf8),
-		XR_ATLAS_CAPTURE_PATH_MAX_EXT);
+		XR_ATLAS_CAPTURE_PATH_MAX_DXR);
 
 	const XrResult Result = xrCaptureAtlasFunc(Session, &Info, nullptr);
 	if (!XR_SUCCEEDED(Result))
 	{
 		UE_LOG(LogDisplayXRSession, Warning,
-			TEXT("DisplayXR Session: xrCaptureAtlasEXT failed (%d)"), (int)Result);
+			TEXT("DisplayXR Session: xrCaptureAtlasDXR failed (%d)"), (int)Result);
 		return false;
 	}
 	UE_LOG(LogDisplayXRSession, Log,
@@ -1019,8 +1019,8 @@ bool FDisplayXRSession::CreateSessionWithGraphics(void* D3DDevice, void* Command
 	D3D12Binding.queue = CommandQueue;
 
 	// Chain Win32 window binding if HWND is available
-	XrWin32WindowBindingCreateInfoEXT Win32Binding = {};
-	Win32Binding.type = (XrStructureType)XR_TYPE_WIN32_WINDOW_BINDING_CREATE_INFO_EXT;
+	XrWin32WindowBindingCreateInfoDXR Win32Binding = {};
+	Win32Binding.type = (XrStructureType)XR_TYPE_WIN32_WINDOW_BINDING_CREATE_INFO_DXR;
 	Win32Binding.windowHandle = WindowHandle;
 
 	if (WindowHandle)
@@ -1083,11 +1083,11 @@ bool FDisplayXRSession::CreateSessionWithGraphics(void* D3DDevice, void* Command
 	}
 
 	// Resolve extension function pointers
-	xrGetInstanceProcAddrFunc(Instance, "xrRequestDisplayModeEXT",
+	xrGetInstanceProcAddrFunc(Instance, "xrRequestDisplayModeDXR",
 		(PFN_xrVoidFunction*)&xrRequestDisplayModeFunc);
-	xrGetInstanceProcAddrFunc(Instance, "xrEnumerateDisplayRenderingModesEXT",
+	xrGetInstanceProcAddrFunc(Instance, "xrEnumerateDisplayRenderingModesDXR",
 		(PFN_xrVoidFunction*)&xrEnumerateDisplayRenderingModesFunc);
-	xrGetInstanceProcAddrFunc(Instance, "xrCaptureAtlasEXT",
+	xrGetInstanceProcAddrFunc(Instance, "xrCaptureAtlasDXR",
 		(PFN_xrVoidFunction*)&xrCaptureAtlasFunc);
 
 	QueryRenderingModes();

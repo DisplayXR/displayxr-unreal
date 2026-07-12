@@ -9,7 +9,7 @@
  * One-shot capture of the runtime's multi-view atlas to a PNG.
  *
  * The GPU->CPU readback now lives in the runtime: RequestCapture() calls
- * xrCaptureAtlasEXT (XR_EXT_atlas_capture) via the active FDisplayXRSession, and
+ * xrCaptureAtlasDXR (XR_DXR_atlas_capture) via the active FDisplayXRSession, and
  * the runtime writes
  * %USERPROFILE%\Pictures\DisplayXR\<Project>-<N>_atlas_<viewCount>_<cols>x<rows>.png
  * from its own compositor atlas (it owns the "_atlas_..." suffix; see

@@ -52,7 +52,7 @@ struct DISPLAYXRCORE_API FDisplayXRTunables
 };
 
 /**
- * Display properties queried from the runtime via XR_EXT_display_info.
+ * Display properties queried from the runtime via XR_DXR_display_info.
  */
 USTRUCT(BlueprintType)
 struct DISPLAYXRCORE_API FDisplayXRDisplayInfo
