@@ -1,5 +1,4 @@
-# TEMPORARY (#734): dxr-rename branch SHA — swap to released tag before merge
-# (submodule gitlink pinned at displayxr-common 28d6eb7b9898cde447d90bfecda8b6734be83db1)
+# displayxr-common pinned at v2.0.0 (0f341832) — XR_DXR_ rename train, runtime#734
 [submodule "Source/ThirdParty/displayxr-common"]
 	path = Source/ThirdParty/displayxr-common
 	url = https://github.com/DisplayXR/displayxr-common.git
