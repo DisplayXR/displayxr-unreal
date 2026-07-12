@@ -18,5 +18,5 @@
 # matrix: this plugin is a downstream consumer of the wire protocol, released on
 # its own cadence. This file is the only coupling between the two repos.
 
-# TEMPORARY (#734): dxr-rename branch SHA — swap to released tag before merge
-7bd2dccc8bf4d6446e2402a3a7c75718ec7e22f6
+# v2.0.0 (XR_EXT_* -> XR_DXR_* rename train, runtime#734)
+a8f6e74fdfbd26d54bcce859ca5f60bb66963828
