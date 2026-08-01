@@ -508,34 +508,9 @@ void FDisplayXRCompositor::Tick()
 		return;
 	}
 
-#if PLATFORM_WINDOWS
-	// Gated on OverrideCompositorHWND so game mode — which has never called
-	// this function — stays silent. When the override is set (editor native-
-	// PIE), push the bound HWND's client rect to the runtime so its native
-	// compositor knows where to present the atlas. Shipped preview calls
-	// this every tick; logging is throttled to size changes.
-	if (xrSetOutputRectFunc && Session && Session->IsSessionRunning()
-		&& FDisplayXRPlatform::OverrideCompositorHWND != nullptr)
-	{
-		HWND BoundHWND = (HWND)(ChildHWND ? ChildHWND : ParentHWND);
-		RECT rc;
-		if (BoundHWND && GetClientRect(BoundHWND, &rc))
-		{
-			const uint32 W = (uint32)(rc.right - rc.left);
-			const uint32 H = (uint32)(rc.bottom - rc.top);
-			if (W > 0 && H > 0)
-			{
-				xrSetOutputRectFunc(Session->GetXrSession(), 0, 0, W, H);
-				if (W != LastCanvasW || H != LastCanvasH)
-				{
-					UE_LOG(LogDisplayXRCompositor, Log, TEXT("Compositor: output rect updated %ux%u"), W, H);
-					LastCanvasW = W;
-					LastCanvasH = H;
-				}
-			}
-		}
-	}
-#endif
+	// NOTE: the per-tick output-rect push is gone — xrSetSharedTextureOutputRect
+	// was removed from the runtime API (ADR-031); display zones
+	// (XR_DXR_display_zones) are the sole region paradigm.
 }
 
 // =============================================================================
@@ -873,14 +848,6 @@ bool FDisplayXRCompositor::ResolveXrFunctions()
 	ok &= R("xrAcquireSwapchainImage", (PFN_xrVoidFunction*)&xrAcquireSwapchainImageFunc);
 	ok &= R("xrWaitSwapchainImage", (PFN_xrVoidFunction*)&xrWaitSwapchainImageFunc);
 	ok &= R("xrReleaseSwapchainImage", (PFN_xrVoidFunction*)&xrReleaseSwapchainImageFunc);
-
-	// Optional — only present on DisplayXR runtimes with the shared-texture
-	// output-rect extension. Not gated on `ok`: game-mode fullscreen still
-	// works without it.
-	xrGetInstanceProcAddrFunc(Inst, "xrSetSharedTextureOutputRectDXR",
-		(PFN_xrVoidFunction*)&xrSetOutputRectFunc);
-	UE_LOG(LogDisplayXRCompositor, Log, TEXT("Compositor: xrSetSharedTextureOutputRectDXR resolved=%s"),
-		xrSetOutputRectFunc ? TEXT("yes") : TEXT("no"));
 
 	return ok;
 }

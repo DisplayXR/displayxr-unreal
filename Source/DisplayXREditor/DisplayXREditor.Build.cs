@@ -10,6 +10,10 @@ public class DisplayXREditor : ModuleRules
 	{
 		PCHUsage = ModuleRules.PCHUsageMode.UseExplicitOrSharedPCHs;
 
+		// displayxr-common v2.0.0+ guards its layout assumptions with C11
+		// _Static_assert. MSVC's default C mode (C89 + extensions) rejects it.
+		CStandard = CStandardVersion.C17;
+
 		PrivateDependencyModuleNames.AddRange(new string[]
 		{
 			"Core",

@@ -653,8 +653,8 @@ bool FDisplayXRSession::CreateSession()
 	XrSessionCreateInfo SessionCreateInfo = {XR_TYPE_SESSION_CREATE_INFO};
 	SessionCreateInfo.systemId = SystemId;
 	// No graphics binding chain — the runtime will use its own compositor.
-	// HWND can be provided later via xrSetSharedTextureOutputRectDXR or
-	// by re-creating the session once the game window is available.
+	// The HWND is bound later via XR_DXR_win32_window_binding, or by
+	// re-creating the session once the game window is available.
 
 	XrResult Result = xrCreateSessionFunc(Instance, &SessionCreateInfo, &Session);
 	if (!XR_SUCCEEDED(Result))

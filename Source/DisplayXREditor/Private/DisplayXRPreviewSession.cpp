@@ -187,11 +187,6 @@ static LRESULT CALLBACK PreviewWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARA
 			GPreviewSessionForWndProc->FocusPIEViewport();
 		}
 		return 0;
-	case WM_MOVE:
-	case WM_SIZE:
-		if (GPreviewSessionForWndProc)
-			GPreviewSessionForWndProc->UpdateCanvasRect();
-		break;
 	case WM_KEYDOWN:
 		// ESC closes the preview and stops PIE — kept as a local handler so
 		// it works even if the preview is the only window receiving the key
@@ -553,9 +548,6 @@ void FDisplayXRPreviewSession::Tick()
 		});
 		return;
 	}
-
-	// Update canvas rect every tick (catches resize/move even if WndProc is delayed)
-	UpdateCanvasRect();
 
 	// Drain lifecycle events each tick (single-threaded — safe on the game thread,
 	// serialized with the frame calls below). Keeps SessionState current and lets
@@ -1239,30 +1231,6 @@ void FDisplayXRPreviewSession::DestroyNativeWindow()
 #endif
 }
 
-void FDisplayXRPreviewSession::UpdateCanvasRect()
-{
-#if PLATFORM_WINDOWS
-	if (!PreviewHWND || !xrSetOutputRectFunc || Session == XR_NULL_HANDLE) return;
-
-	RECT rc;
-	if (GetClientRect((HWND)PreviewHWND, &rc))
-	{
-		uint32 W = (uint32)(rc.right - rc.left);
-		uint32 H = (uint32)(rc.bottom - rc.top);
-		if (W > 0 && H > 0)
-		{
-			static uint32 LastW = 0, LastH = 0;
-			if (W != LastW || H != LastH)
-			{
-				xrSetOutputRectFunc(Session, 0, 0, W, H);
-				UE_LOG(LogDisplayXRPreviewSession, Log, TEXT("DisplayXR Preview: Canvas rect updated: %dx%d"), W, H);
-				LastW = W;
-				LastH = H;
-			}
-		}
-	}
-#endif
-}
 
 void FDisplayXRPreviewSession::OnNativeWindowClosed()
 {
@@ -1374,14 +1342,8 @@ bool FDisplayXRPreviewSession::CreateXrSession()
 		(PFN_xrVoidFunction*)&xrRequestDisplayModeFunc);
 	xrGetInstanceProcAddrFunc(Instance, "xrEnumerateDisplayRenderingModesDXR",
 		(PFN_xrVoidFunction*)&xrEnumerateDisplayRenderingModesFunc);
-	xrGetInstanceProcAddrFunc(Instance, "xrSetSharedTextureOutputRectDXR",
-		(PFN_xrVoidFunction*)&xrSetOutputRectFunc);
 
-	// Push initial canvas rect
-	UpdateCanvasRect();
-
-	UE_LOG(LogDisplayXRPreviewSession, Log, TEXT("DisplayXR Preview: Session created (outputRect=%s)"),
-		xrSetOutputRectFunc ? TEXT("yes") : TEXT("no"));
+	UE_LOG(LogDisplayXRPreviewSession, Log, TEXT("DisplayXR Preview: Session created"));
 	return true;
 }
 

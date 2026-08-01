@@ -13,6 +13,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 ### Added
 - Portable code-signing for the packaged `Binaries/Win64` DLLs via a provider-runner `sign-artifact` workflow (`DXR_SIGN_REPO`), replacing the local-cert-only path. Signing stays capability-gated — an unset env yields an unsigned ZIP rather than a failed build. (#29, #30, #31)
 
+### Fixed
+- **Plugin did not compile against the renamed headers.** The rename swept `PFN_xrSetSharedTextureOutputRectEXT` → `...DXR`, but ADR-031 removed that entry point from the runtime API entirely (display zones are the sole region paradigm). The dead, null-guarded output-rect path is gone from the compositor and the editor preview session — behavior-neutral against runtime v2.0.0, which never resolved the pointer.
+- **`displayxr-common` v2.0.0 integration.** The OpenXR-typed wrappers are now pure pointer-casts over a new `dxr_view_math.c` core, which no module compiled; both `DisplayXRCore` and `DisplayXREditor` gained a `dxr_view_math_impl.c` shim. The wrappers' C11 `_Static_assert` layout guards also need `CStandard = CStandardVersion.C17` — MSVC's default C mode rejects them.
+
 ## [0.5.1] - 2026-07-03
 
 ### Changed

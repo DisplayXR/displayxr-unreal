@@ -56,7 +56,6 @@ public:
 
 	/** Called from native window's WndProc. */
 	void OnNativeWindowClosed();
-	void UpdateCanvasRect();
 
 	/** Transfer Slate keyboard focus to the PIE viewport. Called when the
 	 *  user clicks the preview window so keystrokes reach the possessed
@@ -109,9 +108,6 @@ private:
 	// --- Native preview window ---
 	void* PreviewHWND = nullptr;  // standalone WS_OVERLAPPEDWINDOW
 	bool bWindowClosed = false;
-
-	// --- Canvas rect (for xrSetSharedTextureOutputRectDXR) ---
-	PFN_xrSetSharedTextureOutputRectDXR xrSetOutputRectFunc = nullptr;
 
 	// --- Swapchain ---
 	XrSwapchain Swapchain = XR_NULL_HANDLE;
