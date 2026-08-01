@@ -184,11 +184,14 @@ if [ -n "$SIGN_REPO" ] && gh workflow view sign-artifact -R "$SIGN_REPO" >/dev/n
   # portable zip: git-bash on Windows has no `zip` — fall back to PowerShell.
   if command -v zip >/dev/null; then ( cd "$BIN" && zip -qr "$D/unsigned.zip" . )
   else powershell -NoProfile -Command "Compress-Archive -Path '$(cygpath -w "$BIN")\*' -DestinationPath '$(cygpath -w "$D/unsigned.zip")' -Force"; fi
-  TMP="sign-unreal-$(date +%s)-$$"
-  gh release create "$TMP" -R "$SIGN_REPO" --prerelease --title "$TMP" \
+  # NOTE: do NOT name this variable TMP — on Windows git-bash, TMP/TEMP are
+  # already exported env vars, so the assignment propagates to child processes
+  # and breaks gh's own temp-file handling ("error initializing temporary file").
+  PAYLOAD_TAG="sign-unreal-$(date +%s)-$$"
+  gh release create "$PAYLOAD_TAG" -R "$SIGN_REPO" --prerelease --title "$PAYLOAD_TAG" \
      --notes "temp unreal-signing payload (auto-deleted)" "$D/unsigned.zip"
   SINCE="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-  gh workflow run sign-artifact -R "$SIGN_REPO" -f release_tag="$TMP"
+  gh workflow run sign-artifact -R "$SIGN_REPO" -f release_tag="$PAYLOAD_TAG"
   RID=""
   for _ in $(seq 1 20); do
     RID=$(gh run list -R "$SIGN_REPO" --workflow sign-artifact --event workflow_dispatch \
@@ -197,7 +200,8 @@ if [ -n "$SIGN_REPO" ] && gh workflow view sign-artifact -R "$SIGN_REPO" >/dev/n
     [ -n "$RID" ] && break; sleep 4
   done
   if [ -n "$RID" ] && gh run watch "$RID" -R "$SIGN_REPO" --interval 15 --exit-status; then
-    gh run download "$RID" -R "$SIGN_REPO" -n signed -D "$D/out"
+    # gh on Windows wants a Windows-style destination path (cygpath absent elsewhere → fall through)
+    gh run download "$RID" -R "$SIGN_REPO" -n signed -D "$(cygpath -w "$D/out" 2>/dev/null || echo "$D/out")"
     # portable unzip (git-bash on Windows has no `unzip`) — overwrite DLLs in place with signed ones.
     if command -v unzip >/dev/null; then unzip -qo "$D/out/signed.zip" -d "$BIN"
     else powershell -NoProfile -Command "Expand-Archive -Path '$(cygpath -w "$D/out/signed.zip")' -DestinationPath '$(cygpath -w "$BIN")' -Force"; fi
@@ -205,7 +209,7 @@ if [ -n "$SIGN_REPO" ] && gh workflow view sign-artifact -R "$SIGN_REPO" >/dev/n
   else
     echo "⚠ sign-artifact run failed/absent — ZIP will be UNSIGNED."
   fi
-  gh release delete "$TMP" -R "$SIGN_REPO" --yes --cleanup-tag >/dev/null 2>&1 || true
+  gh release delete "$PAYLOAD_TAG" -R "$SIGN_REPO" --yes --cleanup-tag >/dev/null 2>&1 || true
 elif [ -n "$SIGN_CMD" ] && uname -s | grep -qiE 'mingw|msys|cygwin|windows'; then
   echo "=== Signing Unreal binaries locally via SIGN_CMD (local cert) ==="
   powershell -NoProfile -ExecutionPolicy Bypass -File Scripts\\sign-release.ps1 \
