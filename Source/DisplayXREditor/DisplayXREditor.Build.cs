@@ -10,10 +10,6 @@ public class DisplayXREditor : ModuleRules
 	{
 		PCHUsage = ModuleRules.PCHUsageMode.UseExplicitOrSharedPCHs;
 
-		// displayxr-common v2.0.0+ guards its layout assumptions with C11
-		// _Static_assert. MSVC's default C mode (C89 + extensions) rejects it.
-		CStandard = CStandardVersion.C17;
-
 		PrivateDependencyModuleNames.AddRange(new string[]
 		{
 			"Core",
@@ -46,10 +42,8 @@ public class DisplayXREditor : ModuleRules
 		// DisplayXR stereo math helpers (DisplayXRStereoMath.h)
 		PrivateIncludePaths.Add(Path.Combine(ModuleDirectory, "..", "DisplayXRCore", "Private"));
 
-		// Shared displayxr::math (Kooima view/projection) from the
-		// displayxr-common submodule. The implementation is compiled into THIS
-		// module via the Private/*_impl.c shims (DisplayXRCore has its own copy
-		// but does not export it).
-		PrivateIncludePaths.Add(Path.Combine(ModuleDirectory, "..", "ThirdParty", "displayxr-common", "include"));
+		// NOTE: no displayxr-common / displayxr::math include path — the runtime
+		// owns the view math via XR_DXR_view_rig (#396 W7, ADR-024). Do not
+		// re-add it; see the no-vendored-math drift guard.
 	}
 }

@@ -35,6 +35,7 @@
 // Cross-platform DisplayXR extensions.
 #include <openxr/XR_DXR_display_info.h>
 #include <openxr/XR_DXR_atlas_capture.h>
+#include <openxr/XR_DXR_view_rig.h>
 
 // Window binding is platform-specific. Include exactly one — the Win32 and
 // Cocoa headers both define PFN_xrReadbackCallback and XrCompositionLayer

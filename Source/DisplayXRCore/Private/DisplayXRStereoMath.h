@@ -129,6 +129,52 @@ static inline FMatrix CalculateOffAxisProjectionMatrix(
 }
 
 /**
+ * Render-ready XrFovf → UE reverse-Z projection matrix.
+ *
+ * With XR_DXR_view_rig the runtime owns the view math and hands back an
+ * asymmetric off-axis fov per view, so we no longer derive the frustum from a
+ * convergence plane + eye position (CalculateOffAxisProjectionMatrix above) —
+ * we just convert the angles. The fov is clip-independent by design, so near/far
+ * and the reverse-Z convention stay ours.
+ *
+ * OpenXR gives signed half-angles (angleLeft/angleDown are negative), so the
+ * tangents are the frustum extents at unit distance; scaling them by the near
+ * plane cancels out of every term below, which is why GNearClippingPlane only
+ * survives in the row-3 entry.
+ */
+static inline FMatrix ProjectionMatrixFromFov(const XrFovf& Fov)
+{
+	extern ENGINE_API float GNearClippingPlane;
+
+	const float TanL = FMath::Tan(Fov.angleLeft);
+	const float TanR = FMath::Tan(Fov.angleRight);
+	const float TanU = FMath::Tan(Fov.angleUp);
+	const float TanD = FMath::Tan(Fov.angleDown);
+
+	const float WidthTan  = TanR - TanL;
+	const float HeightTan = TanU - TanD;
+	if (!(WidthTan > SMALL_NUMBER) || !(HeightTan > SMALL_NUMBER))
+	{
+		// Degenerate fov (runtime returned an empty/unset view) — a zero matrix
+		// would black the frame, so fall back to identity and let the caller's
+		// validity flag drive the decision.
+		return FMatrix::Identity;
+	}
+
+	const float M00 = 2.0f / WidthTan;
+	const float M11 = 2.0f / HeightTan;
+	const float M20 = ((TanR + TanL) / WidthTan)  * -1.0f;
+	const float M21 = ((TanU + TanD) / HeightTan) * -1.0f;
+
+	return AdjustProjectionMatrixForRHI(FMatrix{
+		FPlane(M00,  0.0f, 0.0f,               0.0f),
+		FPlane(0.0f, M11,  0.0f,               0.0f),
+		FPlane(M20,  M21,  0.0f,               1.0f),
+		FPlane(0.0f, 0.0f, GNearClippingPlane, 0.0f),
+	});
+}
+
+/**
  * Raw tracked eyes → lookaround/baseline-adjusted per-eye offsets + center.
  * Caller passes eyes already in UE units (handles Scale upstream).
  *

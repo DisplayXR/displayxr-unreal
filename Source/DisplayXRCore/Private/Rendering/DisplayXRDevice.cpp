@@ -22,8 +22,6 @@
 
 // Shared displayxr::math (displayxr-common submodule, Source/ThirdParty).
 // The headers carry their own extern "C" guards.
-#include "display3d_view.h"
-#include "camera3d_view.h"
 
 DEFINE_LOG_CATEGORY_STATIC(LogDisplayXRDevice, Log, All);
 
@@ -925,198 +923,84 @@ void FDisplayXRDevice::ComputeViews()
 		GLog->Flush();
 	}
 
-	// Eye positions stored as FVector but in OpenXR convention (x,y,z direct from runtime)
-	XrVector3f RawEyes[2];
-	RawEyes[0] = { (float)LeftEyeRaw.X, (float)LeftEyeRaw.Y, (float)LeftEyeRaw.Z };
-	RawEyes[1] = { (float)RightEyeRaw.X, (float)RightEyeRaw.Y, (float)RightEyeRaw.Z };
-
 	// -----------------------------------------------------------------------
-	// Window-relative Kooima (Layer 1 of displayxr::math, matches
-	// DisplayXRPreviewSession + reference cube_handle_d3d11_win test app):
-	// the platform-specific rect fetch (client rect + monitor) stays here;
-	// the rect → screen-dims + eye-offset math — including the screen-Y-down →
-	// eye-Y-up flip — lives in display3d_resolve_window_rect().
+	// XR_DXR_view_rig (#396 W7, ADR-024): the runtime already applied the rig
+	// during xrLocateViews, so each view arrives render-ready — pose.position is
+	// the eye displacement in the rig's space and fov is the off-axis frustum.
+	// There is no app-side view math left: no window-rect resolve (the runtime
+	// owns the canvas), no eye factoring, no convergence-plane frustum.
+	//
+	// Without the extension the plugin has no view math of its own, so there is
+	// nothing to fall back to — warn once and leave the cached views identity so
+	// the frame renders mono rather than wrong.
 	// -----------------------------------------------------------------------
-	const float DispW_m = DI.DisplayWidthMeters  > 0.0f ? DI.DisplayWidthMeters  : 0.344f;
-	const float DispH_m = DI.DisplayHeightMeters > 0.0f ? DI.DisplayHeightMeters : 0.194f;
-	const float DispPxW = DI.DisplayPixelWidth   > 0    ? (float)DI.DisplayPixelWidth  : 3840.0f;
-	const float DispPxH = DI.DisplayPixelHeight  > 0    ? (float)DI.DisplayPixelHeight : 2160.0f;
-
-	// Default placement = full display (no window → display-centered frustum).
-	Display3DWindowPlacement Placement;
-	Placement.display_width_m   = DispW_m;
-	Placement.display_height_m  = DispH_m;
-	Placement.display_width_px  = DispPxW;
-	Placement.display_height_px = DispPxH;
-	Placement.rect_center_x_px  = DispPxW * 0.5f;
-	Placement.rect_center_y_px  = DispPxH * 0.5f;
-	Placement.rect_width_px     = DispPxW;
-	Placement.rect_height_px    = DispPxH;
-
-#if PLATFORM_WINDOWS
-	// Use the BOUND overlay (runtime-sized to the workspace window under the shell)
-	// for the render Kooima frustum, so UE renders at the WORKSPACE aspect — not
-	// its own fullscreen window. Otherwise the tile tracks the resize but the
-	// render projection stays 16:9 → content stretches. Falls back to UE's window.
-	HWND Hwnd = (HWND)GameHWND;
-	if (Compositor.IsValid() && Compositor->GetBoundHWND())
-	{
-		Hwnd = (HWND)Compositor->GetBoundHWND();
-	}
-	if (Hwnd)
-	{
-		RECT rc;
-		GetClientRect(Hwnd, &rc);
-		const float WinPxW = (float)(rc.right - rc.left);
-		const float WinPxH = (float)(rc.bottom - rc.top);
-
-		POINT ClientOrigin = {0, 0};
-		ClientToScreen(Hwnd, &ClientOrigin);
-		HMONITOR hMon = MonitorFromWindow(Hwnd, MONITOR_DEFAULTTONEAREST);
-		MONITORINFO mi = { sizeof(mi) };
-		if (WinPxW > 0.0f && WinPxH > 0.0f && GetMonitorInfo(hMon, &mi))
-		{
-			// Monitor pixel dims (not DI's) keep rect center and display center
-			// in the same pixel space, self-consistent even if they disagree.
-			Placement.display_width_px  = (float)(mi.rcMonitor.right - mi.rcMonitor.left);
-			Placement.display_height_px = (float)(mi.rcMonitor.bottom - mi.rcMonitor.top);
-			Placement.rect_center_x_px  = (float)(ClientOrigin.x - mi.rcMonitor.left) + WinPxW * 0.5f;
-			Placement.rect_center_y_px  = (float)(ClientOrigin.y - mi.rcMonitor.top)  + WinPxH * 0.5f;
-			Placement.rect_width_px     = WinPxW;
-			Placement.rect_height_px    = WinPxH;
-		}
-	}
-#endif
-
-	// Nominal viewer position
-	XrVector3f NominalViewer = {
-		(float)DI.NominalViewerPosition.X,
-		(float)DI.NominalViewerPosition.Y,
-		(float)DI.NominalViewerPosition.Z
-	};
-	if (!DI.bIsValid)
-	{
-		NominalViewer = {0.0f, 0.0f, 0.5f};
-	}
-
-	// Resolve rect → Kooima screen dims + rect-center-relative eye positions.
-	// The nominal viewer rides along as a third point so it stays in the same
-	// window-relative frame as the eyes.
-	XrVector3f RectPoints[3] = { RawEyes[0], RawEyes[1], NominalViewer };
-	Display3DScreen Screen;
-	display3d_resolve_window_rect(&Placement, RectPoints, 3, &Screen, RectPoints);
-	RawEyes[0] = RectPoints[0];
-	RawEyes[1] = RectPoints[1];
-	NominalViewer = RectPoints[2];
-
-	// Scene transform (display pose for Kooima)
-	FVector ScenePos;
-	FQuat SceneOrient;
-	bool bSceneEnabled;
-	Session->GetSceneTransform(ScenePos, SceneOrient, bSceneEnabled);
-
-	XrPosef DisplayPose;
-	DisplayPose.orientation = {0, 0, 0, 1};
-	DisplayPose.position = {0, 0, 0};
-	if (bSceneEnabled)
-	{
-		DisplayPose.position = {(float)ScenePos.X, (float)ScenePos.Y, (float)ScenePos.Z};
-		DisplayPose.orientation = {(float)SceneOrient.X, (float)SceneOrient.Y,
-		                           (float)SceneOrient.Z, (float)SceneOrient.W};
-	}
-
-	// Resize cached views array
 	CachedViews.SetNum(ViewCount);
 
-	// Kooima always gets 2 eyes (left/right from xrLocateViews)
-	const uint32_t KooimaViewCount = 2;
+	// Union of the per-view fovs, for the center/mono view built at the end.
+	XrFovf CenterFov = {};
+	bool bCenterFovValid = false;
 
-	if (T.bCameraCentric)
+	if (!Session->HasViewRig())
 	{
-		Camera3DTunables CT;
-		CT.ipd_factor = T.IpdFactor;
-		CT.parallax_factor = T.ParallaxFactor;
-		CT.inv_convergence_distance = T.InvConvergenceDistance;
-		CT.half_tan_vfov = T.FovOverride > 0.0f ? FMath::Tan(T.FovOverride * 0.5f) : 0.32491969623f;
-
-		Camera3DView OutViews[2];
-		camera3d_compute_views(RawEyes, KooimaViewCount, &NominalViewer, &Screen,
-			&CT, &DisplayPose, T.NearZ, T.FarZ, OutViews);
-
-		// Get factored eye positions (IPD + parallax applied) for eye_local computation
-		XrVector3f FactoredEyes[2];
-		display3d_apply_eye_factors_n(RawEyes, KooimaViewCount, &NominalViewer,
-			CT.ipd_factor, CT.parallax_factor, FactoredEyes);
-
-		const float NomZ = (NominalViewer.z > 0.0f) ? NominalViewer.z : 0.5f;
-
+		static bool bWarnedNoViewRig = false;
+		if (!bWarnedNoViewRig)
+		{
+			bWarnedNoViewRig = true;
+			UE_LOG(LogDisplayXRDevice, Warning,
+				TEXT("Runtime does not advertise %s — the plugin no longer computes the "
+				     "view math itself (#396 W7). Stereo is disabled; update to a "
+				     "DisplayXR runtime >= v2.0.0."),
+				TEXT(XR_DXR_VIEW_RIG_EXTENSION_NAME));
+			GLog->Flush();
+		}
 		for (int32 i = 0; i < ViewCount; i++)
 		{
-			const int32 SrcIdx = FMath::Min(i, (int32)KooimaViewCount - 1);
-
-			// eye_local = processed_eye - (0, 0, nominal_z): displacement from camera center.
-			// This is camera-local (unrotated). UE's CalculateStereoViewOffset rotates it
-			// by ViewRotation to produce the world-space offset.
-			XrVector3f EyeLocal = {
-				FactoredEyes[SrcIdx].x,
-				FactoredEyes[SrcIdx].y,
-				FactoredEyes[SrcIdx].z - NomZ
-			};
-			CachedViews[i].Offset = OpenXRPositionToUE(EyeLocal);
-
-			// Projection: use same eye_local with inv_convergence scaling (matches Kooima)
-			const float ConvergenceDist = T.InvConvergenceDistance > 0.0f
-				? (1.0f / T.InvConvergenceDistance) * 100.0f : 100.0f;
-			const float AspectRatio = Screen.width_m / Screen.height_m;
-			FVector2D HalfSize(ConvergenceDist * CT.half_tan_vfov * AspectRatio,
-			                   ConvergenceDist * CT.half_tan_vfov);
-			FVector EyeForProj(-ConvergenceDist, CachedViews[i].Offset.Y, CachedViews[i].Offset.Z);
-			CachedViews[i].ProjectionMatrix = CalculateOffAxisProjectionMatrix(HalfSize, EyeForProj);
+			CachedViews[i].Offset = FVector::ZeroVector;
+			CachedViews[i].ProjectionMatrix = FMatrix::Identity;
 		}
 	}
 	else
 	{
-		Display3DTunables DT;
-		DT.ipd_factor = T.IpdFactor;
-		DT.parallax_factor = T.ParallaxFactor;
-		DT.perspective_factor = T.PerspectiveFactor;
-		// vdh is FIXED (does not scale with window). Screen.height_m is the
-		// window physical height, so m2v = vdh / window_h changes with resize —
-		// making world-scale objects physically smaller as the window shrinks
-		// (matches test app cube_handle_d3d11_win and DisplayXRPreviewSession).
-		DT.virtual_display_height = T.VirtualDisplayHeight > 0.0f
-			? T.VirtualDisplayHeight : DispH_m;
-
-		// ZDP-anchored clip offsets (superset API): near = ez - vH, far = ez +
-		// 1000*vH (opaque). Inert here — UE builds its own reverse-Z projection
-		// below (CalculateOffAxisProjectionMatrix) and only consumes eye_display,
-		// so the lib's projection_matrix/near_z/far_z outputs are discarded.
-		// vulkan_flip_y=0: clean +Y-up frame, matching the old no-flip behavior.
-		Display3DView OutViews[2];
-		display3d_compute_views(RawEyes, KooimaViewCount, &NominalViewer, &Screen,
-			&DT, &DisplayPose,
-			/*near_offset=*/DT.virtual_display_height,
-			/*far_offset=*/1000.0f * DT.virtual_display_height,
-			/*vulkan_flip_y=*/0, OutViews);
-
 		for (int32 i = 0; i < ViewCount; i++)
 		{
-			const int32 SrcIdx = FMath::Min(i, (int32)KooimaViewCount - 1);
+			// Views beyond what the runtime located clamp to the last one, the
+			// same way the Kooima path clamped to its 2-eye output.
+			FVector ViewPos;
+			FQuat ViewOrient;
+			XrFovf ViewFov = {};
+			int32 SrcIdx = i;
+			while (SrcIdx > 0 && !Session->GetViewData(SrcIdx, ViewPos, ViewOrient, ViewFov))
+			{
+				SrcIdx--;
+			}
+			if (!Session->GetViewData(SrcIdx, ViewPos, ViewOrient, ViewFov))
+			{
+				CachedViews[i].Offset = FVector::ZeroVector;
+				CachedViews[i].ProjectionMatrix = FMatrix::Identity;
+				continue;
+			}
 
-			// eye_display: post-factor eye in display space (meters, OpenXR convention)
-			// Matches Unity/test app: camera moves to eye position, projection from same.
-			FVector EyeDisplayUE = OpenXRPositionToUE(OutViews[SrcIdx].eye_display);
-			CachedViews[i].Offset = EyeDisplayUE;
+			// The rig pose we submitted is the origin, so the located position
+			// IS the camera-local (unrotated) eye displacement UE wants —
+			// CalculateStereoViewOffset rotates it by the view rotation.
+			const XrVector3f EyeLocal = {
+				(float)ViewPos.X, (float)ViewPos.Y, (float)ViewPos.Z
+			};
+			CachedViews[i].Offset = OpenXRPositionToUE(EyeLocal);
+			CachedViews[i].ProjectionMatrix = ProjectionMatrixFromFov(ViewFov);
 
-			// Screen dimensions in UE units, scaled by m2v (matching Kooima's kScreenW/H).
-			// Note: m2v only, no perspective_factor — that only applies to eye position.
-			const float m2v = DT.virtual_display_height / Screen.height_m;
-			const float ScreenW_UE = Screen.width_m * m2v * 100.0f;
-			const float ScreenH_UE = DT.virtual_display_height * 100.0f;
-			FVector2D HalfSize(ScreenW_UE * 0.5f, ScreenH_UE * 0.5f);
-
-			// Full eye position for projection — depth comes from actual eye Z, not static nominal
-			CachedViews[i].ProjectionMatrix = CalculateOffAxisProjectionMatrix(HalfSize, EyeDisplayUE);
+			if (!bCenterFovValid)
+			{
+				CenterFov = ViewFov;
+				bCenterFovValid = true;
+			}
+			else
+			{
+				CenterFov.angleLeft  = FMath::Min(CenterFov.angleLeft,  ViewFov.angleLeft);
+				CenterFov.angleRight = FMath::Max(CenterFov.angleRight, ViewFov.angleRight);
+				CenterFov.angleDown  = FMath::Min(CenterFov.angleDown,  ViewFov.angleDown);
+				CenterFov.angleUp    = FMath::Max(CenterFov.angleUp,    ViewFov.angleUp);
+			}
 		}
 	}
 
@@ -1143,27 +1027,11 @@ void FDisplayXRDevice::ComputeViews()
 	}
 	CachedCenter.Offset /= (float)ViewCount;
 
-	// Center projection from center eye position
-	if (!T.bCameraCentric)
-	{
-		const float NominalZ = DI.bIsValid ? (float)DI.NominalViewerPosition.Z : 0.5f;
-		const float VDH = T.VirtualDisplayHeight > 0.0f ? T.VirtualDisplayHeight : Screen.height_m;
-		const float ConvergenceDist = NominalZ * T.PerspectiveFactor * (VDH / Screen.height_m) * 100.0f;
-		const float VirtualH = VDH * 100.0f;
-		const float AspectRatio = Screen.width_m / Screen.height_m;
-		FVector2D HalfSize(VirtualH * 0.5f * AspectRatio, VirtualH * 0.5f);
-		FVector EyeForProj(-ConvergenceDist, CachedCenter.Offset.Y, CachedCenter.Offset.Z);
-		CachedCenter.ProjectionMatrix = CalculateOffAxisProjectionMatrix(HalfSize, EyeForProj);
-	}
-	else
-	{
-		const float ConvergenceDist = T.InvConvergenceDistance > 0.0f
-			? (1.0f / T.InvConvergenceDistance) * 100.0f : 100.0f;
-		const float HalfTanVFOV = T.FovOverride > 0.0f ? FMath::Tan(T.FovOverride * 0.5f) : 0.32491969623f;
-		const float AspectRatio = Screen.width_m / Screen.height_m;
-		FVector2D HalfSize(ConvergenceDist * HalfTanVFOV * AspectRatio,
-		                   ConvergenceDist * HalfTanVFOV);
-		FVector EyeForProj(-ConvergenceDist, CachedCenter.Offset.Y, CachedCenter.Offset.Z);
-		CachedCenter.ProjectionMatrix = CalculateOffAxisProjectionMatrix(HalfSize, EyeForProj);
-	}
+	// Center projection: the union of the per-view frustums, so the center view
+	// covers everything any eye can see. Built from the same runtime-supplied
+	// fovs as the per-view matrices — there is no app-side frustum math left to
+	// re-derive it from (#396 W7).
+	CachedCenter.ProjectionMatrix = bCenterFovValid
+		? ProjectionMatrixFromFov(CenterFov)
+		: FMatrix::Identity;
 }

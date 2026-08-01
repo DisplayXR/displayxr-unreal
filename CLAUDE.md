@@ -39,7 +39,7 @@ There is **no** `DISPLAYXR_USE_UNREAL_OPENXR` compile flag. Platform differences
 `FDisplayXRDevice` extends `FHeadMountedDisplayBase` + `FXRRenderTargetManager` + `FSceneViewExtensionBase`. It:
 
 1. Polls the OpenXR session each frame to get eye positions.
-2. Feeds raw eyes through the shared `displayxr::math` Kooima C library (`camera3d_view.c`, `display3d_view.c` from the `displayxr-common` submodule) for asymmetric frustum projection.
+2. Chains an `XR_DXR_view_rig` descriptor onto `xrLocateViews`, so the **runtime** applies the view math and returns render-ready `XrView{pose, fov}` (see §Shared native code).
 3. Builds UE-native reverse-Z off-axis projection matrices via `DisplayXRStereoMath.h::CalculateOffAxisProjectionMatrix`.
 4. UE renders directly into the OpenXR swapchain (zero-copy atlas handoff — see `Docs/DisplayXR/AtlasHandoff.md`).
 
@@ -57,9 +57,37 @@ There is **no** `DISPLAYXR_USE_UNREAL_OPENXR` compile flag. Platform differences
 
 ## Shared native code
 
-The Kooima math (`display3d_view.{c,h}`, `camera3d_view.{c,h}`) comes from the shared [`displayxr-common`](https://github.com/DisplayXR/displayxr-common) library (`displayxr::math`), pinned as a **git submodule** at `Source/ThirdParty/displayxr-common` — run `git submodule update --init` after cloning. Don't edit the submodule contents; change the library upstream, tag, and bump the pin.
+**There is none, and that is deliberate.** The plugin computes no view math of
+its own: the DisplayXR runtime owns it via the `XR_DXR_view_rig` extension
+(`DisplayXR/displayxr-runtime` #396 W7, ADR-024). Both the runtime device path
+and the editor preview chain an `XrDisplayRigDXR` / `XrCameraRigDXR` descriptor
+onto `xrLocateViews` and consume render-ready `XrView{pose, fov}`; the fov is
+clip-independent, so near/far and UE's reverse-Z convention stay app-side
+(`DisplayXRStereoMath.h::ProjectionMatrixFromFov`).
 
-Integration mechanism (UBT has no per-file source exclusion, so the submodule must live OUTSIDE the module dirs): `Source/ThirdParty/` has no `.Build.cs` → UBT never globs it (keeping the library's `tests/selftest.c`, which has a `main()`, out of the build), while `BuildPlugin`'s package filter includes all of `/Source/...` → the submodule ships in the packaged plugin. The implementation is compiled via one-line `#include` shims — `DisplayXRCore/Private/Native/{display3d_view,camera3d_view}_impl.c` and `DisplayXREditor/Private/{display3d_view,camera3d_view}_impl.c` (Core doesn't export the symbols, so the editor module compiles its own copy; the shims must stay `.c` TUs because the implementation uses C compound literals, which C++ rejects). Both Build.cs files add `Source/ThirdParty/displayxr-common/include` to `PrivateIncludePaths` for the headers. CI lint note: the vendor-name guard greps the filesystem, but `actions/checkout` doesn't init submodules, so the submodule's copyright headers don't trip it.
+Consequences worth knowing:
+
+- **No `displayxr-common` submodule, no `displayxr::math` link, no FetchContent.**
+  Do NOT re-vendor `display3d_view.*` / `camera3d_view.*` — the `drift-guard`
+  workflow fails the build if those files reappear as tracked sources. This
+  matches [`displayxr-unity`](https://github.com/DisplayXR/displayxr-unity),
+  which dropped the same dependency.
+- **Requires a runtime advertising `XR_DXR_view_rig`** (DisplayXR runtime
+  >= v2.0.0). Without it the plugin has nothing to fall back to: it emits a
+  one-shot WARN and renders mono rather than wrong.
+- **Gate on the extension NAME, never on `SPEC_VERSION`.** Released runtime
+  v2.0.0 advertises `XR_DXR_view_rig_SPEC_VERSION 1` (numbering restarted at the
+  `XR_EXT_*` -> `XR_DXR_*` rename) while carrying the full spec-3 struct set;
+  `displayxr-runtime@main` renumbered it to 3 to continue the pre-rename
+  sequence. A `>= 2` check would reject a perfectly capable runtime.
+- **Probe before requesting.** `xrCreateInstance` fails outright on an
+  unsupported extension, so both sessions call
+  `xrEnumerateInstanceExtensionProperties` first and only then add the name to
+  the enabled list.
+- The extension header is vendored verbatim at
+  `Source/DisplayXRCore/Private/Native/openxr/XR_DXR_view_rig.h` and policed by
+  the `abi-guard` job against `.displayxr-runtime-abi`, exactly like the other
+  four `XR_DXR_*` headers.
 
 ## CI/CD
 

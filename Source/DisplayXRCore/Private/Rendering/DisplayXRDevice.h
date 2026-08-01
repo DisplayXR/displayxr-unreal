@@ -20,11 +20,12 @@
  * convention-fighting that plagued the OpenXR hook approach.
  *
  * Each frame in SetupViewFamily:
- *   1. Tick the session (poll OpenXR, update eye positions)
- *   2. Feed raw eyes to Kooima C library (display3d/camera3d_compute_views)
- *   3. Consume eye_display output (post-factor eye position in display space)
- *   4. Build UE-native off-axis projection via CalculateOffAxisProjectionMatrix
- *   5. Cache per-view matrices and offsets for IStereoRendering overrides
+ *   1. Tick the session, which chains an XR_DXR_view_rig descriptor onto
+ *      xrLocateViews so the RUNTIME owns the view math (#396 W7, ADR-024)
+ *   2. Consume the render-ready XrView{pose, fov} it returns
+ *   3. Convert fov to a UE reverse-Z projection (ProjectionMatrixFromFov);
+ *      near/far and the depth convention stay app-side
+ *   4. Cache per-view matrices and offsets for IStereoRendering overrides
  *
  * N-view atlas layout built on FHeadMountedDisplayBase + FXRRenderTargetManager.
  */

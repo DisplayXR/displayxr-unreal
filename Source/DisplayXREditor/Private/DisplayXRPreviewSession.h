@@ -109,6 +109,10 @@ private:
 	void* PreviewHWND = nullptr;  // standalone WS_OVERLAPPEDWINDOW
 	bool bWindowClosed = false;
 
+	// XR_DXR_view_rig availability, probed before xrCreateInstance. When false
+	// the preview has no view math of its own and cannot do stereo (#396 W7).
+	bool bHasViewRig = false;
+
 	// --- Swapchain ---
 	XrSwapchain Swapchain = XR_NULL_HANDLE;
 	struct FSwapchainImage { void* D3D12Resource = nullptr; };

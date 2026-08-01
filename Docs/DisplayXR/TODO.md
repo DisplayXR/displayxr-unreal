@@ -60,5 +60,5 @@ The Unity sibling has a more mature docs tree. Bring Unreal up to parity so user
 
 ## 5. Known issues / cleanup
 
-- Kooima C libs (`camera3d_view.c/h`, `display3d_view.c/h`) come from the `displayxr-common` submodule (`Source/ThirdParty/displayxr-common`). Change them upstream (tag + pin bump), never in-tree.
+- The plugin computes no view math: the runtime owns it via `XR_DXR_view_rig` (#396 W7, ADR-024). There is no `displayxr-common` submodule and no `displayxr::math` link — do not re-vendor `display3d_view.*` / `camera3d_view.*`, the `drift-guard` workflow fails on it.
 - Some file-header years are `2025-2026`; new files should use `2026-` or extend the range as appropriate.

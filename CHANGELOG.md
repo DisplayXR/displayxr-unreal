@@ -4,6 +4,20 @@ All notable changes to the DisplayXR Unreal plugin are documented here.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Changed
+- **The runtime now owns the view math — the plugin computes no Kooima.** Both the runtime device path and the editor preview chain an `XrDisplayRigDXR` / `XrCameraRigDXR` descriptor onto `xrLocateViews` (`XR_DXR_view_rig`) and consume render-ready `XrView{pose, fov}`; the fov is clip-independent, so near/far and UE's reverse-Z convention stay app-side via the new `ProjectionMatrixFromFov`. The runtime also owns the canvas geometry, so the per-frame window-rect resolve is gone. Brings Unreal to parity with [displayxr-unity](https://github.com/DisplayXR/displayxr-unity), which made the same move in `9a2ba6b`. (`DisplayXR/displayxr-runtime` #396 W7, ADR-024; [#36](https://github.com/DisplayXR/displayxr-unreal/issues/36))
+
+### Removed
+- **The `displayxr-common` git submodule and the whole `displayxr::math` integration.** Gone with it: the six `*_impl.c` compile shims, both `PrivateIncludePaths` entries, `CStandard = CStandardVersion.C17`, and the scoped C4456 suppression — all of which existed only to compile the vendored library. `.gitmodules` is deleted; `git submodule update --init` is no longer part of setup. Do not re-vendor the math: the `drift-guard` workflow fails on it.
+
+### Notes
+- The rig descriptor is submitted with an **identity pose**. `XrView.pose` comes back in the locate space (rig pose + eye displacement) and the rig orientation is baked into the returned fov, while UE applies camera placement and rotation itself in `CalculateStereoViewOffset` — forwarding the camera transform double-counts both. Consequently `SetSceneTransform` no longer feeds the view math and is now diagnostic only.
+
+### Requirements
+- Requires a DisplayXR runtime advertising `XR_DXR_view_rig` (>= v2.0.0, already the v0.6.0 minimum — no new requirement). The capability gate tests the extension **name**: released v2.0.0 reports `SPEC_VERSION 1` (numbering restarted at the `XR_EXT_*`→`XR_DXR_*` rename) while carrying the full spec-3 structs, so a version-based gate would wrongly reject it. Without the extension the plugin warns once and renders mono rather than wrong.
+
 ## [0.6.0] - 2026-08-01
 
 ### Changed

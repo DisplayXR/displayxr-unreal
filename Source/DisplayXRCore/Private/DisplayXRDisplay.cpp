@@ -83,6 +83,10 @@ void UDisplayXRDisplay::PushTunables()
 	// returned by xrLocateViews rotate with the camera. Using the pawn's actor
 	// transform would omit the camera rotation and break the eye → display-local
 	// conversion whenever the camera yaws/pitches independently of the pawn.
+	// NOTE: since #396 W7 this is DIAGNOSTIC ONLY. The view rig is submitted with
+	// an identity pose (UE applies camera placement/rotation itself), so the
+	// scene transform no longer feeds the view math — it is still published so
+	// the session can log it alongside the rig. Do not assume it is load-bearing.
 	if (Camera)
 	{
 		FDisplayXRPlatform::SetSceneTransform(Camera->GetComponentTransform(), true);

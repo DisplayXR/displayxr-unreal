@@ -142,13 +142,21 @@ public:
 	/** Set scene transform from game thread. */
 	void SetSceneTransform(const FTransform& InTransform, bool bEnabled);
 
-	/** Get scene transform data for Kooima pose parameter. */
+	/** Get scene transform data for the view-rig pose parameter. */
 	void GetSceneTransform(FVector& OutPosition, FQuat& OutOrientation, bool& bOutEnabled) const;
+
+	/** True when the runtime advertised XR_DXR_view_rig and it was enabled on
+	 *  the instance, i.e. xrLocateViews returns render-ready XrView{pose, fov}.
+	 *  When false the plugin has no view math of its own and cannot do stereo. */
+	bool HasViewRig() const { return bHasViewRig; }
 
 private:
 	bool LoadOpenXRLoader();
 	void UnloadOpenXRLoader();
 	bool CreateInstance();
+	/** Enumerate instance extensions and test for one by name. Must be called
+	 *  before xrCreateInstance — requesting an unsupported extension fails it. */
+	bool IsInstanceExtensionSupported(const char* Name) const;
 	/** Bare (graphics-less) session — Mac/Linux only; Windows uses
 	 *  CreateSessionWithGraphics exclusively. */
 	bool CreateSession();
@@ -173,6 +181,8 @@ private:
 	// Set once when XR_SESSION_STATE_EXITING is handled, so the app requests
 	// engine exit exactly once (PumpEvents runs every parked-loop iteration).
 	bool bExitRequested = false;
+	// XR_DXR_view_rig availability, probed before xrCreateInstance.
+	bool bHasViewRig = false;
 
 	// Function pointers (resolved via xrGetInstanceProcAddr)
 	PFN_xrGetInstanceProcAddr xrGetInstanceProcAddrFunc = nullptr;
