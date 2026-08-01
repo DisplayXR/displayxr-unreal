@@ -202,10 +202,26 @@ if [ -n "$SIGN_REPO" ] && gh workflow view sign-artifact -R "$SIGN_REPO" >/dev/n
   if [ -n "$RID" ] && gh run watch "$RID" -R "$SIGN_REPO" --interval 15 --exit-status; then
     # gh on Windows wants a Windows-style destination path (cygpath absent elsewhere → fall through)
     gh run download "$RID" -R "$SIGN_REPO" -n signed -D "$(cygpath -w "$D/out" 2>/dev/null || echo "$D/out")"
-    # portable unzip (git-bash on Windows has no `unzip`) — overwrite DLLs in place with signed ones.
-    if command -v unzip >/dev/null; then unzip -qo "$D/out/signed.zip" -d "$BIN"
-    else powershell -NoProfile -Command "Expand-Archive -Path '$(cygpath -w "$D/out/signed.zip")' -DestinationPath '$(cygpath -w "$BIN")' -Force"; fi
-    SIGNED=yes
+    # NEVER infer SIGNED from "the workflow went green" — the download and the
+    # unpack are separate failure points AFTER it, and each one fails in the
+    # direction that silently ships unsigned DLLs while reporting SIGNED=yes.
+    # A real v0.6.0 run lost the download here and only got caught by a manual
+    # signature check. Gate on the artifact arriving, then on the bytes.
+    if [ ! -s "$D/out/signed.zip" ]; then
+      echo "⚠ signed artifact never arrived from the runner — ZIP will be UNSIGNED."
+    else
+      # portable unzip (git-bash on Windows has no `unzip`) — overwrite DLLs in place with signed ones.
+      if command -v unzip >/dev/null; then unzip -qo "$D/out/signed.zip" -d "$BIN"
+      else powershell -NoProfile -Command "Expand-Archive -Path '$(cygpath -w "$D/out/signed.zip")' -DestinationPath '$(cygpath -w "$BIN")' -Force"; fi
+      if command -v powershell >/dev/null 2>&1; then
+        BAD=$(powershell -NoProfile -Command "@(Get-ChildItem '$(cygpath -w "$BIN")\*.dll' | Get-AuthenticodeSignature | Where-Object { \$_.Status -ne 'Valid' }).Count" 2>/dev/null | tr -d '\r')
+        if [ "$BAD" = 0 ]; then SIGNED=yes
+        else echo "⚠ $BAD DLL(s) not Authenticode-Valid after unpack — ZIP will be UNSIGNED."; fi
+      else
+        echo "note: no powershell to verify Authenticode — trusting the runner's bundle."
+        SIGNED=yes
+      fi
+    fi
   else
     echo "⚠ sign-artifact run failed/absent — ZIP will be UNSIGNED."
   fi
@@ -218,8 +234,11 @@ else
   echo "⚠  SIGNING SKIPPED — set DXR_SIGN_REPO (provider runner) or SIGN_CMD (local cert); ZIP will be UNSIGNED."
 fi
 ```
-Verify after: `Get-AuthenticodeSignature` on a `Binaries\Win64\*.dll` should be
-`Valid`. Carry `SIGNED` into the final report. Note: when a UE developer recompiles
+The block above already machine-checks `Get-AuthenticodeSignature` on every
+`Binaries\Win64\*.dll` and only sets `SIGNED=yes` when all report `Valid` — so
+carry `SIGNED` into the final report verbatim rather than re-deriving it, and
+never report a release as signed on the strength of a green runner job alone.
+Note: when a UE developer recompiles
 the plugin for a different engine version or for their packaged game, UE
 regenerates those DLLs — those rebuilt binaries are the developer's to
 sign (their distribution), the same as any UE plugin.
