@@ -3,9 +3,10 @@
 ## Overview
 
 The DisplayXR plugin uses the OpenXR runtime's face tracking to provide
-head-tracked parallax. Eye positions from `xrLocateViews` feed into the
-Kooima C library (`display3d_compute_views`) which computes per-view
-off-axis projection matrices and camera offsets.
+head-tracked parallax. The plugin chains an `XR_DXR_view_rig` descriptor onto
+`xrLocateViews`, so the **runtime** applies the tracked eyes to the rig and
+returns render-ready `XrView{pose, fov}` — per-view off-axis frustum and camera
+offset — which the plugin converts to UE reverse-Z matrices (#396 W7, ADR-024).
 
 ## Pipeline
 

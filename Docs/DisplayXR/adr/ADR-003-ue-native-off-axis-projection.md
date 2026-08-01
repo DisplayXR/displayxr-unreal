@@ -42,5 +42,5 @@ Eye positions pass through `OpenXRPositionToUE(const XrVector3f&)` and `OpenXROr
 ## Related
 
 - `Source/DisplayXRCore/Private/DisplayXRStereoMath.h` — the matrix + eye-offset helpers
-- `Source/ThirdParty/displayxr-common/include/camera3d_view.c` / `display3d_view.c` — Kooima source (shared `displayxr::math` submodule)
+- ~~`Source/ThirdParty/displayxr-common/include/camera3d_view.c` / `display3d_view.c` — Kooima source (shared `displayxr::math` submodule)~~ — superseded: the runtime owns the view math via `XR_DXR_view_rig` (#396 W7, ADR-024) and the submodule is gone. The decision below still holds: the plugin builds its own UE reverse-Z matrix rather than consuming a foreign projection matrix; it now does so from the runtime's clip-independent `XrFovf` via `ProjectionMatrixFromFov`.
 - [EyeTracking.md](../EyeTracking.md) — the full `xrLocateViews` → Kooima → UE pipeline

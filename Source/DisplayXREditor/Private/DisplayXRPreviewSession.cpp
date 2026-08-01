@@ -47,8 +47,6 @@
 // this module rebuilds the implementation via the Private/*_impl.c shims
 // (compiled as C — the .c uses C compound literals and can't be #included
 // into C++). The headers carry their own extern "C" guards.
-#include "display3d_view.h"
-#include "camera3d_view.h"
 
 // D3D12 swapchain image struct (not in bundled openxr.h)
 #define XR_TYPE_SWAPCHAIN_IMAGE_D3D12_KHR_VALUE ((XrStructureType)1000028001)
@@ -981,7 +979,7 @@ bool FDisplayXRPreviewSession::CreateXrInstance()
 		return false;
 	}
 
-	const char* Extensions[] = {
+	TArray<const char*> Extensions = {
 		XR_DXR_DISPLAY_INFO_EXTENSION_NAME,
 #if PLATFORM_WINDOWS
 		"XR_KHR_D3D12_enable",
@@ -989,14 +987,54 @@ bool FDisplayXRPreviewSession::CreateXrInstance()
 #endif
 	};
 
+	// XR_DXR_view_rig (#396 W7): probe BEFORE requesting — xrCreateInstance fails
+	// outright on an unsupported extension. Gate on the NAME, not SPEC_VERSION
+	// (runtime v2.0.0 advertises 1 while carrying the full spec-3 structs).
+	bHasViewRig = false;
+	{
+		PFN_xrEnumerateInstanceExtensionProperties EnumFunc = nullptr;
+		xrGetInstanceProcAddrFunc(XR_NULL_HANDLE, "xrEnumerateInstanceExtensionProperties",
+			(PFN_xrVoidFunction*)&EnumFunc);
+		uint32_t Count = 0;
+		if (EnumFunc && XR_SUCCEEDED(EnumFunc(nullptr, 0, &Count, nullptr)) && Count > 0)
+		{
+			TArray<XrExtensionProperties> Props;
+			Props.SetNum((int32)Count);
+			for (XrExtensionProperties& P : Props)
+			{
+				P = {XR_TYPE_EXTENSION_PROPERTIES};
+			}
+			if (XR_SUCCEEDED(EnumFunc(nullptr, Count, &Count, Props.GetData())))
+			{
+				for (uint32_t i = 0; i < Count; ++i)
+				{
+					if (FCStringAnsi::Strcmp(Props[(int32)i].extensionName,
+						XR_DXR_VIEW_RIG_EXTENSION_NAME) == 0)
+					{
+						bHasViewRig = true;
+						break;
+					}
+				}
+			}
+		}
+	}
+	if (bHasViewRig)
+	{
+		Extensions.Add(XR_DXR_VIEW_RIG_EXTENSION_NAME);
+	}
+	UE_LOG(LogDisplayXRPreviewSession, Log, TEXT("DisplayXR Preview: %s: %s"),
+		TEXT(XR_DXR_VIEW_RIG_EXTENSION_NAME),
+		bHasViewRig ? TEXT("AVAILABLE (runtime owns the view math)")
+		            : TEXT("ABSENT — preview stereo disabled"));
+
 	XrInstanceCreateInfo CreateInfo = {XR_TYPE_INSTANCE_CREATE_INFO};
 	FCStringAnsi::Strncpy(CreateInfo.applicationInfo.applicationName, "DisplayXR Editor Preview", XR_MAX_APPLICATION_NAME_SIZE);
 	CreateInfo.applicationInfo.applicationVersion = 1;
 	FCStringAnsi::Strncpy(CreateInfo.applicationInfo.engineName, "Unreal Engine", XR_MAX_ENGINE_NAME_SIZE);
 	CreateInfo.applicationInfo.engineVersion = 5;
 	CreateInfo.applicationInfo.apiVersion = XR_MAKE_VERSION(1, 0, 0);
-	CreateInfo.enabledExtensionCount = UE_ARRAY_COUNT(Extensions);
-	CreateInfo.enabledExtensionNames = Extensions;
+	CreateInfo.enabledExtensionCount = (uint32_t)Extensions.Num();
+	CreateInfo.enabledExtensionNames = Extensions.GetData();
 
 	XrResult Result = xrCreateInstanceFunc(&CreateInfo, &Instance);
 	if (!XR_SUCCEEDED(Result))
@@ -1783,124 +1821,9 @@ void FDisplayXRPreviewSession::RenderAndBlit(uint32_t ImageIndex)
 	// This matches DisplayXRDevice::ComputeViews (display-centric path) exactly.
 	// -----------------------------------------------------------------------
 
-	// 1. Locate views to get raw eye positions (OpenXR display-local, meters)
-	XrView Views[2] = {{XR_TYPE_VIEW}, {XR_TYPE_VIEW}};
-	uint32_t ViewCount = 0;
-	{
-		XrViewLocateInfo LocateInfo = {XR_TYPE_VIEW_LOCATE_INFO};
-		LocateInfo.viewConfigurationType = XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO;
-		LocateInfo.displayTime = PredictedDisplayTime;
-		LocateInfo.space = ViewSpace;
-		XrViewState ViewState = {XR_TYPE_VIEW_STATE};
-		xrLocateViewsFunc(Session, &LocateInfo, &ViewState, 2, &ViewCount, Views);
-	}
-
-	// -----------------------------------------------------------------------
-	// Eye positions + Kooima: exact copy of DisplayXRDevice::ComputeViews
-	// (display-centric path, lines 486-665 of DisplayXRDevice.cpp)
-	// -----------------------------------------------------------------------
-
-	// Read raw eye positions from xrLocateViews
-	FVector LeftEyeRaw = FVector::ZeroVector, RightEyeRaw = FVector::ZeroVector;
-	bool bTracked = false;
-	if (ViewCount >= 2)
-	{
-		LeftEyeRaw = FVector(Views[0].pose.position.x, Views[0].pose.position.y, Views[0].pose.position.z);
-		RightEyeRaw = FVector(Views[1].pose.position.x, Views[1].pose.position.y, Views[1].pose.position.z);
-		bTracked = true;
-	}
-
-	// If no eye data yet, use nominal viewer + default IPD (exact same as game mode)
-	bool bUsedFallback = false;
-	if (LeftEyeRaw.IsNearlyZero() && RightEyeRaw.IsNearlyZero())
-	{
-		bUsedFallback = true;
-		const float DefaultIPD = 0.063f;
-		const float NomX = (float)DisplayInfo.NominalViewerPosition.X;
-		const float NomY = (float)DisplayInfo.NominalViewerPosition.Y;
-		const float NomZ = DisplayInfo.bIsValid ? (float)DisplayInfo.NominalViewerPosition.Z : 0.5f;
-		LeftEyeRaw = FVector(NomX - DefaultIPD * 0.5f, NomY, NomZ);
-		RightEyeRaw = FVector(NomX + DefaultIPD * 0.5f, NomY, NomZ);
-	}
-
-	XrVector3f RawEyes[2];
-	RawEyes[0] = {(float)LeftEyeRaw.X, (float)LeftEyeRaw.Y, (float)LeftEyeRaw.Z};
-	RawEyes[1] = {(float)RightEyeRaw.X, (float)RightEyeRaw.Y, (float)RightEyeRaw.Z};
-
-	// -----------------------------------------------------------------------
-	// Window-relative Kooima (Layer 1 of displayxr::math, matches
-	// DisplayXRDevice::ComputeViews): the platform rect fetch stays here;
-	// rect → screen-dims + eye-offset math (incl. the screen-Y-down →
-	// eye-Y-up flip) lives in display3d_resolve_window_rect().
-	// -----------------------------------------------------------------------
-	float DispW_m = DisplayInfo.DisplayWidthMeters > 0.0f ? DisplayInfo.DisplayWidthMeters : 0.344f;
-	float DispH_m = DisplayInfo.DisplayHeightMeters > 0.0f ? DisplayInfo.DisplayHeightMeters : 0.194f;
-	float DispPxW = DisplayInfo.DisplayPixelWidth > 0 ? (float)DisplayInfo.DisplayPixelWidth : 3840.0f;
-	float DispPxH = DisplayInfo.DisplayPixelHeight > 0 ? (float)DisplayInfo.DisplayPixelHeight : 2160.0f;
-
-	// Default placement = full display (no window → display-centered frustum).
-	Display3DWindowPlacement Placement;
-	Placement.display_width_m   = DispW_m;
-	Placement.display_height_m  = DispH_m;
-	Placement.display_width_px  = DispPxW;
-	Placement.display_height_px = DispPxH;
-	Placement.rect_center_x_px  = DispPxW * 0.5f;
-	Placement.rect_center_y_px  = DispPxH * 0.5f;
-	Placement.rect_width_px     = DispPxW;
-	Placement.rect_height_px    = DispPxH;
-
-#if PLATFORM_WINDOWS
-	if (PreviewHWND)
-	{
-		// Window client area size + position on its monitor
-		RECT rc;
-		GetClientRect((HWND)PreviewHWND, &rc);
-		float WinPxW = (float)(rc.right - rc.left);
-		float WinPxH = (float)(rc.bottom - rc.top);
-
-		POINT ClientOrigin = {0, 0};
-		ClientToScreen((HWND)PreviewHWND, &ClientOrigin);
-		HMONITOR hMon = MonitorFromWindow((HWND)PreviewHWND, MONITOR_DEFAULTTONEAREST);
-		MONITORINFO mi = {sizeof(mi)};
-		if (WinPxW > 0 && WinPxH > 0 && GetMonitorInfo(hMon, &mi))
-		{
-			// Monitor pixel dims (not DisplayInfo's) keep rect center and
-			// display center in the same pixel space.
-			Placement.display_width_px  = (float)(mi.rcMonitor.right - mi.rcMonitor.left);
-			Placement.display_height_px = (float)(mi.rcMonitor.bottom - mi.rcMonitor.top);
-			Placement.rect_center_x_px  = (float)(ClientOrigin.x - mi.rcMonitor.left) + WinPxW * 0.5f;
-			Placement.rect_center_y_px  = (float)(ClientOrigin.y - mi.rcMonitor.top)  + WinPxH * 0.5f;
-			Placement.rect_width_px     = WinPxW;
-			Placement.rect_height_px    = WinPxH;
-		}
-	}
-#endif
-
-	// Nominal viewer
-	XrVector3f NominalViewer = {
-		(float)DisplayInfo.NominalViewerPosition.X,
-		(float)DisplayInfo.NominalViewerPosition.Y,
-		(float)DisplayInfo.NominalViewerPosition.Z
-	};
-	if (!DisplayInfo.bIsValid)
-	{
-		NominalViewer = {0.0f, 0.0f, 0.5f};
-	}
-
-	// Resolve rect → Kooima screen dims + rect-center-relative eyes. The
-	// nominal viewer rides along so it stays in the same frame as the eyes.
-	XrVector3f RectPoints[3] = { RawEyes[0], RawEyes[1], NominalViewer };
-	Display3DScreen Screen;
-	display3d_resolve_window_rect(&Placement, RectPoints, 3, &Screen, RectPoints);
-	RawEyes[0] = RectPoints[0];
-	RawEyes[1] = RectPoints[1];
-	NominalViewer = RectPoints[2];
-
-	// -----------------------------------------------------------------------
-	// Read tunables + camera transform from active rig (or defaults if no rig)
-	// Exact same as UDisplayXRCamera::PushTunables / UDisplayXRDisplay::PushTunables
-	// -----------------------------------------------------------------------
-
+	// 0. Resolve the active rig FIRST — its tunables go into the rig descriptor
+	//    chained onto xrLocateViews below (#396 W7), so they must be known
+	//    before the locate rather than after it.
 	FVector CameraPos = FVector::ZeroVector;
 	FRotator CameraRot = FRotator::ZeroRotator;
 	bool bCameraCentric = false;
@@ -1921,7 +1844,7 @@ void FDisplayXRPreviewSession::RenderAndBlit(uint32_t ImageIndex)
 			// If the rig is on a possessed pawn, use the player controller's
 			// actual render POV (matches what UE's main viewport renders from).
 			// This handles SpringArms, multiple cameras, camera-manager modifiers,
-			// etc. — any case where the rig's UCameraComponent transform differs
+			// etc. â€” any case where the rig's UCameraComponent transform differs
 			// from the active game-view POV. Fall back to the component transform
 			// for unpossessed rigs.
 			bool bUsedPOV = false;
@@ -1990,92 +1913,87 @@ void FDisplayXRPreviewSession::RenderAndBlit(uint32_t ImageIndex)
 	}
 
 	// Build scene transform from camera. Match game-mode DisplayXRDevice.cpp:552-560
-	// exactly — UE coordinates are passed through to Kooima as-is (XrPosef fields
-	// used as an opaque type, not a true OpenXR conversion). Converting via
-	// UEOrientationToOpenXR here produces a different frame than game mode uses.
-	const FQuat CamQuat = CameraRot.Quaternion();
-	XrPosef DisplayPose;
-	DisplayPose.position = {(float)CameraPos.X, (float)CameraPos.Y, (float)CameraPos.Z};
-	DisplayPose.orientation = {(float)CamQuat.X, (float)CamQuat.Y, (float)CamQuat.Z, (float)CamQuat.W};
+	// exactly â€” UE coordinates are passed through to Kooima as-is (XrPosef fields
 
-	// -----------------------------------------------------------------------
-	// Compute stereo views — matching DisplayXRDevice::ComputeViews exactly
-	// -----------------------------------------------------------------------
-
-	FVector EyeOffsets[2];
-	FMatrix ProjMatrices[2];
-
-	if (bCameraCentric)
+	// 1. Locate views with an XR_DXR_view_rig descriptor chained on, so the
+	//    runtime applies the rig and hands back render-ready XrView{pose, fov}
+	//    (#396 W7, ADR-024). Mirrors FDisplayXRSession::LocateViews.
+	XrView Views[2] = {{XR_TYPE_VIEW}, {XR_TYPE_VIEW}};
+	uint32_t ViewCount = 0;
 	{
-		// Camera-centric path (same as DisplayXRDevice.cpp lines 567-608)
-		Camera3DTunables CT;
-		CT.ipd_factor = RigIpdFactor;
-		CT.parallax_factor = RigParallaxFactor;
-		CT.inv_convergence_distance = RigInvConvergenceDistance;
-		CT.half_tan_vfov = RigFovOverride > 0.0f ? FMath::Tan(RigFovOverride * 0.5f) : 0.32491969623f;
+		XrViewLocateInfo LocateInfo = {XR_TYPE_VIEW_LOCATE_INFO};
+		LocateInfo.viewConfigurationType = XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO;
+		LocateInfo.displayTime = PredictedDisplayTime;
+		LocateInfo.space = ViewSpace;
 
-		Camera3DView OutViews[2];
-		camera3d_compute_views(RawEyes, 2, &NominalViewer, &Screen,
-			&CT, &DisplayPose, 0.1f, 10000.0f, OutViews);
+		// The preview's rig pose is the identity: the capture components are
+		// placed at CameraPos/CameraRot below, so the located eye positions are
+		// the camera-local displacement, exactly as in the runtime device path.
+		XrPosef RigPose;
+		RigPose.orientation = {0.0f, 0.0f, 0.0f, 1.0f};
+		RigPose.position = {0.0f, 0.0f, 0.0f};
 
-		// Get factored eyes for eye_local computation
-		XrVector3f FactoredEyes[2];
-		display3d_apply_eye_factors_n(RawEyes, 2, &NominalViewer,
-			CT.ipd_factor, CT.parallax_factor, FactoredEyes);
-
-		const float NomZ = (NominalViewer.z > 0.0f) ? NominalViewer.z : 0.5f;
-		const float AspectRatio = (Screen.height_m > 0.0f) ? Screen.width_m / Screen.height_m : 1.78f;
-
-		for (int32 i = 0; i < 2; i++)
+		XrDisplayRigDXR DisplayRig = {XR_TYPE_DISPLAY_RIG_DXR};
+		XrCameraRigDXR CameraRig = {XR_TYPE_CAMERA_RIG_DXR};
+		if (bHasViewRig)
 		{
-			XrVector3f EyeLocal = {
-				FactoredEyes[i].x,
-				FactoredEyes[i].y,
-				FactoredEyes[i].z - NomZ
-			};
-			EyeOffsets[i] = OpenXRPositionToUE(EyeLocal);
+			if (bCameraCentric)
+			{
+				CameraRig.pose = RigPose;
+				CameraRig.ipdFactor = RigIpdFactor;
+				CameraRig.parallaxFactor = RigParallaxFactor;
+				CameraRig.convergenceDiopters = RigInvConvergenceDistance;
+				CameraRig.verticalFov = RigFovOverride > 0.0f ? RigFovOverride : 0.6283185307f;
+				CameraRig.metersToVirtual = 1.0f;
+				LocateInfo.next = &CameraRig;
+			}
+			else
+			{
+				const float DispH_m = DisplayInfo.DisplayHeightMeters > 0.0f
+					? DisplayInfo.DisplayHeightMeters : 0.194f;
+				DisplayRig.pose = RigPose;
+				DisplayRig.virtualDisplayHeight = RigVirtualDisplayHeight > 0.0f
+					? RigVirtualDisplayHeight : DispH_m;
+				DisplayRig.ipdFactor = RigIpdFactor;
+				DisplayRig.parallaxFactor = RigParallaxFactor;
+				DisplayRig.perspectiveFactor = RigPerspectiveFactor;
+				LocateInfo.next = &DisplayRig;
+			}
+		}
 
-			const float ConvergenceDist = RigInvConvergenceDistance > 0.0f
-				? (1.0f / RigInvConvergenceDistance) * 100.0f : 100.0f;
-			FVector2D HalfSize(ConvergenceDist * CT.half_tan_vfov * AspectRatio,
-			                   ConvergenceDist * CT.half_tan_vfov);
-			FVector EyeForProj(-ConvergenceDist, EyeOffsets[i].Y, EyeOffsets[i].Z);
-			ProjMatrices[i] = CalculateOffAxisProjectionMatrix(HalfSize, EyeForProj);
+		XrViewState ViewState = {XR_TYPE_VIEW_STATE};
+		xrLocateViewsFunc(Session, &LocateInfo, &ViewState, 2, &ViewCount, Views);
+	}
+
+	// -----------------------------------------------------------------------
+	// 2. Consume the render-ready views (#396 W7): the runtime already applied
+	//    the rig during xrLocateViews, so pose.position is the camera-local eye
+	//    displacement and fov is the off-axis frustum. No app-side view math —
+	//    the runtime owns the canvas geometry too, so the window-rect resolve
+	//    that used to live here is gone.
+	// -----------------------------------------------------------------------
+	FVector EyeOffsets[2] = {FVector::ZeroVector, FVector::ZeroVector};
+	FMatrix ProjMatrices[2] = {FMatrix::Identity, FMatrix::Identity};
+
+	if (!bHasViewRig)
+	{
+		static bool bWarnedNoViewRig = false;
+		if (!bWarnedNoViewRig)
+		{
+			bWarnedNoViewRig = true;
+			UE_LOG(LogDisplayXRPreviewSession, Warning,
+				TEXT("DisplayXR Preview: runtime does not advertise %s — the preview no "
+				     "longer computes the view math itself (#396 W7). Stereo is disabled; "
+				     "update to a DisplayXR runtime >= v2.0.0."),
+				TEXT(XR_DXR_VIEW_RIG_EXTENSION_NAME));
 		}
 	}
-	else
+	else if (ViewCount >= 2)
 	{
-		// Display-centric path (same as DisplayXRDevice.cpp lines 610-642)
-		Display3DTunables DT;
-		DT.ipd_factor = RigIpdFactor;
-		DT.parallax_factor = RigParallaxFactor;
-		DT.perspective_factor = RigPerspectiveFactor;
-		// vdh is FIXED (does not scale with window). Screen.height_m is the window
-		// physical height, so m2v = vdh / window_h changes with resize — making
-		// objects smaller in a smaller window (same as test app / Unity).
-		DT.virtual_display_height = RigVirtualDisplayHeight > 0.0f
-			? RigVirtualDisplayHeight : DispH_m;
-
-		// ZDP-anchored clip offsets (superset API) — inert here: only
-		// eye_display is consumed, the projection is rebuilt below.
-		// vulkan_flip_y=0 keeps the clean +Y-up frame (old no-flip behavior).
-		Display3DView KooimaViews[2];
-		display3d_compute_views(RawEyes, 2, &NominalViewer, &Screen,
-			&DT, &DisplayPose,
-			/*near_offset=*/DT.virtual_display_height,
-			/*far_offset=*/1000.0f * DT.virtual_display_height,
-			/*vulkan_flip_y=*/0, KooimaViews);
-
 		for (int32 i = 0; i < 2; i++)
 		{
-			EyeOffsets[i] = OpenXRPositionToUE(KooimaViews[i].eye_display);
-
-			const float m2v = DT.virtual_display_height / Screen.height_m;
-			const float ScreenW_UE = Screen.width_m * m2v * 100.0f;
-			const float ScreenH_UE = DT.virtual_display_height * 100.0f;
-			FVector2D HalfSize(ScreenW_UE * 0.5f, ScreenH_UE * 0.5f);
-
-			ProjMatrices[i] = CalculateOffAxisProjectionMatrix(HalfSize, EyeOffsets[i]);
+			EyeOffsets[i] = OpenXRPositionToUE(Views[i].pose.position);
+			ProjMatrices[i] = ProjectionMatrixFromFov(Views[i].fov);
 		}
 	}
 
@@ -2084,10 +2002,6 @@ void FDisplayXRPreviewSession::RenderAndBlit(uint32_t ImageIndex)
 	RenderCount++;
 	if (RenderCount <= 3 || RenderCount % 300 == 0)
 	{
-		UE_LOG(LogDisplayXRPreviewSession, Log,
-			TEXT("Preview #%d: winScreen=%.3fx%.3f m rectCenter=(%.0f,%.0f) px"),
-			RenderCount, Screen.width_m, Screen.height_m,
-			Placement.rect_center_x_px, Placement.rect_center_y_px);
 		UE_LOG(LogDisplayXRPreviewSession, Log,
 			TEXT("Preview #%d: rig=%s cameraCentric=%d pos=(%f,%f,%f) rot=(%f,%f,%f)"),
 			RenderCount, *GetActiveRigName(), bCameraCentric,

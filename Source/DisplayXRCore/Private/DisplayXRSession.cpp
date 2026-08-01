@@ -487,6 +487,43 @@ void FDisplayXRSession::UnloadOpenXRLoader()
 // Instance + Session
 // =============================================================================
 
+bool FDisplayXRSession::IsInstanceExtensionSupported(const char* Name) const
+{
+	PFN_xrEnumerateInstanceExtensionProperties EnumFunc = nullptr;
+	xrGetInstanceProcAddrFunc(XR_NULL_HANDLE, "xrEnumerateInstanceExtensionProperties",
+		(PFN_xrVoidFunction*)&EnumFunc);
+	if (!EnumFunc)
+	{
+		return false;
+	}
+
+	uint32_t Count = 0;
+	if (!XR_SUCCEEDED(EnumFunc(nullptr, 0, &Count, nullptr)) || Count == 0)
+	{
+		return false;
+	}
+
+	TArray<XrExtensionProperties> Props;
+	Props.SetNum((int32)Count);
+	for (XrExtensionProperties& P : Props)
+	{
+		P = {XR_TYPE_EXTENSION_PROPERTIES};
+	}
+	if (!XR_SUCCEEDED(EnumFunc(nullptr, Count, &Count, Props.GetData())))
+	{
+		return false;
+	}
+
+	for (uint32_t i = 0; i < Count; ++i)
+	{
+		if (FCStringAnsi::Strcmp(Props[(int32)i].extensionName, Name) == 0)
+		{
+			return true;
+		}
+	}
+	return false;
+}
+
 bool FDisplayXRSession::CreateInstance()
 {
 	PFN_xrCreateInstance xrCreateInstanceFunc = nullptr;
@@ -498,7 +535,7 @@ bool FDisplayXRSession::CreateInstance()
 		return false;
 	}
 
-	const char* Extensions[] = {
+	TArray<const char*> Extensions = {
 		XR_DXR_DISPLAY_INFO_EXTENSION_NAME,
 		XR_DXR_ATLAS_CAPTURE_EXTENSION_NAME,
 #if PLATFORM_WINDOWS
@@ -509,14 +546,30 @@ bool FDisplayXRSession::CreateInstance()
 #endif
 	};
 
+	// XR_DXR_view_rig (#396 W7): the runtime owns the view math. Probe BEFORE
+	// requesting — xrCreateInstance FAILS outright on an unsupported extension,
+	// so an older runtime must not see it in the list. Gate on the NAME, never on
+	// SPEC_VERSION: the released runtime v2.0.0 advertises version 1 (numbering
+	// restarted at the XR_EXT_*->XR_DXR_* rename) while carrying the full
+	// spec-3 struct set, so a `>= 2` gate would reject a perfectly capable runtime.
+	bHasViewRig = IsInstanceExtensionSupported(XR_DXR_VIEW_RIG_EXTENSION_NAME);
+	if (bHasViewRig)
+	{
+		Extensions.Add(XR_DXR_VIEW_RIG_EXTENSION_NAME);
+	}
+	UE_LOG(LogDisplayXRSession, Log, TEXT("DisplayXR Session: %s: %s"),
+		TEXT(XR_DXR_VIEW_RIG_EXTENSION_NAME),
+		bHasViewRig ? TEXT("AVAILABLE (runtime owns the view math)")
+		            : TEXT("ABSENT — stereo disabled, raw views passed through"));
+
 	XrInstanceCreateInfo CreateInfo = {XR_TYPE_INSTANCE_CREATE_INFO};
 	FCStringAnsi::Strncpy(CreateInfo.applicationInfo.applicationName, "DisplayXR Unreal Plugin", XR_MAX_APPLICATION_NAME_SIZE);
 	CreateInfo.applicationInfo.applicationVersion = 1;
 	FCStringAnsi::Strncpy(CreateInfo.applicationInfo.engineName, "Unreal Engine", XR_MAX_ENGINE_NAME_SIZE);
 	CreateInfo.applicationInfo.engineVersion = 5;
 	CreateInfo.applicationInfo.apiVersion = XR_MAKE_VERSION(1, 0, 0);
-	CreateInfo.enabledExtensionCount = UE_ARRAY_COUNT(Extensions);
-	CreateInfo.enabledExtensionNames = Extensions;
+	CreateInfo.enabledExtensionCount = (uint32_t)Extensions.Num();
+	CreateInfo.enabledExtensionNames = Extensions.GetData();
 
 	XrResult Result = xrCreateInstanceFunc(&CreateInfo, &Instance);
 	if (!XR_SUCCEEDED(Result))
@@ -742,6 +795,73 @@ void FDisplayXRSession::LocateViews()
 	LocateInfo.viewConfigurationType = XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO;
 	LocateInfo.displayTime = (XrTime)PredictedDisplayTime.Load();
 	LocateInfo.space = ViewSpace;
+
+	// -----------------------------------------------------------------------
+	// XR_DXR_view_rig (#396 W7, ADR-024): chain the rig descriptor so the
+	// runtime returns render-ready XrView{pose, fov} instead of raw eyes we
+	// would have to run Kooima on ourselves. The rig is strictly per-locate —
+	// animating convergence or virtual display height is just different values
+	// next frame — and the descriptor carries NO clip parameters (near/far and
+	// the reverse-Z convention stay app-side) and NO placement parameters (the
+	// runtime owns the window/canvas geometry it already knows from the window
+	// binding). A locate that chains nothing keeps the raw-eye behavior.
+	// -----------------------------------------------------------------------
+	const FDisplayXRTunables T = GetTunables();
+
+	// Scene transform: the display plane (display rig) or the camera (camera
+	// rig) pose in the locate space. Identity when the app hasn't set one.
+	FVector ScenePos;
+	FQuat SceneOrient;
+	bool bSceneEnabled = false;
+	GetSceneTransform(ScenePos, SceneOrient, bSceneEnabled);
+
+	XrPosef RigPose;
+	RigPose.orientation = {0.0f, 0.0f, 0.0f, 1.0f};
+	RigPose.position = {0.0f, 0.0f, 0.0f};
+	if (bSceneEnabled)
+	{
+		RigPose.position = {(float)ScenePos.X, (float)ScenePos.Y, (float)ScenePos.Z};
+		RigPose.orientation = {(float)SceneOrient.X, (float)SceneOrient.Y,
+		                       (float)SceneOrient.Z, (float)SceneOrient.W};
+	}
+
+	XrDisplayRigDXR DisplayRig = {XR_TYPE_DISPLAY_RIG_DXR};
+	XrCameraRigDXR CameraRig = {XR_TYPE_CAMERA_RIG_DXR};
+
+	if (bHasViewRig)
+	{
+		if (T.bCameraCentric)
+		{
+			// Camera rig factors are ABSOLUTE scales (a stereo camera's
+			// inter-axial is not bounded to a natural IPD), unlike the display
+			// rig's relative [0,1] factors.
+			CameraRig.pose = RigPose;
+			CameraRig.ipdFactor = T.IpdFactor;
+			CameraRig.parallaxFactor = T.ParallaxFactor;
+			CameraRig.convergenceDiopters = T.InvConvergenceDistance;
+			CameraRig.verticalFov = T.FovOverride > 0.0f ? T.FovOverride : 0.6283185307f; // ~36 deg
+			// The plugin's world unit is the UE centimetre but every tunable
+			// above is expressed in metres, so one metre of tracked head motion
+			// is one world unit here. 1.0 preserves the pre-spec-3 behavior.
+			CameraRig.metersToVirtual = 1.0f;
+			LocateInfo.next = &CameraRig;
+		}
+		else
+		{
+			// virtual_display_height is FIXED (it does not scale with the
+			// window): m2v = vdh / canvas height, so world-scale objects get
+			// physically smaller as the canvas shrinks. The runtime resolves the
+			// canvas, so we no longer compute the window rect ourselves.
+			DisplayRig.pose = RigPose;
+			DisplayRig.virtualDisplayHeight = T.VirtualDisplayHeight > 0.0f
+				? T.VirtualDisplayHeight
+				: (DisplayInfo.DisplayHeightMeters > 0.0f ? DisplayInfo.DisplayHeightMeters : 0.194f);
+			DisplayRig.ipdFactor = T.IpdFactor;
+			DisplayRig.parallaxFactor = T.ParallaxFactor;
+			DisplayRig.perspectiveFactor = T.PerspectiveFactor;
+			LocateInfo.next = &DisplayRig;
+		}
+	}
 
 	XrViewState ViewState = {XR_TYPE_VIEW_STATE};
 	XrView Views[8];

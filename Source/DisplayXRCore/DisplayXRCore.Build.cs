@@ -10,12 +10,7 @@ public class DisplayXRCore : ModuleRules
 	{
 		PCHUsage = ModuleRules.PCHUsageMode.UseExplicitOrSharedPCHs;
 
-		// Allow .c files to compile as C (for Kooima math libraries)
 		CppCompileWarningSettings.UndefinedIdentifierWarningLevel = WarningLevel.Off;
-
-		// displayxr-common v2.0.0+ guards its layout assumptions with C11
-		// _Static_assert. MSVC's default C mode (C89 + extensions) rejects it.
-		CStandard = CStandardVersion.C17;
 
 		PublicDependencyModuleNames.AddRange(new string[]
 		{
@@ -48,9 +43,8 @@ public class DisplayXRCore : ModuleRules
 		// All platforms use our bundled OpenXR headers (no UE OpenXR dependency)
 		PrivateIncludePaths.Add(Path.Combine(ModuleDirectory, "Private", "Native"));
 
-		// Shared displayxr::math (Kooima view/projection) headers from the
-		// displayxr-common submodule. The implementation is compiled into this
-		// module via the Private/Native/*_impl.c shims.
-		PrivateIncludePaths.Add(Path.Combine(ModuleDirectory, "..", "ThirdParty", "displayxr-common", "include"));
+		// NOTE: no displayxr-common / displayxr::math include path — the runtime
+		// owns the view math via XR_DXR_view_rig (#396 W7, ADR-024). Do not
+		// re-add it; see the no-vendored-math drift guard.
 	}
 }

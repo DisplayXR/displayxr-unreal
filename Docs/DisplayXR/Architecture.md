@@ -109,11 +109,28 @@ FDisplayXRPlatform::RequestEyeTrackingMode(bManual);
 
 `FDisplayXRPlatform` routes to the active session. If no session is live (e.g. runtime not installed), calls no-op and return defaults — the game still runs in 2D.
 
-## Kooima math lives in portable C
+## The runtime owns the view math
 
-The Kooima math (`{camera3d_view, display3d_view}.{c,h}`) is the shared [displayxr-common](https://github.com/DisplayXR/displayxr-common) `displayxr::math` library, pinned as a git submodule at `Source/ThirdParty/displayxr-common` and compiled into `DisplayXRCore` via the `Private/Native/*_impl.c` shims. Changes land upstream (tag + pin bump), never in-tree — the same library is consumed by the runtime test apps, both demos, and the [displayxr-unity](https://github.com/DisplayXR/displayxr-unity) sibling plugin.
+The plugin computes **no** Kooima math. It chains an `XrDisplayRigDXR` /
+`XrCameraRigDXR` descriptor onto `xrLocateViews` (the `XR_DXR_view_rig`
+extension, `DisplayXR/displayxr-runtime` #396 W7 / ADR-024) and consumes the
+render-ready `XrView{pose, fov}` the runtime returns — for both the runtime
+device path and the editor preview session.
 
-`DisplayXRStereoMath.h` wraps the Kooima output into UE-native reverse-Z off-axis projection matrices (see [ADR-003](./adr/ADR-003-ue-native-off-axis-projection.md) for why we don't consume Kooima's `projection_matrix[16]` directly).
+This is why there is no `displayxr-common` submodule and no `displayxr::math`
+link here; the [displayxr-unity](https://github.com/DisplayXR/displayxr-unity)
+sibling dropped the same dependency for the same reason. Re-vendoring
+`display3d_view.*` / `camera3d_view.*` is blocked by the `drift-guard` workflow.
+
+`DisplayXRStereoMath.h::ProjectionMatrixFromFov` converts the runtime's
+clip-independent fov into a UE-native reverse-Z projection matrix; near/far and
+the depth convention stay app-side (see
+[ADR-003](./adr/ADR-003-ue-native-off-axis-projection.md) for why the plugin
+builds its own matrix rather than consuming a runtime-supplied one).
+
+Requires a runtime advertising `XR_DXR_view_rig` (DisplayXR runtime >= v2.0.0);
+without it the plugin emits a one-shot WARN and renders mono, since it has no
+view math of its own to fall back to.
 
 ## Platform notes
 
