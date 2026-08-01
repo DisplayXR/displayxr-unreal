@@ -1,4 +1,6 @@
-# displayxr-common pinned at v2.0.0 (0f341832) — XR_DXR_ rename train, runtime#734
+# displayxr-common pinned at v2.5.0 (0e8001fd). Only include/ (displayxr::math)
+# is consumed here — that tree is unchanged since v2.0.0, so the bump is a no-op
+# for this build and just keeps the pin off a stale tag.
 [submodule "Source/ThirdParty/displayxr-common"]
 	path = Source/ThirdParty/displayxr-common
 	url = https://github.com/DisplayXR/displayxr-common.git
