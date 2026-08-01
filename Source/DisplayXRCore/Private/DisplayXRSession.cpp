@@ -810,20 +810,27 @@ void FDisplayXRSession::LocateViews()
 
 	// Scene transform: the display plane (display rig) or the camera (camera
 	// rig) pose in the locate space. Identity when the app hasn't set one.
+	// Read purely for diagnostics now — the rig pose is identity (see below).
 	FVector ScenePos;
 	FQuat SceneOrient;
 	bool bSceneEnabled = false;
 	GetSceneTransform(ScenePos, SceneOrient, bSceneEnabled);
 
+	// IDENTITY, deliberately — do NOT forward the scene/camera transform here.
+	// XrView.pose comes back in the LOCATE space, i.e. rig pose + eye
+	// displacement, and the rig orientation is baked into the returned fov.
+	// UE already applies camera placement and rotation itself
+	// (CalculateStereoViewOffset rotates our Offset by ViewRotation and adds it
+	// to ViewLocation), so forwarding the camera transform double-counts both.
+	// Measured with the camera at (0,0,50): submitting that pose returned
+	// view[0].pos=(0,2.932,68.593) — 50 of which was the camera — and a camera
+	// rotation of pitch 19.9 deg came back as a fov with angleLeft/angleRight
+	// BOTH positive (frustum skewed by the rotation). With identity the runtime
+	// returns the camera-local eye displacement and an unrotated off-axis fov,
+	// which is exactly what UE consumes.
 	XrPosef RigPose;
 	RigPose.orientation = {0.0f, 0.0f, 0.0f, 1.0f};
 	RigPose.position = {0.0f, 0.0f, 0.0f};
-	if (bSceneEnabled)
-	{
-		RigPose.position = {(float)ScenePos.X, (float)ScenePos.Y, (float)ScenePos.Z};
-		RigPose.orientation = {(float)SceneOrient.X, (float)SceneOrient.Y,
-		                       (float)SceneOrient.Z, (float)SceneOrient.W};
-	}
 
 	XrDisplayRigDXR DisplayRig = {XR_TYPE_DISPLAY_RIG_DXR};
 	XrCameraRigDXR CameraRig = {XR_TYPE_CAMERA_RIG_DXR};
@@ -840,9 +847,9 @@ void FDisplayXRSession::LocateViews()
 			CameraRig.parallaxFactor = T.ParallaxFactor;
 			CameraRig.convergenceDiopters = T.InvConvergenceDistance;
 			CameraRig.verticalFov = T.FovOverride > 0.0f ? T.FovOverride : 0.6283185307f; // ~36 deg
-			// The plugin's world unit is the UE centimetre but every tunable
-			// above is expressed in metres, so one metre of tracked head motion
-			// is one world unit here. 1.0 preserves the pre-spec-3 behavior.
+			// 1.0: the runtime returns the eye in metres, which
+			// OpenXRPositionToUE then converts to UE centimetres — the same
+			// metres->cm step the old Kooima path applied to eye_display.
 			CameraRig.metersToVirtual = 1.0f;
 			LocateInfo.next = &CameraRig;
 		}
@@ -853,6 +860,10 @@ void FDisplayXRSession::LocateViews()
 			// physically smaller as the canvas shrinks. The runtime resolves the
 			// canvas, so we no longer compute the window rect ourselves.
 			DisplayRig.pose = RigPose;
+			// METRES, despite UDisplayXRDisplay's "world units" doc comment: the
+			// old path fed this straight to Kooima as metres and derived the UE
+			// screen height as vdh*100. Measured: a rig with vdh=2.0 yields a
+			// 200-UE-unit virtual display, so 2.0 means 2 metres.
 			DisplayRig.virtualDisplayHeight = T.VirtualDisplayHeight > 0.0f
 				? T.VirtualDisplayHeight
 				: (DisplayInfo.DisplayHeightMeters > 0.0f ? DisplayInfo.DisplayHeightMeters : 0.194f);
@@ -904,6 +915,40 @@ void FDisplayXRSession::LocateViews()
 				TEXT("  Eye[0]=(%f, %f, %f) Eye[1]=(%f, %f, %f)"),
 				Views[0].pose.position.x, Views[0].pose.position.y, Views[0].pose.position.z,
 				Views[1].pose.position.x, Views[1].pose.position.y, Views[1].pose.position.z);
+		}
+
+		// --- view-rig diagnostics: exactly what we submitted vs what came back ---
+		if (bHasViewRig)
+		{
+			if (T.bCameraCentric)
+			{
+				UE_LOG(LogDisplayXRSession, Log,
+					TEXT("  RIG=camera sceneEnabled=%d pose.pos=(%.3f,%.3f,%.3f) pose.quat=(%.3f,%.3f,%.3f,%.3f) "
+					     "ipd=%.3f par=%.3f convDpt=%.4f vfov=%.4f m2v=%.1f"),
+					bSceneEnabled ? 1 : 0,
+					CameraRig.pose.position.x, CameraRig.pose.position.y, CameraRig.pose.position.z,
+					CameraRig.pose.orientation.x, CameraRig.pose.orientation.y,
+					CameraRig.pose.orientation.z, CameraRig.pose.orientation.w,
+					CameraRig.ipdFactor, CameraRig.parallaxFactor,
+					CameraRig.convergenceDiopters, CameraRig.verticalFov, CameraRig.metersToVirtual);
+			}
+			else
+			{
+				UE_LOG(LogDisplayXRSession, Log,
+					TEXT("  RIG=display sceneEnabled=%d(scene=%.1f,%.1f,%.1f) pose.pos=(%.3f,%.3f,%.3f) pose.quat=(%.3f,%.3f,%.3f,%.3f) "
+					     "vdh=%.3f ipd=%.3f par=%.3f persp=%.3f"),
+					bSceneEnabled ? 1 : 0, ScenePos.X, ScenePos.Y, ScenePos.Z,
+					DisplayRig.pose.position.x, DisplayRig.pose.position.y, DisplayRig.pose.position.z,
+					DisplayRig.pose.orientation.x, DisplayRig.pose.orientation.y,
+					DisplayRig.pose.orientation.z, DisplayRig.pose.orientation.w,
+					DisplayRig.virtualDisplayHeight, DisplayRig.ipdFactor,
+					DisplayRig.parallaxFactor, DisplayRig.perspectiveFactor);
+			}
+			UE_LOG(LogDisplayXRSession, Log,
+				TEXT("  RETURNED view[0].pos=(%.3f,%.3f,%.3f) fov(L,R,U,D)=(%.4f,%.4f,%.4f,%.4f)"),
+				Views[0].pose.position.x, Views[0].pose.position.y, Views[0].pose.position.z,
+				Views[0].fov.angleLeft, Views[0].fov.angleRight,
+				Views[0].fov.angleUp, Views[0].fov.angleDown);
 		}
 		GLog->Flush();
 	}

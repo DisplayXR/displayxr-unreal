@@ -12,6 +12,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 ### Removed
 - **The `displayxr-common` git submodule and the whole `displayxr::math` integration.** Gone with it: the six `*_impl.c` compile shims, both `PrivateIncludePaths` entries, `CStandard = CStandardVersion.C17`, and the scoped C4456 suppression — all of which existed only to compile the vendored library. `.gitmodules` is deleted; `git submodule update --init` is no longer part of setup. Do not re-vendor the math: the `drift-guard` workflow fails on it.
 
+### Notes
+- The rig descriptor is submitted with an **identity pose**. `XrView.pose` comes back in the locate space (rig pose + eye displacement) and the rig orientation is baked into the returned fov, while UE applies camera placement and rotation itself in `CalculateStereoViewOffset` — forwarding the camera transform double-counts both. Consequently `SetSceneTransform` no longer feeds the view math and is now diagnostic only.
+
 ### Requirements
 - Requires a DisplayXR runtime advertising `XR_DXR_view_rig` (>= v2.0.0, already the v0.6.0 minimum — no new requirement). The capability gate tests the extension **name**: released v2.0.0 reports `SPEC_VERSION 1` (numbering restarted at the `XR_EXT_*`→`XR_DXR_*` rename) while carrying the full spec-3 structs, so a version-based gate would wrongly reject it. Without the extension the plugin warns once and renders mono rather than wrong.
 
