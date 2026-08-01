@@ -4,6 +4,15 @@ All notable changes to the DisplayXR Unreal plugin are documented here.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.6.0] - 2026-08-01
+
+### Changed
+- **BREAKING — DisplayXR OpenXR extensions renamed `XR_EXT_*` → `XR_DXR_*`.** The vendor-specific extensions were sitting in the `EXT` (cross-vendor Khronos) namespace they were never entitled to; they now use the DisplayXR `DXR` tag. Covers `atlas_capture`, `display_info`, `win32_window_binding`, and `cocoa_window_binding` — headers, enum/struct/function names, and extension-name strings. **Requires DisplayXR runtime >= v2.0.0**; older runtimes do not advertise the renamed extensions. (DisplayXR/displayxr-runtime#734)
+- Pinned the `displayxr-common` submodule to the released `v2.0.0` ref (was a temporary pre-release SHA).
+
+### Added
+- Portable code-signing for the packaged `Binaries/Win64` DLLs via a provider-runner `sign-artifact` workflow (`DXR_SIGN_REPO`), replacing the local-cert-only path. Signing stays capability-gated — an unset env yields an unsigned ZIP rather than a failed build. (#29, #30, #31)
+
 ## [0.5.1] - 2026-07-03
 
 ### Changed
