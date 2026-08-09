@@ -43,7 +43,7 @@ The Unity sibling has a more mature docs tree. Bring Unreal up to parity so user
 
 ## 3. CI & release
 
-- **Real UE build in CI** — current `lint.yml` only does vendor-name + JSON/YAML checks. Full compile needs either a self-hosted runner with UE preinstalled or Epic's container registry (requires Epic account linkage). Matrix target: UE 5.3–5.6.
+- **Real UE build in CI** — current `lint.yml` only does vendor-name + JSON/YAML checks. Full compile needs either a self-hosted runner with UE preinstalled or Epic's container registry (requires Epic account linkage). Matrix target: UE 5.7 (the version the plugin declares).
 - **Release workflow** — package `DisplayXR.uplugin` per UE version, upload to GitHub Releases. Replaces any prior internal upload flow.
 - **Tagged versioning** — `VersionName` in `DisplayXR.uplugin` should be kept in sync with git tags (e.g. `v0.1.0`).
 
@@ -54,7 +54,7 @@ The Unity sibling has a more mature docs tree. Bring Unreal up to parity so user
 - **macOS path validation** — end-to-end smoke test of the unified `FDisplayXRSession` (Metal graphics binding, Cocoa window binding) on a supported display. See [MacSetup.md](./MacSetup.md).
 - **Mac parity for app manifest** — port the Win64 manifest pipeline (issue #5) to Mac: settings panel already compiles cross-platform, but `Scripts/PackageApp.py` is Windows-only and the registered-mode path needs a Mac equivalent (likely `~/Library/Application Support/DisplayXR/apps/` — confirm against runtime spec).
 - **Android path validation** — unified session on Android (Vulkan graphics binding).
-- **UE version sweep** — currently targets UE 5.3+. Confirm 5.6 works; track 5.7 pre-release.
+- **UE version sweep** — the plugin declares EngineVersion 5.7.0 and has since the first commit; docs that claimed "5.3+" were never accurate and are now corrected. If a lower floor is wanted, lower EngineVersion and actually verify it builds — do not re-assert a range nothing tests.
 
 ---
 

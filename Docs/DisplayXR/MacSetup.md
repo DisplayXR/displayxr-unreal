@@ -6,7 +6,7 @@ For the generic install-and-go flow, start with [QuickStart.md](./QuickStart.md)
 
 ## Prerequisites
 
-- Unreal Engine 5.3+ installed via Epic Games Launcher
+- Unreal Engine 5.7 installed via Epic Games Launcher
 - Xcode (for C++ plugin compilation)
 - DisplayXR runtime installed (either from a package or built from source — see [openxr-3d-display](https://github.com/dfattal/openxr-3d-display))
 
@@ -56,7 +56,7 @@ On Windows the session uses `XrGraphicsBindingD3D12KHR`. On Mac it uses `XR_DXR_
 
 Once the quirks above are sorted, install the plugin like on any platform:
 
-1. Create a UE 5.3+ **C++** project (Blueprint-only can't compile plugins).
+1. Create a UE 5.7 **C++** project (Blueprint-only can't compile plugins).
 2. Close the editor.
 3. Clone the repo into `Plugins/DisplayXR/`:
    ```bash

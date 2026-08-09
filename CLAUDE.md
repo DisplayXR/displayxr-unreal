@@ -12,7 +12,7 @@ Current plugin version: `DisplayXR.uplugin` → `"VersionName"`.
 
 No CMake — the plugin builds directly through Unreal's build system (UBT). Drop the repo into a UE project's `Plugins/DisplayXR/` folder and regenerate project files.
 
-**Prerequisites:** UE 5.3+, Visual Studio (Windows) or Xcode (macOS), DisplayXR OpenXR runtime installed.
+**Prerequisites:** UE 5.7, Visual Studio (Windows) or Xcode (macOS), DisplayXR OpenXR runtime installed.
 
 **Packaging for distribution** (Windows, from `Scripts/`):
 ```

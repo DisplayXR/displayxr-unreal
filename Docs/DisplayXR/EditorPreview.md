@@ -26,7 +26,7 @@ Instead of creating a second OpenXR session, leverage the one `FOpenXRHMD` alrea
 ### Implementation Path (Try in Order)
 
 **Step 1 — Verify the session exists in editor:**
-Build the plugin, place in a UE 5.3+ project. Check logs for `"DisplayXR: Session created"` and `"DisplayXR: Display X.XXX x X.XXX m"` at editor startup (not PIE).
+Build the plugin, place in a UE 5.7 project. Check logs for `"DisplayXR: Session created"` and `"DisplayXR: Display X.XXX x X.XXX m"` at editor startup (not PIE).
 
 **Step 2 — Check if stereo rendering can be activated in editor:**
 `FOpenXRHMD` may already support editor stereo if `IsStereoEnabled()` returns true. Check if `FOpenXRHMD` renders stereo in the editor viewport; if not, HMD plugin priority may need to be raised.

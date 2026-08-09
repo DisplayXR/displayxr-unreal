@@ -34,7 +34,7 @@ One unified session loads the DisplayXR OpenXR runtime directly on every platfor
 
 ## Requirements
 
-- Unreal Engine 5.3 or later
+- Unreal Engine 5.7 (the plugin declares `"EngineVersion": "5.7.0"`; older engines will refuse to load it without a rebuild)
 - DisplayXR OpenXR runtime installed (see [displayxr-runtime](https://github.com/DisplayXR/displayxr-runtime))
 - Windows, macOS, or Android target
 - Visual Studio (Windows) or Xcode (macOS) matching your UE version

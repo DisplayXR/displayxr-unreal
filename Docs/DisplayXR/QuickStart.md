@@ -22,7 +22,7 @@ Either should point to a `openxr_displayxr.json` manifest and a corresponding `.
 
 ## 2. Set up a UE project
 
-1. Create a new Unreal Engine 5.3+ C++ project (Blueprint-only projects can't compile plugins — use C++ Blank).
+1. Create a new Unreal Engine 5.7 C++ project (Blueprint-only projects can't compile plugins — use C++ Blank).
 2. Close the editor.
 3. Clone this repo into `Plugins/DisplayXR/`:
    ```
