@@ -1,5 +1,26 @@
 # Editor Preview: Native XR Path (Option 3)
 
+> **Superseded for Phase 4 (2026-08-11).** The goal changed from "route the
+> atlas to a separate top-level window on the 3D display" to matching the
+> Unity plug-in: show the **weaved** preview directly in the PIE viewport tab,
+> with floating the tab an option rather than a requirement. The Phase 4 plan
+> below (a UE-managed `SWindow` mirror) is kept for its diagnosis of the
+> raw-Win32 failure, but is **not** the path being implemented. See
+> [issue #38](https://github.com/DisplayXR/displayxr-unreal/issues/38) for the
+> replacement design: bind the session in texture mode
+> (`XrWin32WindowBindingCreateInfoDXR.sharedTextureHandle`) with an invisible
+> click-through proxy HWND glued over the viewport pane as the interlace-phase
+> anchor, submit a full-pane `XR_DXR_display_zones` zone as the weave canvas,
+> and blit the woven texture into the viewport.
+>
+> Two corrections to the text below, both already applied in the tree:
+> - **Step 6 is void.** `xrSetSharedTextureOutputRectDXR` was removed by runtime
+>   ADR-031; display zones are the sole region paradigm. The plugin's dead
+>   null-guarded path was deleted in v0.6.0.
+> - Sibling doc `EditorPreview.md` describes leaning on `FOpenXRHMD`. That was
+>   never a dependency — `DisplayXR.uplugin` declares only `XRBase` and the
+>   plug-in loads the runtime directly (ADR-001).
+
 ## Status (2026-04-20)
 
 **Phase 1–3 landed** behind `r.DisplayXR.EditorNativePIE 1` (commit

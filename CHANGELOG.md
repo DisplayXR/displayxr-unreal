@@ -6,7 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+### Added
+- **`XR_DXR_display_zones` is vendored, probed, and enabled.** A zone chained on `xrLocateViews` scopes the view-rig framing to a window-pixel rect (the rect *is* the canvas) and the same zone on the projection layer binds it at `xrEndFrame`. This is the canvas source the runtime's weave-to-texture path needs for the in-viewport editor preview ([#38](https://github.com/DisplayXR/displayxr-unreal/issues/38)); nothing submits zones yet, so behavior is unchanged. Availability is exposed as `FDisplayXRSession::HasDisplayZones()` and logged AVAILABLE/ABSENT at instance creation.
+
+### Fixed
+- **Second and later PIE sessions never rebuilt the compositor.** `bCompositorCreationAttempted` was a function-local `static` in `FDisplayXRDevice::UpdateViewport`, so it latched for the whole editor process: pressing Play a second time left the native-PIE path with no compositor and stereo silently off. It is now a device member with an explicit lifecycle — `NotifyPlaySessionEnded()` drops the compositor while the window its session is bound to is still alive (and leaves creation disarmed so teardown can't rebuild against a dying window), and `NotifyPlaySessionStarting()` re-arms it on the next Play. Game/standalone behavior is unchanged: neither hook is called outside the editor.
+
 ### Changed
+- **ABI pin bumped to `displayxr-runtime@b0e5889` (runtime#803, display-zones spec v3)** to adopt `XR_DXR_display_zones`. The five previously vendored headers changed in comments and `SPEC_VERSION` values only — no struct or ABI change. `SPEC_VERSION` numbers jump (`view_rig` 1→3, `win32_window_binding` 1→8, `display_info` 1→16, `atlas_capture` 1→3, `cocoa` 1→6) because runtime#738 restored the pre-rename `XR_EXT_*` numbering; this is exactly why capability gates test the extension **name** and never the version. `XR_DXR_local_3d_zone.h` is now vendored too — `XR_DXR_display_zones.h` includes it — and both are covered by the `abi-guard` job.
 - **The runtime now owns the view math — the plugin computes no Kooima.** Both the runtime device path and the editor preview chain an `XrDisplayRigDXR` / `XrCameraRigDXR` descriptor onto `xrLocateViews` (`XR_DXR_view_rig`) and consume render-ready `XrView{pose, fov}`; the fov is clip-independent, so near/far and UE's reverse-Z convention stay app-side via the new `ProjectionMatrixFromFov`. The runtime also owns the canvas geometry, so the per-frame window-rect resolve is gone. Brings Unreal to parity with [displayxr-unity](https://github.com/DisplayXR/displayxr-unity), which made the same move in `9a2ba6b`. (`DisplayXR/displayxr-runtime` #396 W7, ADR-024; [#36](https://github.com/DisplayXR/displayxr-unreal/issues/36))
 
 ### Removed

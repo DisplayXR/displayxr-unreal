@@ -150,6 +150,14 @@ public:
 	 *  When false the plugin has no view math of its own and cannot do stereo. */
 	bool HasViewRig() const { return bHasViewRig; }
 
+	/** True when the runtime advertised XR_DXR_display_zones and it was enabled
+	 *  on the instance. A zone chained on xrLocateViews scopes the view-rig
+	 *  framing to a window-pixel rect (the rect IS the canvas); the same zone
+	 *  chained on the projection layer binds it at xrEndFrame. Required for the
+	 *  weave-to-texture editor preview, whose canvas comes from the zone — with
+	 *  no zone the runtime has a 0x0 canvas and writes nothing. */
+	bool HasDisplayZones() const { return bHasDisplayZones; }
+
 private:
 	bool LoadOpenXRLoader();
 	void UnloadOpenXRLoader();
@@ -183,6 +191,8 @@ private:
 	bool bExitRequested = false;
 	// XR_DXR_view_rig availability, probed before xrCreateInstance.
 	bool bHasViewRig = false;
+	// XR_DXR_display_zones availability, probed before xrCreateInstance.
+	bool bHasDisplayZones = false;
 
 	// Function pointers (resolved via xrGetInstanceProcAddr)
 	PFN_xrGetInstanceProcAddr xrGetInstanceProcAddrFunc = nullptr;

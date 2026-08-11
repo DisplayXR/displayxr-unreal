@@ -101,6 +101,32 @@ public:
 
 	using FSceneViewExtensionBase::IsActiveThisFrame;
 
+	/**
+	 * Destroy the compositor at the end of a play session, while the window it
+	 * is bound to is still alive.
+	 *
+	 * Deliberately leaves compositor creation DISARMED: a trailing
+	 * UpdateViewport during teardown would otherwise rebuild a compositor bound
+	 * to a dying window. RearmCompositorCreation() re-opens creation when the
+	 * next session starts. Safe to call when no compositor exists.
+	 *
+	 * Flushes rendering first: UE holds the OpenXR swapchain images as its
+	 * viewport render targets (AllocateRenderTargetTextures hands them out
+	 * zero-copy), so the compositor must not destroy the swapchain while the
+	 * render thread may still touch those textures.
+	 */
+	void ShutdownCompositorForSessionEnd();
+
+	/**
+	 * Re-open deferred compositor creation for a new play session.
+	 *
+	 * Creation is one-shot per arming. Without this re-arm the second editor PIE
+	 * session in a process would never build a compositor and stereo would
+	 * silently stay off — the guard used to be a function-local static, so it
+	 * latched for the whole editor run.
+	 */
+	void RearmCompositorCreation();
+
 private:
 	void ComputeViews();
 
@@ -121,6 +147,12 @@ private:
 	// One-shot reallocation trigger: fires true once when compositor becomes ready
 	// so UE re-runs AllocateRenderTargetTextures with the new (swapchain) size.
 	mutable bool bSwapchainRTReallocPending = true;
+
+	// Guards the deferred one-shot compositor creation in UpdateViewport. A
+	// member, not a function-local static: a static is process-lifetime, so the
+	// second PIE session in an editor run could never rebuild the compositor.
+	// RearmCompositorCreation() clears it.
+	bool bCompositorCreationAttempted = false;
 
 	// Host game window HWND, re-cached each UpdateViewport. Used per-frame in
 	// ComputeViews to compute window-relative Kooima inputs (eye offset + screen

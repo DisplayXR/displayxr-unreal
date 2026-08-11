@@ -562,6 +562,22 @@ bool FDisplayXRSession::CreateInstance()
 		bHasViewRig ? TEXT("AVAILABLE (runtime owns the view math)")
 		            : TEXT("ABSENT — stereo disabled, raw views passed through"));
 
+	// XR_DXR_display_zones (ADR-031, ADR-027): the sole region paradigm, and the
+	// canvas source for the weave-to-texture editor preview (#38). Probed and
+	// enabled here so the capability is known before anything wants to chain a
+	// zone; nothing submits zones yet. Same rules as view_rig above — probe
+	// first (xrCreateInstance fails outright on an unsupported extension) and
+	// gate on the NAME, never on SPEC_VERSION.
+	bHasDisplayZones = IsInstanceExtensionSupported(XR_DXR_DISPLAY_ZONES_EXTENSION_NAME);
+	if (bHasDisplayZones)
+	{
+		Extensions.Add(XR_DXR_DISPLAY_ZONES_EXTENSION_NAME);
+	}
+	UE_LOG(LogDisplayXRSession, Log, TEXT("DisplayXR Session: %s: %s"),
+		TEXT(XR_DXR_DISPLAY_ZONES_EXTENSION_NAME),
+		bHasDisplayZones ? TEXT("AVAILABLE (zone-scoped locate + weave-to-texture canvas)")
+		                 : TEXT("ABSENT — single full-window canvas only"));
+
 	XrInstanceCreateInfo CreateInfo = {XR_TYPE_INSTANCE_CREATE_INFO};
 	FCStringAnsi::Strncpy(CreateInfo.applicationInfo.applicationName, "DisplayXR Unreal Plugin", XR_MAX_APPLICATION_NAME_SIZE);
 	CreateInfo.applicationInfo.applicationVersion = 1;
