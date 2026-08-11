@@ -10,7 +10,20 @@ Outstanding work for the DisplayXR Unreal plugin. Organized by theme, not priori
 Replace the current `SceneCapture2D`-based editor preview with a `FDisplayXRDevice` → PIE hookup so UE renders directly into the OpenXR swapchain in the editor (zero-copy, UMG/HUD supported).
 
 - Motivation: remove duplicate render path, pick up TAA history / eye adaptation / post-process state automatically, include UI widgets in the preview.
-- Plan: [`EditorPreviewNative.md`](./EditorPreviewNative.md) (5-phase investigation). Agent handoff prompt: [`EditorPreviewNative-AgentPrompt.md`](./EditorPreviewNative-AgentPrompt.md).
+- Phases 1–3 are in `main` behind `r.DisplayXR.EditorNativePIE 1`.
+- Plan: [`EditorPreviewNative.md`](./EditorPreviewNative.md) (5-phase investigation) — but see the superseded banner at the top: **Phase 4's separate-mirror-window approach is not the path**. Agent handoff prompt: [`EditorPreviewNative-AgentPrompt.md`](./EditorPreviewNative-AgentPrompt.md).
+
+#### Weaved preview in the PIE viewport tab ([#38](https://github.com/DisplayXR/displayxr-unreal/issues/38))
+Parity with [`displayxr-unity`](https://github.com/DisplayXR/displayxr-unity) v2.8.0: the weaved preview shows up **inside the PIE viewport tab**, with floating the tab optional. Design and open questions live on issue #38.
+
+- ✅ **M0** — `XR_DXR_display_zones` vendored, probed, enabled (`FDisplayXRSession::HasDisplayZones()`); ABI pin at `displayxr-runtime@b0e5889`.
+- ✅ **M1** — compositor rebuild across PIE runs (`NotifyPlaySessionStarting` / `NotifyPlaySessionEnded`).
+- **M2** — texture-mode binding: shared D3D12 texture via `XrWin32WindowBindingCreateInfoDXR.sharedTextureHandle`, invisible click-through proxy HWND as the interlace-phase anchor, full-pane zone chained on `xrLocateViews` + the projection layer, blit the woven texture via `FSlateRenderer::OnBackBufferReadyToPresent()`.
+- **M3** — live glue: per-tick pane rect in physical px, immediate move / 0.35 s settle-debounced resize, dock↔float reparent.
+- **M4** — fallbacks and polish: one-shot WARN when the runtime lacks display zones (tab keeps showing the pre-weave atlas), HDR10 backbuffer handling, HiDPI validation.
+- **Cleanup, once M2–M4 are proven on hardware** — delete `FDisplayXRPreviewSession` and the SceneCapture editor path, delete the raw-Win32 mirror window and `OverrideCompositorHWND`, flip `r.DisplayXR.EditorNativePIE` to default-on (or drop the CVar), strip the Phase-1 instrumentation logging from `DisplayXRDevice.cpp`, and fix the SHIFT+F1 dev shortcut (registered at `PostConfigInit`, before Slate exists, so it never fires).
+
+Known hardware traps inherited from the Unity bring-up, all documented on #38: never pass `SWP_FRAMECHANGED` to `SetWindowPos` on the weaver-bound HWND (permanently collapses stereo to mono); debounce interactive resize (swapchain-realloc storms hung the D3D12 device); push physical pixels, never logical points.
 
 ---
 
