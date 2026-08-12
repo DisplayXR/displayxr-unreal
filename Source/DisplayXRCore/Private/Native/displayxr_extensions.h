@@ -37,6 +37,13 @@
 #include <openxr/XR_DXR_atlas_capture.h>
 #include <openxr/XR_DXR_view_rig.h>
 
+// Display zones: the sole region paradigm since runtime ADR-031 (it replaced
+// xrSetSharedTextureOutputRectDXR). A zone chained on xrLocateViews scopes the
+// view-rig framing to its rect — the rect IS the canvas — and the same zone
+// chained on the projection layer binds it at xrEndFrame. Pulls in the
+// vendored XR_DXR_local_3d_zone.h, whose XrLocal3DZoneMaskDXR it reuses.
+#include <openxr/XR_DXR_display_zones.h>
+
 // Window binding is platform-specific. Include exactly one — the Win32 and
 // Cocoa headers both define PFN_xrReadbackCallback and XrCompositionLayer
 // WindowSpaceEXT, so including both would be a duplicate-definition error.

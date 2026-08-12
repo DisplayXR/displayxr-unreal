@@ -32,6 +32,26 @@ public:
 	/** Get the session (for FDisplayXRPlatform routing). */
 	DISPLAYXRCORE_API static FDisplayXRSession* GetSession();
 
+	/**
+	 * Tell the active DisplayXR stereo device that a play session is starting,
+	 * re-opening deferred compositor creation.
+	 *
+	 * Pairs with NotifyPlaySessionEnded(). Without it the second PIE run in an
+	 * editor session never gets a compositor and stereo silently stays off.
+	 * No-op when DisplayXR is not the active XR system. Game thread only.
+	 */
+	DISPLAYXRCORE_API static void NotifyPlaySessionStarting();
+
+	/**
+	 * Tell the active DisplayXR stereo device that a play session ended, so it
+	 * drops its compositor while the window it is bound to is still alive.
+	 *
+	 * Called by the editor module when PIE ends, before the preview window is
+	 * destroyed. No-op when DisplayXR is not the active XR system. Game thread
+	 * only.
+	 */
+	DISPLAYXRCORE_API static void NotifyPlaySessionEnded();
+
 private:
 	void RegisterDevInputProcessor();
 

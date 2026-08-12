@@ -345,6 +345,44 @@ FDisplayXRSession* FDisplayXRCoreModule::GetSession()
 	return nullptr;
 }
 
+/**
+ * Resolve the active XR system to our device, or null when DisplayXR is not it.
+ *
+ * The device is owned by the engine (CreateTrackingSystem hands it over), so we
+ * reach it back through GEngine rather than keeping a second reference. Another
+ * XR plugin may be active instead, hence the system-name check before casting.
+ */
+static FDisplayXRDevice* GetActiveDisplayXRDevice()
+{
+	if (!GEngine || !GEngine->XRSystem.IsValid())
+	{
+		return nullptr;
+	}
+	if (GEngine->XRSystem->GetSystemName() != FName(TEXT("DisplayXR")))
+	{
+		return nullptr;
+	}
+	return static_cast<FDisplayXRDevice*>(GEngine->XRSystem.Get());
+}
+
+void FDisplayXRCoreModule::NotifyPlaySessionStarting()
+{
+	check(IsInGameThread());
+	if (FDisplayXRDevice* Device = GetActiveDisplayXRDevice())
+	{
+		Device->RearmCompositorCreation();
+	}
+}
+
+void FDisplayXRCoreModule::NotifyPlaySessionEnded()
+{
+	check(IsInGameThread());
+	if (FDisplayXRDevice* Device = GetActiveDisplayXRDevice())
+	{
+		Device->ShutdownCompositorForSessionEnd();
+	}
+}
+
 bool FDisplayXRPlatform::bSuppressCompositor = false;
 void* FDisplayXRPlatform::OverrideCompositorHWND = nullptr;
 void* FDisplayXRPlatform::SavedShellForegroundHWND = nullptr;

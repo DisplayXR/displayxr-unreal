@@ -655,7 +655,6 @@ void FDisplayXRDevice::UpdateViewport(bool bUseSeparateRenderTarget, const FView
 
 	// Deferred compositor creation: create the compositor (which owns session
 	// creation with graphics binding) once we have D3D device and game window HWND.
-	static bool bCompositorCreationAttempted = false;
 	if (Session && !Compositor && !bCompositorCreationAttempted)
 	{
 		bCompositorCreationAttempted = true;
@@ -693,6 +692,51 @@ void FDisplayXRDevice::UpdateViewport(bool bUseSeparateRenderTarget, const FView
 	{
 		Compositor->Tick();
 	}
+}
+
+void FDisplayXRDevice::ShutdownCompositorForSessionEnd()
+{
+	check(IsInGameThread());
+
+	// Stay disarmed: creation only re-opens at RearmCompositorCreation(), so a
+	// trailing UpdateViewport during teardown cannot bind a new compositor to a
+	// window that is about to be destroyed.
+	bCompositorCreationAttempted = true;
+
+	if (!Compositor)
+	{
+		return;
+	}
+
+	UE_LOG(LogDisplayXRDevice, Log, TEXT("[%s] ShutdownCompositorForSessionEnd: tearing down compositor"),
+		WorldCtxTag());
+	GLog->Flush();
+
+	// UE's viewport render targets ARE the OpenXR swapchain images (zero-copy
+	// handoff), so the render thread must be idle before the compositor
+	// destroys the swapchain underneath them.
+	FlushRenderingCommands();
+
+	Compositor.Reset();
+
+	// The wrapped swapchain textures we handed UE are gone; make the next
+	// compositor's readiness re-trigger AllocateRenderTargetTextures.
+	bSwapchainRTReallocPending = true;
+	CachedWindowW = 0;
+	CachedWindowH = 0;
+}
+
+void FDisplayXRDevice::RearmCompositorCreation()
+{
+	check(IsInGameThread());
+
+	// Re-arm even if a compositor somehow survived: UpdateViewport only builds
+	// one when the pointer is null, so this cannot double-create.
+	bCompositorCreationAttempted = false;
+
+	UE_LOG(LogDisplayXRDevice, Log, TEXT("[%s] RearmCompositorCreation: deferred compositor creation re-armed"),
+		WorldCtxTag());
+	GLog->Flush();
 }
 
 void FDisplayXRDevice::RenderTexture_RenderThread(FRDGBuilder& GraphBuilder, FRDGTextureRef BackBuffer,

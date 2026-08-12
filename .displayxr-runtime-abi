@@ -10,13 +10,22 @@
 # bug (#234).
 #
 # To adopt new runtime protocol: set this SHA to the new runtime commit, re-copy
-# the four XR_DXR_*.h headers from displayxr-runtime at that SHA into
-# Source/DisplayXRCore/Private/Native/openxr/, and rebuild. Keep this as a full
-# 40-char commit SHA (immutable) — not a branch name.
+# every XR_DXR_*.h header listed in the abi-guard job from displayxr-runtime at
+# that SHA into Source/DisplayXRCore/Private/Native/openxr/, and rebuild. Keep
+# this as a full 40-char commit SHA (immutable) — not a branch name.
 #
 # The pin is intentionally independent of the runtime's versions.json co-release
 # matrix: this plugin is a downstream consumer of the wire protocol, released on
 # its own cadence. This file is the only coupling between the two repos.
 
-# v2.0.0 (XR_EXT_* -> XR_DXR_* rename train, runtime#734)
-a8f6e74fdfbd26d54bcce859ca5f60bb66963828
+# runtime#803 (display-zones spec v3: per-zone cosmetic feather).
+#
+# Adopted for XR_DXR_display_zones — the sole region paradigm since ADR-031 and
+# the canvas source for the runtime's weave-to-texture editor-preview path
+# (issue #38). Diff vs the previous v2.0.0 pin on the five headers already
+# vendored: comments and SPEC_VERSION values only, no struct or ABI change.
+# SPEC_VERSION numbers jump (view_rig 1 -> 3, win32_window_binding 1 -> 8,
+# display_info 1 -> 16, atlas_capture 1 -> 3, cocoa 1 -> 6) because runtime#738
+# restored the pre-rename XR_EXT_* numbering; this is exactly why extension
+# support is gated on the NAME and never on SPEC_VERSION.
+b0e58898fb0e0d46622866c964e965ffa10ee489

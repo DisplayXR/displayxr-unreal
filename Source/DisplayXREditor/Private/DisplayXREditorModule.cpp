@@ -4,6 +4,7 @@
 #include "DisplayXREditorModule.h"
 #include "DisplayXRPreviewSession.h"
 #include "DisplayXRPlatform.h"
+#include "DisplayXRCoreModule.h"
 #include "Editor.h"
 #include "Engine/Engine.h"
 #include "Engine/GameInstance.h"
@@ -58,8 +59,10 @@ void FDisplayXREditorModule::ShutdownModule()
 		PreviewSession.Reset();
 	}
 
-	// Defensive: editor may be closing during PIE.
+	// Defensive: editor may be closing during PIE. Same ordering as
+	// OnPrePIEEnded — compositor down while the mirror HWND is still valid.
 	FDisplayXRPlatform::OverrideCompositorHWND = nullptr;
+	FDisplayXRCoreModule::NotifyPlaySessionEnded();
 	DestroyMirrorWindow();
 
 	FEditorDelegates::BeginPIE.Remove(BeginPIEHandle);
@@ -123,6 +126,12 @@ void FDisplayXREditorModule::OnPostPIEStarted(bool bIsSimulating)
 	// compositor's session to the mirror HWND directly.
 	CreateMirrorWindow();
 
+	// Re-open deferred compositor creation. The previous PIE session left it
+	// disarmed on purpose (see NotifyPlaySessionEnded), so without this the
+	// second and later Play presses would never rebuild a compositor. Must come
+	// after CreateMirrorWindow so the rebuild binds to the new mirror HWND.
+	FDisplayXRCoreModule::NotifyPlaySessionStarting();
+
 	// Flip the flag UEngine::IsStereoscopic3D checks via FViewport::IsStereoRenderingAllowed().
 	// PlayLevel.cpp:3377 sets this from bVRPreview at SPIEViewport construction; we do it
 	// unconditionally after the fact because plain-PIE is our only intended Play mode.
@@ -159,6 +168,12 @@ void FDisplayXREditorModule::OnPrePIEEnded(bool bIsSimulating)
 	{
 		GEngine->StereoRenderingDevice->EnableStereo(false);
 	}
+
+	// Drop the compositor while the mirror HWND its session is bound to is still
+	// alive — hence before DestroyMirrorWindow(). This also leaves compositor
+	// creation disarmed until the next OnPostPIEStarted, so nothing rebuilds
+	// against a window that is about to go away.
+	FDisplayXRCoreModule::NotifyPlaySessionEnded();
 
 	DestroyMirrorWindow();
 	UE_LOG(LogDisplayXREditor, Log, TEXT("DisplayXR: [NativePIE] PrePIEEnded — stereo device disabled"));

@@ -535,6 +535,9 @@ bool FDisplayXRSession::CreateInstance()
 		return false;
 	}
 
+	// Core set: without these the plugin cannot function, so a rejection here is
+	// a genuine hard failure. Everything appended after this point is optional
+	// and is dropped by the retry below rather than taking the session with it.
 	TArray<const char*> Extensions = {
 		XR_DXR_DISPLAY_INFO_EXTENSION_NAME,
 		XR_DXR_ATLAS_CAPTURE_EXTENSION_NAME,
@@ -545,6 +548,7 @@ bool FDisplayXRSession::CreateInstance()
 		XR_DXR_COCOA_WINDOW_BINDING_EXTENSION_NAME,
 #endif
 	};
+	const int32 CoreExtensionCount = Extensions.Num();
 
 	// XR_DXR_view_rig (#396 W7): the runtime owns the view math. Probe BEFORE
 	// requesting — xrCreateInstance FAILS outright on an unsupported extension,
@@ -562,6 +566,43 @@ bool FDisplayXRSession::CreateInstance()
 		bHasViewRig ? TEXT("AVAILABLE (runtime owns the view math)")
 		            : TEXT("ABSENT — stereo disabled, raw views passed through"));
 
+	// XR_DXR_display_zones (ADR-031, ADR-027): the sole region paradigm, and the
+	// canvas source for the weave-to-texture editor preview (#38). Probed and
+	// enabled here so the capability is known before anything wants to chain a
+	// zone; nothing submits zones yet. Same rules as view_rig above — probe
+	// first (xrCreateInstance fails outright on an unsupported extension) and
+	// gate on the NAME, never on SPEC_VERSION.
+	//
+	// It must be enabled TOGETHER WITH ITS DEPENDENCIES. Per its header,
+	// display_zones requires XR_DXR_local_3d_zone (whose XrLocal3DZoneMaskDXR it
+	// reuses) and XR_DXR_view_rig (which frames each zone). OpenXR fails
+	// xrCreateInstance with XR_ERROR_VALIDATION_FAILURE when an enabled
+	// extension's dependencies are missing from the same list — enabling
+	// display_zones alone took the whole session down, not just zones.
+	const bool bZonesAdvertised = IsInstanceExtensionSupported(XR_DXR_DISPLAY_ZONES_EXTENSION_NAME);
+	const bool bLocal3DZoneAdvertised = IsInstanceExtensionSupported(XR_DXR_LOCAL_3D_ZONE_EXTENSION_NAME);
+	bHasDisplayZones = bZonesAdvertised && bLocal3DZoneAdvertised && bHasViewRig;
+	if (bHasDisplayZones)
+	{
+		Extensions.Add(XR_DXR_LOCAL_3D_ZONE_EXTENSION_NAME);
+		Extensions.Add(XR_DXR_DISPLAY_ZONES_EXTENSION_NAME);
+	}
+	UE_LOG(LogDisplayXRSession, Log, TEXT("DisplayXR Session: %s: %s"),
+		TEXT(XR_DXR_DISPLAY_ZONES_EXTENSION_NAME),
+		bHasDisplayZones
+			? TEXT("AVAILABLE (zone-scoped locate + weave-to-texture canvas)")
+			: (bZonesAdvertised
+				? TEXT("ABSENT — advertised but a dependency is not; not enabled")
+				: TEXT("ABSENT — single full-window canvas only")));
+	if (bZonesAdvertised && !bHasDisplayZones)
+	{
+		UE_LOG(LogDisplayXRSession, Warning,
+			TEXT("DisplayXR Session: %s advertised but left disabled — %s missing, %s missing"),
+			TEXT(XR_DXR_DISPLAY_ZONES_EXTENSION_NAME),
+			bLocal3DZoneAdvertised ? TEXT("nothing") : TEXT(XR_DXR_LOCAL_3D_ZONE_EXTENSION_NAME),
+			bHasViewRig ? TEXT("nothing") : TEXT(XR_DXR_VIEW_RIG_EXTENSION_NAME));
+	}
+
 	XrInstanceCreateInfo CreateInfo = {XR_TYPE_INSTANCE_CREATE_INFO};
 	FCStringAnsi::Strncpy(CreateInfo.applicationInfo.applicationName, "DisplayXR Unreal Plugin", XR_MAX_APPLICATION_NAME_SIZE);
 	CreateInfo.applicationInfo.applicationVersion = 1;
@@ -572,6 +613,37 @@ bool FDisplayXRSession::CreateInstance()
 	CreateInfo.enabledExtensionNames = Extensions.GetData();
 
 	XrResult Result = xrCreateInstanceFunc(&CreateInfo, &Instance);
+
+	// Retry with the core set if an optional extension was rejected. A runtime
+	// may advertise an extension and still refuse to enable it — most often
+	// because of an undeclared dependency, which surfaces as
+	// XR_ERROR_VALIDATION_FAILURE against the list as a whole, naming no
+	// culprit. Losing stereo or zones is bad; losing the entire session (no
+	// instance, no HMD device, DisplayXR silently absent) is far worse, so
+	// degrade instead of failing outright.
+	if (!XR_SUCCEEDED(Result) && Extensions.Num() > CoreExtensionCount)
+	{
+		UE_LOG(LogDisplayXRSession, Error,
+			TEXT("DisplayXR Session: xrCreateInstance failed (%d) with %d optional extension(s); ")
+			TEXT("retrying with the core set only"),
+			(int)Result, Extensions.Num() - CoreExtensionCount);
+
+		Extensions.SetNum(CoreExtensionCount);
+		bHasViewRig = false;
+		bHasDisplayZones = false;
+		CreateInfo.enabledExtensionCount = (uint32_t)Extensions.Num();
+		CreateInfo.enabledExtensionNames = Extensions.GetData();
+
+		Result = xrCreateInstanceFunc(&CreateInfo, &Instance);
+		if (XR_SUCCEEDED(Result))
+		{
+			UE_LOG(LogDisplayXRSession, Warning,
+				TEXT("DisplayXR Session: core-only instance created — the runtime advertised optional ")
+				TEXT("extensions it would not enable. Stereo is DISABLED (no %s); rendering mono."),
+				TEXT(XR_DXR_VIEW_RIG_EXTENSION_NAME));
+		}
+	}
+
 	if (!XR_SUCCEEDED(Result))
 	{
 		UE_LOG(LogDisplayXRSession, Error, TEXT("DisplayXR Session: xrCreateInstance failed (%d)"), (int)Result);
