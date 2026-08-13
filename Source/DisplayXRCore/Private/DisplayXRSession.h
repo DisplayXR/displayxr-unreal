@@ -99,8 +99,10 @@ public:
 	 *  Returns false if ViewIndex is out of range. */
 	bool GetViewData(int32 ViewIndex, FVector& OutPos, FQuat& OutOrient, XrFovf& OutFov) const;
 
-	/** Request 2D or 3D display mode. Updates ViewConfig on success. */
-	bool RequestDisplayMode(bool bMode3D);
+	/** Request 2D or 3D display mode. Updates ViewConfig on success. Exported:
+	 *  the editor module calls this (via FDisplayXRPlatform's inline helper) to
+	 *  hand the panel back to 2D when a PIE session ends. */
+	DISPLAYXRCORE_API bool RequestDisplayMode(bool bMode3D);
 
 	/**
 	 * Runtime-owned atlas capture (XR_DXR_atlas_capture). Latches a request for
@@ -119,8 +121,21 @@ public:
 
 	/** Create the OpenXR session with D3D graphics binding and HWND, then
 	 *  begin it synchronously (the runtime posts READY at xrCreateSession).
-	 *  Must be called once the game viewport and RHI device are available. */
-	bool CreateSessionWithGraphics(void* D3DDevice, void* CommandQueue, void* WindowHandle);
+	 *  Must be called once the game viewport and RHI device are available.
+	 *
+	 *  SharedTextureHandle (optional) switches the binding to TEXTURE mode: the
+	 *  runtime weaves into that shared D3D texture instead of presenting to the
+	 *  window; the HWND stays required as the display processor's phase anchor.
+	 *  The handle is captured at session creation and the surface is never
+	 *  reallocated (ADR-010) — size it via GetWorstCaseAtlasSize. */
+	bool CreateSessionWithGraphics(void* D3DDevice, void* CommandQueue, void* WindowHandle,
+		void* SharedTextureHandle = nullptr);
+
+	/** True when the LIVE session was bound in texture mode (a shared-texture
+	 *  handle rode the window-binding chain at xrCreateSession). Gates the
+	 *  zone-scoped locate so it can never diverge from what the session was
+	 *  actually created with. */
+	bool IsTextureModeBound() const { return bTextureModeBound; }
 
 	// --- Accessors for compositor integration ---
 
@@ -158,6 +173,22 @@ public:
 	 *  no zone the runtime has a 0x0 canvas and writes nothing. */
 	bool HasDisplayZones() const { return bHasDisplayZones; }
 
+	/**
+	 * Worst-case atlas size across all enumerated rendering modes (runtime
+	 * ADR-010 / app-rules INV-4.2): max over modes of tileColumns×viewWidthPx by
+	 * tileRows×viewHeightPx. This is the specified allocation size for both the
+	 * app swapchain and the texture-mode shared surface — allocate once, never
+	 * resize; a window resize changes zone rects, not the surface.
+	 *
+	 * On Windows the mode table is only enumerable once a session exists, but
+	 * the shared texture must exist BEFORE xrCreateSession (its handle rides the
+	 * window-binding chain) — so pre-session callers get the fallback: full
+	 * panel pixels. That equals the true worst case for every current mode set
+	 * (2D 1×1@1.0 dominates SBS 2×1@0.5); revisit if a mode ever exceeds
+	 * tileColumns×viewScale == 1 per axis.
+	 */
+	void GetWorstCaseAtlasSize(uint32& OutW, uint32& OutH) const;
+
 private:
 	bool LoadOpenXRLoader();
 	void UnloadOpenXRLoader();
@@ -193,6 +224,12 @@ private:
 	bool bHasViewRig = false;
 	// XR_DXR_display_zones availability, probed before xrCreateInstance.
 	bool bHasDisplayZones = false;
+	// Worst-case atlas dims across all enumerated rendering modes (INV-4.2),
+	// updated by QueryRenderingModes. 0 until the mode table has been read.
+	uint32 MaxAtlasW = 0;
+	uint32 MaxAtlasH = 0;
+	// Whether the live session was created with a shared-texture binding.
+	bool bTextureModeBound = false;
 
 	// Function pointers (resolved via xrGetInstanceProcAddr)
 	PFN_xrGetInstanceProcAddr xrGetInstanceProcAddrFunc = nullptr;

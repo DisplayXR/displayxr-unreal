@@ -56,8 +56,18 @@ public:
 	/** Game thread: fill OutImages with wrapped swapchain FRHITextures. */
 	bool GetSwapchainImagesRHI(TArray<FTextureRHIRef>& OutImages) const;
 
-	/** Game thread: acquire next swapchain image. Returns image index or -1 on failure. */
+	/** Acquire the next swapchain image. Returns image index or -1 on failure.
+	 *  Events + xr calls + atomics only — thread-agnostic despite the name.
+	 *  Called by the engine's FSceneViewport from the game thread on the
+	 *  zero-copy path, and by PostRenderViewFamily_RenderThread on the editor
+	 *  texture-mode atlas-copy path. */
 	int32 AcquireImage_GameThread();
+
+	/** Wrapped swapchain image for the editor atlas-copy path (#38). */
+	FTextureRHIRef GetSwapchainImageRHI(int32 Index) const
+	{
+		return SwapchainImagesRHI.IsValidIndex(Index) ? SwapchainImagesRHI[Index] : FTextureRHIRef();
+	}
 
 	/** Render thread: release the acquired swapchain image and signal compositor to call xrEndFrame. */
 	void ReleaseImage_RenderThread(FRHICommandListImmediate& RHICmdList, FRHITexture* SwapchainTexture);
@@ -78,9 +88,20 @@ public:
 	 *  (black band / shifted tile). Window-relative perspective is via Kooima. */
 	bool UsesArrayCopyPath() const { return bUseCopyPath; }
 
+	/** Texture-mode preview (#38): the woven output texture the runtime weaves
+	 *  into, wrapped for UE sampling. Invalid outside texture mode or before
+	 *  session creation. Game thread reads only (hand the ref to the render
+	 *  thread via a render command). */
+	FTextureRHIRef GetWovenTextureRHI() const { return WovenTextureRHI; }
+
 private:
 	bool CreateChildWindow(void* InParentHWND);
 	void DestroyChildWindow();
+	// Texture-mode preview (#38): the shared D3D12 surface the runtime weaves
+	// into. Worst-case-sized (ADR-010), allocated once before session creation,
+	// never resized — zone rects change on resize, the surface does not.
+	bool CreateWovenSharedTexture();
+	void DestroyWovenSharedTexture();
 	// Window-relative per-view tile dims from ParentHWND's client rect (matches the
 	// device's AdjustViewRect math). The IPC array copy AND projection both call
 	// this so UE's rendered tile, the copy source rect, and the submitted imageRect
@@ -138,6 +159,12 @@ private:
 	// upside-down under the shell). The private RT stays display-sized for SBS.
 	uint32 SliceW = 0;
 	uint32 SliceH = 0;
+
+	// --- Texture-mode preview (#38) ---
+	bool bSharedTextureMode = false;    // latched from FDisplayXRPlatform at Initialize
+	void* WovenResource = nullptr;      // ID3D12Resource* (owned)
+	void* WovenSharedHandle = nullptr;  // NT HANDLE passed to the runtime (owned)
+	FTextureRHIRef WovenTextureRHI;     // UE wrap for the presenter's blit
 
 	// Compositor thread
 	FRunnableThread* Thread = nullptr;

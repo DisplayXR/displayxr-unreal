@@ -13,6 +13,8 @@
 #include "GameFramework/PlayerController.h"
 #include "GameFramework/Pawn.h"
 #include "RenderingThread.h"   // FlushRenderingCommands
+#include "RenderGraphUtils.h"  // RegisterExternalTexture (editor atlas-copy path)
+#include "XRCopyTexture.h"     // AddXRCopyTexturePass (format-safe blit, XRBase)
 
 #if PLATFORM_WINDOWS
 #include "Windows/AllowWindowsPlatformTypes.h"
@@ -326,6 +328,44 @@ void FDisplayXRDevice::AdjustViewRect(const int32 ViewIndex, int32& X, int32& Y,
 	// frame). CalculateRenderTargetSize stays panel-sized — changing UE's
 	// logical RT size was the source of the prior eye-content bleed, not the
 	// tile offsets themselves.
+	// Editor in-tab texture mode (#38): UE renders into the viewport's OWN
+	// render target (no separate swapchain RT — see ShouldUseSeparateRenderTarget),
+	// so tiles derive from the INCOMING viewport dims. Those equal the proxy
+	// window's client rect (the proxy is glued over this exact viewport), which
+	// is what the compositor's ComputeTileDims measures for the submitted
+	// imageRect — so the atlas copy in PostRenderViewFamily and the runtime's
+	// sample rects stay aligned without depending on CacheWindowSize timing.
+	if (FDisplayXRPlatform::bRequestSharedTextureBinding)
+	{
+		// Single source of truth for the tile math: the published zone size
+		// (the proxy window's client rect, forced to EVEN dims at creation).
+		// The compositor's ComputeTileDims measures the same rect via
+		// GetClientRect, so with even dims RoundToInt(W*0.5) is exact on both
+		// sides — no 1px divergence between UE's rendered tiles, the copy, and
+		// the submitted imageRects (divergence = one eye samples the other's
+		// edge). Falls back to the incoming viewport dims before the proxy
+		// exists; always clamped into the incoming rect so views never exceed
+		// the viewport's own render target.
+		uint32 BaseW = SizeX, BaseH = SizeY;
+		uint32 ZoneW = 0, ZoneH = 0;
+		if (FDisplayXRPlatform::GetEditorZoneSize(ZoneW, ZoneH))
+		{
+			BaseW = FMath::Min(ZoneW, SizeX);
+			BaseH = FMath::Min(ZoneH, SizeY);
+		}
+		const int32 Cols = FMath::Max(CachedViewConfig.TileColumns, 1);
+		const int32 Rows = FMath::Max(CachedViewConfig.TileRows, 1);
+		int32 TileW = FMath::Max(1, FMath::RoundToInt(BaseW * CachedViewConfig.ScaleX));
+		int32 TileH = FMath::Max(1, FMath::RoundToInt(BaseH * CachedViewConfig.ScaleY));
+		TileW = FMath::Min(TileW, (int32)SizeX / Cols);
+		TileH = FMath::Min(TileH, (int32)SizeY / Rows);
+		X = (ViewIndex % Cols) * TileW;
+		Y = (ViewIndex / Cols) * TileH;
+		SizeX = TileW;
+		SizeY = TileH;
+		return;
+	}
+
 	CacheWindowSize();
 	// Window-relative tile dims (both paths). The IPC array copy + projection use
 	// the SAME window-relative dims (compositor's ComputeTileDims, same HWND), so
@@ -388,20 +428,43 @@ IStereoRenderTargetManager* FDisplayXRDevice::GetRenderTargetManager()
 
 bool FDisplayXRDevice::ShouldUseSeparateRenderTarget() const
 {
+	// Editor in-tab texture mode (#38): NO separate render target. Slate takes
+	// the stereo-composite path for any window whose backing viewport has
+	// UseSeparateRenderTarget() && IsStereoscopic3D() — it renders the ENTIRE
+	// window's UI into GetViewportRenderTargetTexture() (our swapchain!) and
+	// expects RenderTexture_RenderThread to composite it back. In "Selected
+	// Viewport" PIE that window is the main editor frame, so the editor UI
+	// stomped the atlas and the DP wove menu bars (proven via
+	// DisplayXR.CaptureAtlas). With false, UE renders the SBS atlas into the
+	// viewport's OWN target and PostRenderViewFamily copies it into the
+	// swapchain — one extra copy, editor-only. Game path keeps zero-copy.
+	const bool bSeparate = !FDisplayXRPlatform::bRequestSharedTextureBinding;
+
 	static int32 SUSCount = 0;
 	++SUSCount;
 	if (SUSCount <= 3 || SUSCount % 300 == 0)
 	{
-		UE_LOG(LogDisplayXRDevice, Log, TEXT("[%s] ShouldUseSeparateRenderTarget #%d -> true"), WorldCtxTag(), SUSCount);
+		UE_LOG(LogDisplayXRDevice, Log, TEXT("[%s] ShouldUseSeparateRenderTarget #%d -> %d"), WorldCtxTag(), SUSCount, bSeparate ? 1 : 0);
 		GLog->Flush();
 	}
-	return true;
+	return bSeparate;
 }
 
 bool FDisplayXRDevice::AllocateRenderTargetTexture(uint32 Index, uint32 SizeX, uint32 SizeY, uint8 Format,
 	uint32 NumMips, ETextureCreateFlags Flags, ETextureCreateFlags TargetableTextureFlags,
 	FTextureRHIRef& OutTargetableTexture, FTextureRHIRef& OutShaderResourceTexture, uint32 NumSamples)
 {
+	// Editor in-tab texture mode: refuse. FSceneViewport's allocation sites run
+	// REGARDLESS of ShouldUseSeparateRenderTarget, and a successful allocation
+	// here parks the viewport on a separate RT anyway — which starves Slate
+	// presents (the window only repaints on input) and re-opens the
+	// stereo-composite trap. Returning false keeps the viewport on its normal
+	// window-backed target; PostRenderViewFamily copies the atlas out of it.
+	if (FDisplayXRPlatform::bRequestSharedTextureBinding)
+	{
+		return false;
+	}
+
 	// Singular allocator. Only hit when AllocateRenderTargetTextures returns
 	// false (compositor not yet ready). Force B8G8R8A8 so the transient default
 	// RT matches swapchain format expectations.
@@ -431,6 +494,12 @@ bool FDisplayXRDevice::AllocateRenderTargetTextures(uint32 SizeX, uint32 SizeY, 
 	static int32 ARTCount = 0;
 	++ARTCount;
 	const bool bShouldLog = (ARTCount <= 5);
+
+	// Editor in-tab texture mode: refuse (see AllocateRenderTargetTexture).
+	if (FDisplayXRPlatform::bRequestSharedTextureBinding)
+	{
+		return false;
+	}
 
 	if (!Compositor.IsValid() || !Compositor->IsReady())
 	{
@@ -482,6 +551,16 @@ EPixelFormat FDisplayXRDevice::GetActualColorSwapchainFormat() const
 
 void FDisplayXRDevice::CalculateRenderTargetSize(const FViewport& Viewport, uint32& InOutSizeX, uint32& InOutSizeY)
 {
+	// Editor in-tab texture mode: leave the size alone. The viewport renders
+	// into its own window-sized target on the normal Slate paint path; any
+	// stereo-driven resize here half-engages the separate-RT machinery, which
+	// stalls Slate invalidation (the scene only renders when Slate paints) and
+	// starves the whole preview.
+	if (FDisplayXRPlatform::bRequestSharedTextureBinding)
+	{
+		return;
+	}
+
 	const uint32 InX = InOutSizeX;
 	const uint32 InY = InOutSizeY;
 
@@ -527,6 +606,12 @@ bool FDisplayXRDevice::NeedReAllocateViewportRenderTarget(const FViewport& Viewp
 		bLoggedFirst = true;
 		UE_LOG(LogDisplayXRDevice, Log, TEXT("[%s] NeedReAllocateViewportRenderTarget first-call"), WorldCtxTag());
 		GLog->Flush();
+	}
+
+	// Editor in-tab texture mode: no separate RT, so no reallocation ever.
+	if (FDisplayXRPlatform::bRequestSharedTextureBinding)
+	{
+		return false;
 	}
 
 	// One-shot reallocation trigger when the compositor transitions to ready,
@@ -775,11 +860,85 @@ void FDisplayXRDevice::PostRenderViewFamily_RenderThread(FRDGBuilder& GraphBuild
 
 	FDisplayXRCompositor* Comp = Compositor.Get();
 
-	// Grab the scene color (swapchain image we rendered into) via the view family's render target.
+	// The view family's render target: the swapchain image on the zero-copy
+	// game path, the viewport's own RT in editor texture mode.
 	FRHITexture* SrcTextureRHI = nullptr;
 	if (InViewFamily.RenderTarget)
 	{
 		SrcTextureRHI = InViewFamily.RenderTarget->GetRenderTargetTexture();
+	}
+
+	// ------------------------------------------------------------------
+	// Editor in-tab texture mode (#38): UE rendered the SBS atlas into the
+	// viewport's OWN target (Slate must never see a stereo separate-RT
+	// window — it would composite the whole editor UI into the swapchain).
+	// Hand the atlas to the runtime here instead: acquire a swapchain image,
+	// blit the tile region, release. One extra copy per frame, editor-only.
+	// ------------------------------------------------------------------
+	if (FDisplayXRPlatform::bRequestSharedTextureBinding)
+	{
+		if (!SrcTextureRHI) return;
+
+		// Events + xr calls + atomics only — thread-agnostic despite the name;
+		// the engine no longer acquires for us with the separate RT off.
+		const int32 Idx = Comp->AcquireImage_GameThread();
+		if (Idx < 0) return;
+		FTextureRHIRef DstRef = Comp->GetSwapchainImageRHI(Idx);
+		if (!DstRef.IsValid())
+		{
+			return;
+		}
+
+		// The union of the family's view rects is exactly the tile region UE
+		// wrote (AdjustViewRect math). Same rect on both sides: tiles sit at
+		// identical offsets in the viewport RT and the swapchain, matching the
+		// imageRects the compositor submits from the proxy's client size.
+		FIntRect AtlasRect(0, 0, 0, 0);
+		for (const FSceneView* View : InViewFamily.Views)
+		{
+			if (View)
+			{
+				AtlasRect.Union(View->UnscaledViewRect);
+			}
+		}
+		AtlasRect.Clip(FIntRect(0, 0, SrcTextureRHI->GetSizeX(), SrcTextureRHI->GetSizeY()));
+		AtlasRect.Clip(FIntRect(0, 0, DstRef->GetSizeX(), DstRef->GetSizeY()));
+		if (AtlasRect.IsEmpty()) return;
+
+		FRDGTextureRef SrcRDG = GraphBuilder.FindExternalTexture(SrcTextureRHI);
+		if (!SrcRDG)
+		{
+			SrcRDG = RegisterExternalTexture(GraphBuilder, SrcTextureRHI, TEXT("DisplayXRAtlasSrc"));
+		}
+		FRDGTextureRef DstRDG = RegisterExternalTexture(GraphBuilder, DstRef.GetReference(), TEXT("DisplayXRSwapchainDst"));
+
+		FXRCopyTextureOptions Options(GMaxRHIFeatureLevel);
+		Options.LoadAction = ERenderTargetLoadAction::ELoad;
+		Options.BlendMod = EXRCopyTextureBlendModifier::Opaque;
+		AddXRCopyTexturePass(GraphBuilder, RDG_EVENT_NAME("DisplayXRAtlasToSwapchain"),
+			SrcRDG, AtlasRect, DstRDG, AtlasRect, Options);
+
+		static int32 CopyCount = 0;
+		++CopyCount;
+		if (CopyCount == 1 || CopyCount % 300 == 0)
+		{
+			UE_LOG(LogDisplayXRDevice, Log,
+				TEXT("[%s] Atlas copy %s (#%d): rect=(%d,%d %dx%d) src=%ux%u -> swapchain[%d] %ux%u"),
+				WorldCtxTag(), CopyCount == 1 ? TEXT("ACTIVE") : TEXT("alive"), CopyCount,
+				AtlasRect.Min.X, AtlasRect.Min.Y, AtlasRect.Width(), AtlasRect.Height(),
+				SrcTextureRHI->GetSizeX(), SrcTextureRHI->GetSizeY(),
+				Idx, DstRef->GetSizeX(), DstRef->GetSizeY());
+		}
+
+		FRHITexture* DstRHI = DstRef.GetReference();
+		GraphBuilder.AddPass(
+			RDG_EVENT_NAME("DisplayXR_ReleaseSwapchain"),
+			ERDGPassFlags::NeverCull,
+			[Comp, DstRHI](FRHICommandListImmediate& RHICmdList)
+			{
+				Comp->ReleaseImage_RenderThread(RHICmdList, DstRHI);
+			});
+		return;
 	}
 
 	// Atlas capture is now runtime-owned (xrCaptureAtlasDXR, driven from

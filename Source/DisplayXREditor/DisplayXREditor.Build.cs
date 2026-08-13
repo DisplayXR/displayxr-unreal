@@ -21,6 +21,9 @@ public class DisplayXREditor : ModuleRules
 			"RHICore",
 			"D3D12RHI",
 			"RenderCore",
+			// AddXRCopyTexturePass (format-safe backbuffer blit for the in-tab
+			// weaved preview, #38)
+			"XRBase",
 			"Slate",
 			"SlateCore",
 			"LevelEditor",

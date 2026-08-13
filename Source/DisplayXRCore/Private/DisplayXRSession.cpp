@@ -11,6 +11,7 @@
 #include <dlfcn.h>
 #endif
 
+#include "DisplayXRPlatform.h"
 #include "Dom/JsonObject.h"
 #include "Serialization/JsonReader.h"
 #include "Serialization/JsonSerializer.h"
@@ -742,6 +743,11 @@ void FDisplayXRSession::QueryRenderingModes()
 			M.viewScaleX, M.viewScaleY, M.tileColumns, M.tileRows,
 			M.viewWidthPixels, M.viewHeightPixels, (int)M.hardwareDisplay3D);
 
+		// Worst-case atlas across ALL modes (INV-4.2): tileCount × per-view px.
+		// viewWidthPixels is already viewScaleX × displayPixelWidth.
+		MaxAtlasW = FMath::Max<uint32>(MaxAtlasW, (uint32)M.tileColumns * (uint32)M.viewWidthPixels);
+		MaxAtlasH = FMath::Max<uint32>(MaxAtlasH, (uint32)M.tileRows * (uint32)M.viewHeightPixels);
+
 		// Use the 3D mode (hardwareDisplay3D=true) to populate ViewConfig
 		if (M.hardwareDisplay3D && M.viewCount >= 2)
 		{
@@ -762,6 +768,26 @@ void FDisplayXRSession::QueryRenderingModes()
 			UE_LOG(LogDisplayXRSession, Log, TEXT("DisplayXR Session: Using 3D mode — %dx%d tiles, scale %.2fx%.2f, display %dx%d px"),
 				VC.TileColumns, VC.TileRows, VC.ScaleX, VC.ScaleY, VC.DisplayPixelW, VC.DisplayPixelH);
 		}
+	}
+
+	if (MaxAtlasW > 0 && MaxAtlasH > 0)
+	{
+		UE_LOG(LogDisplayXRSession, Log, TEXT("DisplayXR Session: Worst-case atlas across %u modes: %ux%u"),
+			ModeCount, MaxAtlasW, MaxAtlasH);
+	}
+}
+
+void FDisplayXRSession::GetWorstCaseAtlasSize(uint32& OutW, uint32& OutH) const
+{
+	OutW = MaxAtlasW;
+	OutH = MaxAtlasH;
+	if (OutW == 0 || OutH == 0)
+	{
+		// Mode table not yet enumerable (pre-session on Windows) — full panel
+		// pixels, the true worst case for every current mode set. See the
+		// header comment on this function.
+		OutW = DisplayInfo.DisplayPixelWidth  > 0 ? (uint32)DisplayInfo.DisplayPixelWidth  : 3840;
+		OutH = DisplayInfo.DisplayPixelHeight > 0 ? (uint32)DisplayInfo.DisplayPixelHeight : 2160;
 	}
 }
 
@@ -943,6 +969,39 @@ void FDisplayXRSession::LocateViews()
 			DisplayRig.parallaxFactor = T.ParallaxFactor;
 			DisplayRig.perspectiveFactor = T.PerspectiveFactor;
 			LocateInfo.next = &DisplayRig;
+		}
+	}
+
+	// -----------------------------------------------------------------------
+	// XR_DXR_display_zones (#38): zone-scoped locate for the editor weave-to-
+	// texture preview. The zone rect IS the canvas — the runtime frames the
+	// Kooima projection to it instead of the full window. One full-window zone
+	// (rect = proxy client size at origin, zoneId 1); the compositor chains the
+	// same-valued zone on the projection layer at xrEndFrame. Prepended so the
+	// rig descriptor above stays chained. Inactive (nothing chained) outside
+	// the editor texture-mode preview — the game path is untouched.
+	// -----------------------------------------------------------------------
+	XrDisplayZoneDXR Zone = {(XrStructureType)XR_TYPE_DISPLAY_ZONE_DXR};
+	uint32 ZoneW = 0, ZoneH = 0;
+	// Gated on the LIVE binding, not the editor's request flag: if the shared
+	// texture failed and the compositor fell back to handle mode, chaining a
+	// zone here while xrEndFrame submits none would mis-frame every frame.
+	if (bHasDisplayZones && bTextureModeBound
+		&& FDisplayXRPlatform::GetEditorZoneSize(ZoneW, ZoneH))
+	{
+		Zone.zoneId = 1;
+		Zone.rect.offset = {0, 0};
+		Zone.rect.extent = {(int32_t)ZoneW, (int32_t)ZoneH};
+		Zone.next = LocateInfo.next;
+		LocateInfo.next = &Zone;
+
+		static bool bLoggedZoneLocate = false;
+		if (!bLoggedZoneLocate)
+		{
+			bLoggedZoneLocate = true;
+			UE_LOG(LogDisplayXRSession, Log,
+				TEXT("DisplayXR Session: zone-scoped locate active — zone 1 = %ux%u (canvas)"),
+				ZoneW, ZoneH);
 		}
 	}
 
@@ -1184,7 +1243,8 @@ FDisplayXRTunables FDisplayXRSession::GetTunables() const
 	return TunablesBuffer[ReadIdx];
 }
 
-bool FDisplayXRSession::CreateSessionWithGraphics(void* D3DDevice, void* CommandQueue, void* WindowHandle)
+bool FDisplayXRSession::CreateSessionWithGraphics(void* D3DDevice, void* CommandQueue, void* WindowHandle,
+	void* SharedTextureHandle)
 {
 	if (Session != XR_NULL_HANDLE)
 	{
@@ -1255,14 +1315,24 @@ bool FDisplayXRSession::CreateSessionWithGraphics(void* D3DDevice, void* Command
 	D3D12Binding.device = D3DDevice;
 	D3D12Binding.queue = CommandQueue;
 
-	// Chain Win32 window binding if HWND is available
+	// Chain Win32 window binding if HWND is available. With SharedTextureHandle
+	// set this is the TEXTURE-mode binding: the runtime opens the handle and
+	// weaves into that surface, and the HWND is only the display processor's
+	// screen-position anchor (never presented to).
 	XrWin32WindowBindingCreateInfoDXR Win32Binding = {};
 	Win32Binding.type = (XrStructureType)XR_TYPE_WIN32_WINDOW_BINDING_CREATE_INFO_DXR;
 	Win32Binding.windowHandle = WindowHandle;
+	Win32Binding.sharedTextureHandle = SharedTextureHandle;
 
 	if (WindowHandle)
 	{
 		D3D12Binding.next = &Win32Binding;
+		if (SharedTextureHandle)
+		{
+			UE_LOG(LogDisplayXRSession, Log,
+				TEXT("DisplayXR Session: TEXTURE-mode binding — sharedTextureHandle=%p, phase-anchor HWND=%p"),
+				SharedTextureHandle, WindowHandle);
+		}
 	}
 
 	XrSessionCreateInfo SessionCreateInfo = {XR_TYPE_SESSION_CREATE_INFO};
@@ -1303,8 +1373,10 @@ bool FDisplayXRSession::CreateSessionWithGraphics(void* D3DDevice, void* Command
 	if (!XR_SUCCEEDED(Result))
 	{
 		UE_LOG(LogDisplayXRSession, Warning, TEXT("DisplayXR Session: xrCreateSession with graphics failed (%d)"), (int)Result);
+		bTextureModeBound = false;
 		return false;
 	}
+	bTextureModeBound = (WindowHandle != nullptr && SharedTextureHandle != nullptr);
 
 	// Create reference space
 	PFN_xrCreateReferenceSpace xrCreateReferenceSpaceFunc = nullptr;
