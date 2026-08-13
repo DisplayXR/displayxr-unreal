@@ -160,17 +160,18 @@ bool FDisplayXRPIEPreview::TryStart(TSharedRef<SViewport> ViewportWidget)
 
 	BlitRectPacked.Store(PackRect(TL.x, TL.y, W, H));
 	TargetWindowPtr = Window.Get();
+	ViewportWidgetWeak = ViewportWidget;
+	ClientX = TL.x; ClientY = TL.y; ClientW = W; ClientH = H;
+	bResizePending = false;
 
 	// Take the PIE viewport OUT of the window's registered-viewport slot (see
-	// the header comment on RemovedWindowViewport). Restored in Stop().
+	// the header note — no restore, deliberately).
 	{
 		TSharedPtr<ISlateViewport> WindowViewport = Window->GetViewport();
 		TSharedPtr<ISlateViewport> WidgetViewport = ViewportWidget->GetViewportInterface().Pin();
 		if (WindowViewport.IsValid() && WindowViewport == WidgetViewport)
 		{
 			Window->UnsetViewport(WindowViewport.ToSharedRef());
-			RemovedWindowViewport = WindowViewport;
-			TargetWindowWeak = Window;
 			UE_LOG(LogDisplayXRPIEPreview, Log,
 				TEXT("Unset the PIE viewport from the window's composite slot (widget-drawn for the preview)"));
 		}
@@ -202,6 +203,10 @@ bool FDisplayXRPIEPreview::TryStart(TSharedRef<SViewport> ViewportWidget)
 			return false;
 		}));
 
+	// M3 live glue: track the viewport every editor tick while active.
+	UpdateTicker = FTSTicker::GetCoreTicker().AddTicker(
+		FTickerDelegate::CreateRaw(this, &FDisplayXRPIEPreview::TickUpdate));
+
 	RECT ProxyClient = {};
 	::GetClientRect((HWND)ProxyHWND, &ProxyClient);
 	UE_LOG(LogDisplayXRPIEPreview, Log,
@@ -211,28 +216,133 @@ bool FDisplayXRPIEPreview::TryStart(TSharedRef<SViewport> ViewportWidget)
 	return true;
 }
 
-void FDisplayXRPIEPreview::Stop()
+bool FDisplayXRPIEPreview::TickUpdate(float /*DeltaTime*/)
+{
+	check(IsInGameThread());
+	if (!ProxyHWND)
+	{
+		return false;
+	}
+
+	TSharedPtr<SViewport> Widget = ViewportWidgetWeak.Pin();
+	if (!Widget.IsValid())
+	{
+		return true; // PIE is ending; module teardown owns cleanup
+	}
+
+	// Dock/float moved the viewport into a different top-level window: the
+	// proxy's parent, the blit target window, and the window-viewport-slot
+	// dance are all wrong now. Full restart — teardown keeps the texture-mode
+	// flag so UE never touches the separate-RT path in between, and TryStart
+	// rebinds against the new window (session rebind included). SetParent on
+	// the weaver-bound HWND is deliberately avoided: restyling/reparenting a
+	// bound window is the known stereo-collapse trap.
+	TSharedPtr<SWindow> Window = FSlateApplication::Get().FindWidgetWindow(Widget.ToSharedRef());
+	if (!Window.IsValid() || !Window->GetNativeWindow().IsValid())
+	{
+		return true;
+	}
+	if (Window.Get() != TargetWindowPtr)
+	{
+		UE_LOG(LogDisplayXRPIEPreview, Log,
+			TEXT("Viewport moved to another window ('%s') — restarting the preview against it"),
+			*Window->GetTitle().ToString());
+		Stop(/*bClearModeFlag=*/false);
+		if (TryStart(Widget.ToSharedRef()))
+		{
+			FDisplayXRCoreModule::NotifyPlaySessionStarting();
+		}
+		return false; // TryStart registered a fresh ticker
+	}
+
+	HWND ParentHWND = (HWND)Window->GetNativeWindow()->GetOSWindowHandle();
+	if (!ParentHWND)
+	{
+		return true;
+	}
+
+	const FGeometry& Geo = Widget->GetCachedGeometry();
+	const FVector2D AbsPos = Geo.GetAbsolutePosition();
+	const FVector2D AbsSize = Geo.GetAbsoluteSize();
+	if (AbsSize.X < 64.0 || AbsSize.Y < 64.0)
+	{
+		return true; // mid-layout; keep the last good rect
+	}
+
+	POINT TL = {FMath::RoundToInt((float)AbsPos.X), FMath::RoundToInt((float)AbsPos.Y)};
+	::ScreenToClient(ParentHWND, &TL);
+	const int32 NewW = FMath::RoundToInt((float)AbsSize.X) & ~1;
+	const int32 NewH = FMath::RoundToInt((float)AbsSize.Y) & ~1;
+
+	// Moves apply immediately: interlace phase is computed from the proxy's
+	// live screen rect, so a stale position weaves for the wrong subpixels.
+	// (Whole-window drags don't land here — the proxy is a child, so its
+	// client-relative rect is unchanged and the DP tracks the screen move via
+	// the HWND on its own. This catches layout changes: splitters, tabs.)
+	if (TL.x != ClientX || TL.y != ClientY)
+	{
+		ClientX = TL.x;
+		ClientY = TL.y;
+		::SetWindowPos((HWND)ProxyHWND, nullptr, ClientX, ClientY, 0, 0,
+			SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+		BlitRectPacked.Store(PackRect(ClientX, ClientY,
+			FMath::Min(NewW, ClientW), FMath::Min(NewH, ClientH)));
+		UE_LOG(LogDisplayXRPIEPreview, Log, TEXT("Preview moved: proxy -> (%d,%d)"), ClientX, ClientY);
+	}
+
+	// Sizes settle-debounce (per-frame canvas resize = runtime swapchain-
+	// realloc storms). During the drag, keep the old canvas but never paint
+	// outside the shrunk widget: clamp the blit to min(canvas, widget).
+	if (NewW != ClientW || NewH != ClientH)
+	{
+		if (!bResizePending || NewW != PendingW || NewH != PendingH)
+		{
+			bResizePending = true;
+			PendingW = NewW;
+			PendingH = NewH;
+			LastResizeChangeTime = FPlatformTime::Seconds();
+			BlitRectPacked.Store(PackRect(ClientX, ClientY,
+				FMath::Min(NewW, ClientW), FMath::Min(NewH, ClientH)));
+		}
+		else if (FPlatformTime::Seconds() - LastResizeChangeTime >= ResizeSettleSeconds)
+		{
+			bResizePending = false;
+			ClientW = PendingW;
+			ClientH = PendingH;
+			// Plain resize only — never SWP_FRAMECHANGED on the weaver-bound
+			// HWND (permanent mono-collapse trap).
+			::SetWindowPos((HWND)ProxyHWND, nullptr, 0, 0, ClientW, ClientH,
+				SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
+			FDisplayXRPlatform::SetEditorZoneSize((uint32)ClientW, (uint32)ClientH);
+			BlitRectPacked.Store(PackRect(ClientX, ClientY, ClientW, ClientH));
+			UE_LOG(LogDisplayXRPIEPreview, Log,
+				TEXT("Resize settled: canvas -> %dx%d (zone + proxy + blit updated)"), ClientW, ClientH);
+		}
+	}
+	else if (bResizePending)
+	{
+		// Bounced back to the current size before settling.
+		bResizePending = false;
+		BlitRectPacked.Store(PackRect(ClientX, ClientY, ClientW, ClientH));
+	}
+
+	return true;
+}
+
+void FDisplayXRPIEPreview::Stop(bool bClearModeFlag)
 {
 	check(IsInGameThread());
 
+	if (UpdateTicker.IsValid())
+	{
+		FTSTicker::GetCoreTicker().RemoveTicker(UpdateTicker);
+		UpdateTicker.Reset();
+	}
 	if (WovenPollTicker.IsValid())
 	{
 		FTSTicker::GetCoreTicker().RemoveTicker(WovenPollTicker);
 		WovenPollTicker.Reset();
 	}
-
-	// Restore the window's registered viewport BEFORE PIE teardown — the
-	// engine's own UnsetViewport at UnregisterGameViewport ensures the slot
-	// matches what it registered.
-	if (TSharedPtr<SWindow> W = TargetWindowWeak.Pin())
-	{
-		if (TSharedPtr<ISlateViewport> V = RemovedWindowViewport.Pin())
-		{
-			W->SetViewport(V.ToSharedRef());
-		}
-	}
-	TargetWindowWeak.Reset();
-	RemovedWindowViewport.Reset();
 
 	const bool bSlateAlive = FSlateApplication::IsInitialized();
 	if (BackBufferReadyHandle.IsValid())
@@ -266,10 +376,16 @@ void FDisplayXRPIEPreview::Stop()
 		FDisplayXRCoreModule::NotifyPlaySessionEnded();
 	}
 
-	FDisplayXRPlatform::bRequestSharedTextureBinding = false;
+	// On a mid-PIE restart the texture-mode flag stays set: UE must never
+	// touch the separate-RT path between Stop and the re-TryStart.
+	if (bClearModeFlag)
+	{
+		FDisplayXRPlatform::bRequestSharedTextureBinding = false;
+	}
 	FDisplayXRPlatform::SetEditorZoneSize(0, 0);
 	FDisplayXRPlatform::OverrideCompositorHWND = nullptr;
 	BlitRectPacked.Store(0);
+	bResizePending = false;
 
 	if (ProxyHWND)
 	{

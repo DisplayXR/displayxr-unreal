@@ -49,13 +49,22 @@ public:
 	 * Full teardown in dependency order: blit hook off (+ render flush), then
 	 * the compositor (via NotifyPlaySessionEnded, while the proxy its session
 	 * is bound to is still alive), then platform flags, then the proxy window.
+	 *
+	 * bClearModeFlag=false keeps FDisplayXRPlatform::bRequestSharedTextureBinding
+	 * set — used for a mid-PIE restart (dock/float), where UE must stay off the
+	 * separate-RT path the whole time (a single separate-RT stereo frame puts
+	 * the editor window on Slate's stereo-composite path).
 	 */
-	void Stop();
+	void Stop(bool bClearModeFlag = true);
 
 	bool IsActive() const { return ProxyHWND != nullptr; }
 
 private:
 	void OnBackBufferReady_RenderThread(SWindow& Window, const FTextureRHIRef& BackBuffer);
+
+	/** M3 live glue, every editor tick while active: immediate position
+	 *  tracking, settle-debounced resize, full restart on window change. */
+	bool TickUpdate(float DeltaTime);
 
 	void* ProxyHWND = nullptr;
 
@@ -64,19 +73,36 @@ private:
 	 *  render flush, so the hook can't observe a stale value. */
 	SWindow* TargetWindowPtr = nullptr;
 
-	/** RegisterGameViewport installs the PIE viewport into the owning window's
-	 *  viewport slot at Play. A registered stereo viewport flips Slate's
-	 *  window present onto the stereo-composite path (whole editor UI rendered
-	 *  into the XR render target, presents starved behind our no-op composite
-	 *  hook). We UNSET it for the duration — the widget still paints its
-	 *  viewport as an ordinary quad, the pre-PIE arrangement — and restore it
-	 *  in Stop() before PIE teardown's own UnsetViewport runs (its ensure
-	 *  expects the slot to match). */
-	TWeakPtr<SWindow> TargetWindowWeak;
-	TWeakPtr<class ISlateViewport> RemovedWindowViewport;
+	// NOTE on the window's registered-viewport slot: RegisterGameViewport
+	// installs the PIE viewport into the owning window's slot at Play, and a
+	// registered stereo viewport flips Slate's window present onto the
+	// stereo-composite path (whole editor UI rendered into the XR render
+	// target, presents starved behind our no-op composite hook). TryStart
+	// UNSETS it for the duration — the widget still paints its viewport as an
+	// ordinary quad, the pre-PIE arrangement. No restore: the engine's own
+	// teardown never unsets the slot (it holds a TWeakPtr that self-clears
+	// when the FSceneViewport dies at PIE end), and restoring would re-arm
+	// the composite path for the teardown frames.
 
 	FDelegateHandle BackBufferReadyHandle;
 	FTSTicker::FDelegateHandle WovenPollTicker;
+	FTSTicker::FDelegateHandle UpdateTicker;
+
+	/** The widget the preview is glued to, for the per-tick geometry read and
+	 *  for the dock/float restart. */
+	TWeakPtr<SViewport> ViewportWidgetWeak;
+
+	/** Current proxy rect in parent-window client px (game thread). */
+	int32 ClientX = 0, ClientY = 0, ClientW = 0, ClientH = 0;
+
+	/** Resize settle-debounce (Unity-proven: per-frame canvas resize causes
+	 *  swapchain-realloc storms runtime-side). Moves apply immediately —
+	 *  interlace phase must track position — sizes apply after the rect has
+	 *  been stable this long. */
+	static constexpr double ResizeSettleSeconds = 0.35;
+	bool bResizePending = false;
+	int32 PendingW = 0, PendingH = 0;
+	double LastResizeChangeTime = 0.0;
 
 	/** Blit rect in target-window client px, packed 16 bits per component
 	 *  (x << 48 | y << 32 | w << 16 | h). Game thread writes, render thread
@@ -100,7 +126,7 @@ class FDisplayXRPIEPreview
 {
 public:
 	bool TryStart(TSharedRef<SViewport> /*ViewportWidget*/) { return false; }
-	void Stop() {}
+	void Stop(bool /*bClearModeFlag*/ = true) {}
 	bool IsActive() const { return false; }
 };
 
