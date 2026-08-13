@@ -66,6 +66,36 @@ struct FDisplayXRPlatform
 	 *  instead of the game viewport's HWND. Set by the editor preview module. */
 	DISPLAYXRCORE_API static void* OverrideCompositorHWND;
 
+	/** Editor weave-to-texture PIE preview (#38): when true (set by the editor
+	 *  module together with OverrideCompositorHWND), the compositor binds the
+	 *  session in TEXTURE mode — the runtime weaves into a plugin-created shared
+	 *  D3D12 texture and the override HWND is only the display processor's
+	 *  interlace-phase anchor (an invisible proxy that never presents). Read
+	 *  once at compositor Initialize. */
+	DISPLAYXRCORE_API static bool bRequestSharedTextureBinding;
+
+	/** Zone size for the texture-mode preview, packed (W << 32 | H), in
+	 *  proxy-window client pixels. One full-window zone: the texture-mode weave
+	 *  is canvas-driven and the canvas derives from the submitted zones — with
+	 *  no zone the display processor treats the canvas as "fill the whole
+	 *  target" (the entire worst-case texture), magnifying the weave. Written
+	 *  on the game thread by the editor glue; read by the session (locate
+	 *  chain) and the compositor thread (xrEndFrame chain). 0 = no zone. */
+	DISPLAYXRCORE_API static TAtomic<uint64> EditorZoneSizePacked;
+
+	static void SetEditorZoneSize(uint32 W, uint32 H)
+	{
+		EditorZoneSizePacked.Store(((uint64)W << 32) | (uint64)H);
+	}
+
+	static bool GetEditorZoneSize(uint32& OutW, uint32& OutH)
+	{
+		const uint64 Packed = EditorZoneSizePacked.Load();
+		OutW = (uint32)(Packed >> 32);
+		OutH = (uint32)(Packed & 0xffffffffu);
+		return OutW > 0 && OutH > 0;
+	}
+
 	/** The OS foreground window captured at module load (PostConfigInit) — under
 	 *  the shell this is the shell/launcher that spawned us. UE grabs foreground
 	 *  when it shows its game window on launch, which makes the shell stop

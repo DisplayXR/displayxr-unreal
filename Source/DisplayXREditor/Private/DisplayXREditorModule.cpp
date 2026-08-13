@@ -3,6 +3,7 @@
 
 #include "DisplayXREditorModule.h"
 #include "DisplayXRPreviewSession.h"
+#include "DisplayXRPIEPreview.h"
 #include "DisplayXRPlatform.h"
 #include "DisplayXRCoreModule.h"
 #include "Editor.h"
@@ -28,6 +29,16 @@ static TAutoConsoleVariable<int32> CVarEditorNativePIE(
 	TEXT("r.DisplayXR.EditorNativePIE"),
 	0,
 	TEXT("0 = ship SceneCapture preview (default). 1 = experimental native XR PIE path."),
+	ECVF_Default);
+
+// Debug escape hatch for the native path's OUTPUT stage: with native PIE on,
+// the default is the weave-to-texture in-tab preview (#38); setting this to 1
+// forces the legacy top-level mirror window instead. Also the automatic
+// fallback when the runtime lacks XR_DXR_display_zones.
+static TAutoConsoleVariable<int32> CVarEditorNativePIEMirror(
+	TEXT("r.DisplayXR.EditorNativePIEMirror"),
+	0,
+	TEXT("0 = weave-to-texture preview in the PIE tab (default). 1 = force the legacy top-level mirror window."),
 	ECVF_Default);
 
 static FORCEINLINE bool IsNativePIEEnabled()
@@ -60,7 +71,18 @@ void FDisplayXREditorModule::ShutdownModule()
 	}
 
 	// Defensive: editor may be closing during PIE. Same ordering as
-	// OnPrePIEEnded — compositor down while the mirror HWND is still valid.
+	// OnPrePIEEnded — compositor down while its bound HWND is still valid.
+	if (PreviewStartTicker.IsValid())
+	{
+		FTSTicker::GetCoreTicker().RemoveTicker(PreviewStartTicker);
+		PreviewStartTicker.Reset();
+	}
+	if (PIEPreview.IsValid())
+	{
+		PIEPreview->Stop();
+		PIEPreview.Reset();
+	}
+	StereoForcedViewport.Reset();
 	FDisplayXRPlatform::OverrideCompositorHWND = nullptr;
 	FDisplayXRCoreModule::NotifyPlaySessionEnded();
 	DestroyMirrorWindow();
@@ -121,20 +143,100 @@ void FDisplayXREditorModule::OnPostPIEStarted(bool bIsSimulating)
 		return;
 	}
 
-	// Create the raw-Win32 mirror BEFORE enabling stereo so the next
-	// UpdateViewport call sees OverrideCompositorHWND set and binds the
-	// compositor's session to the mirror HWND directly.
-	CreateMirrorWindow();
+	// Output stage: weave-to-texture in-tab preview (#38) by default; the
+	// legacy top-level mirror when forced by CVar or when the runtime lacks
+	// display zones (the texture-mode canvas has nowhere to come from).
+	FDisplayXRSession* Session = FDisplayXRCoreModule::GetSession();
+	const bool bMirrorForced = CVarEditorNativePIEMirror.GetValueOnGameThread() != 0;
+	const bool bHasZones = Session && Session->HasDisplayZones();
 
-	// Re-open deferred compositor creation. The previous PIE session left it
-	// disarmed on purpose (see NotifyPlaySessionEnded), so without this the
-	// second and later Play presses would never rebuild a compositor. Must come
-	// after CreateMirrorWindow so the rebuild binds to the new mirror HWND.
-	FDisplayXRCoreModule::NotifyPlaySessionStarting();
+	if (!bMirrorForced && bHasZones)
+	{
+		// The PIE viewport has no cached geometry and no owning window until
+		// Slate arranges it (next tick at the earliest), so the preview start
+		// is deferred. Compositor creation must stay DISARMED until the proxy
+		// exists — NotifyPlaySessionStarting fires inside the ticker — so an
+		// early UpdateViewport cannot bind a compositor to the wrong window.
+		//
+		// A FRESH editor process starts ARMED (game mode depends on that
+		// initial state), so the very first PIE draw — which happens before
+		// our deferred TryStart tick — would otherwise bind a handle-mode
+		// compositor to UE's own top-level window. Disarm explicitly first;
+		// this also tears down any compositor a previous session leaked.
+		FDisplayXRCoreModule::NotifyPlaySessionEnded();
+
+		// Set BEFORE stereo enables: the flag drives
+		// ShouldUseSeparateRenderTarget()==false, which must hold from the very
+		// first stereo frame — a single separate-RT frame puts the editor
+		// window on Slate's stereo-composite path (whole editor UI rendered
+		// into the swapchain; see the slate-composite trap).
+		FDisplayXRPlatform::bRequestSharedTextureBinding = true;
+
+		PIEPreview = MakeShared<FDisplayXRPIEPreview>();
+		PreviewStartAttempts = 0;
+		TWeakPtr<SViewport> WeakViewport = ViewportWidget;
+		PreviewStartTicker = FTSTicker::GetCoreTicker().AddTicker(FTickerDelegate::CreateLambda(
+			[this, WeakViewport](float) -> bool
+			{
+				TSharedPtr<SViewport> VP = WeakViewport.Pin();
+				if (!PIEPreview.IsValid() || !VP.IsValid())
+				{
+					PreviewStartTicker.Reset();
+					return false; // PIE already ending — teardown owns cleanup
+				}
+				if (PIEPreview->TryStart(VP.ToSharedRef()))
+				{
+					FDisplayXRCoreModule::NotifyPlaySessionStarting();
+					PreviewStartTicker.Reset();
+					return false;
+				}
+				if (++PreviewStartAttempts > 600)
+				{
+					UE_LOG(LogDisplayXREditor, Warning,
+						TEXT("DisplayXR: [NativePIE] viewport never got geometry/window — falling back to the mirror window"));
+					PIEPreview.Reset();
+					// Back to the separate-RT zero-copy path for the mirror.
+					FDisplayXRPlatform::bRequestSharedTextureBinding = false;
+					CreateMirrorWindow();
+					FDisplayXRCoreModule::NotifyPlaySessionStarting();
+					PreviewStartTicker.Reset();
+					return false;
+				}
+				return true;
+			}));
+		UE_LOG(LogDisplayXREditor, Log, TEXT("DisplayXR: [NativePIE] texture-mode in-tab preview arming (deferred start)"));
+	}
+	else
+	{
+		if (!bMirrorForced && !bHasZones)
+		{
+			UE_LOG(LogDisplayXREditor, Warning,
+				TEXT("DisplayXR: [NativePIE] runtime does not advertise XR_DXR_display_zones — ")
+				TEXT("in-tab weaved preview unavailable, using the legacy mirror window. ")
+				TEXT("Update the DisplayXR runtime for the in-tab preview."));
+		}
+
+		// Create the raw-Win32 mirror BEFORE enabling stereo so the next
+		// UpdateViewport call sees OverrideCompositorHWND set and binds the
+		// compositor's session to the mirror HWND directly.
+		CreateMirrorWindow();
+
+		// Re-open deferred compositor creation. The previous PIE session left it
+		// disarmed on purpose (see NotifyPlaySessionEnded), so without this the
+		// second and later Play presses would never rebuild a compositor. Must come
+		// after CreateMirrorWindow so the rebuild binds to the new mirror HWND.
+		FDisplayXRCoreModule::NotifyPlaySessionStarting();
+	}
 
 	// Flip the flag UEngine::IsStereoscopic3D checks via FViewport::IsStereoRenderingAllowed().
 	// PlayLevel.cpp:3377 sets this from bVRPreview at SPIEViewport construction; we do it
 	// unconditionally after the fact because plain-PIE is our only intended Play mode.
+	//
+	// Remember WHICH widget: in "Selected Viewport" play mode PIE borrows the
+	// level editor's own viewport widget, which survives PIE — the flag must be
+	// flipped back at PIE end or the editor viewport keeps stereo-rendering
+	// head-tracked SBS after Stop (our IsStereoEnabled() is unconditional).
+	StereoForcedViewport = ViewportWidget;
 	ViewportWidget->EnableStereoRendering(true);
 
 	// Mirror PlayLevel.cpp:3498: tell the stereo device to flip on. Our IsStereoEnabled()
@@ -157,17 +259,32 @@ void FDisplayXREditorModule::OnPrePIEEnded(bool bIsSimulating)
 		return;
 	}
 
+	if (PreviewStartTicker.IsValid())
+	{
+		FTSTicker::GetCoreTicker().RemoveTicker(PreviewStartTicker);
+		PreviewStartTicker.Reset();
+	}
+
+	if (PIEPreview.IsValid())
+	{
+		// Texture-mode teardown in dependency order (blit hook + render flush →
+		// compositor while the proxy is still alive → platform flags → proxy
+		// window) happens inside Stop().
+		PIEPreview->Stop();
+		PIEPreview.Reset();
+
+		DisableForcedStereo();
+		UE_LOG(LogDisplayXREditor, Log, TEXT("DisplayXR: [NativePIE] PrePIEEnded — texture-mode preview torn down"));
+		return;
+	}
+
+	// ---- legacy mirror path ----
+
 	// Clear the override BEFORE disabling stereo so any trailing UpdateViewport
 	// call doesn't re-latch the compositor to a dying HWND.
 	FDisplayXRPlatform::OverrideCompositorHWND = nullptr;
 
-	// The SPIEViewport is destroyed as part of PIE teardown, so we don't strictly
-	// need to flip its flag off. Flip the device off for cleanliness; the next PIE
-	// session will re-enable in OnPostPIEStarted.
-	if (GEngine && GEngine->StereoRenderingDevice.IsValid())
-	{
-		GEngine->StereoRenderingDevice->EnableStereo(false);
-	}
+	DisableForcedStereo();
 
 	// Drop the compositor while the mirror HWND its session is bound to is still
 	// alive — hence before DestroyMirrorWindow(). This also leaves compositor
@@ -177,6 +294,28 @@ void FDisplayXREditorModule::OnPrePIEEnded(bool bIsSimulating)
 
 	DestroyMirrorWindow();
 	UE_LOG(LogDisplayXREditor, Log, TEXT("DisplayXR: [NativePIE] PrePIEEnded — stereo device disabled"));
+}
+
+void FDisplayXREditorModule::DisableForcedStereo()
+{
+	// The widget PIE borrowed survives PIE in "Selected Viewport" mode — the
+	// stereo flag must come off or the LEVEL EDITOR viewport keeps stereo-
+	// rendering head-tracked SBS after Stop (IsStereoEnabled is unconditional).
+	if (TSharedPtr<SViewport> VP = StereoForcedViewport.Pin())
+	{
+		VP->EnableStereoRendering(false);
+	}
+	StereoForcedViewport.Reset();
+
+	if (GEngine && GEngine->StereoRenderingDevice.IsValid())
+	{
+		GEngine->StereoRenderingDevice->EnableStereo(false);
+	}
+
+	// Hand the panel back to 2D. The XrSession survives PIE, so without an
+	// explicit request the runtime's mode authority stays 3D and the lens
+	// stays on over the 2D editor desktop after Stop.
+	FDisplayXRPlatform::RequestDisplayMode(false);
 }
 
 void FDisplayXREditorModule::OnEndPIE(bool bIsSimulating)

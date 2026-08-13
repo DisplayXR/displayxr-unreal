@@ -383,8 +383,23 @@ void FDisplayXRCoreModule::NotifyPlaySessionEnded()
 	}
 }
 
+FTextureRHIRef FDisplayXRCoreModule::GetWovenTextureRHI_GameThread()
+{
+	check(IsInGameThread());
+	if (FDisplayXRDevice* Device = GetActiveDisplayXRDevice())
+	{
+		if (FDisplayXRCompositor* Compositor = Device->GetCompositor())
+		{
+			return Compositor->GetWovenTextureRHI();
+		}
+	}
+	return nullptr;
+}
+
 bool FDisplayXRPlatform::bSuppressCompositor = false;
 void* FDisplayXRPlatform::OverrideCompositorHWND = nullptr;
 void* FDisplayXRPlatform::SavedShellForegroundHWND = nullptr;
+bool FDisplayXRPlatform::bRequestSharedTextureBinding = false;
+TAtomic<uint64> FDisplayXRPlatform::EditorZoneSizePacked{0};
 
 IMPLEMENT_MODULE(FDisplayXRCoreModule, DisplayXRCore)

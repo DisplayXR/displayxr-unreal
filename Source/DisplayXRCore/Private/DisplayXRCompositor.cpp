@@ -368,6 +368,32 @@ void FDisplayXRCompositor::CompositorLoop()
 		PL.space = Session->GetXrSpace();
 		PL.viewCount = (uint32_t)NV;
 		PL.views = PV.GetData();
+
+		// Texture-mode preview (#38): bind this layer to zone 1 — the same
+		// zone the game thread chains on xrLocateViews. A frame becomes a
+		// ZONES FRAME when a projection layer carries this chain; the zone
+		// rect is the weave canvas, and without one the display processor
+		// treats the canvas as the whole worst-case texture (magnified weave).
+		XrDisplayZoneDXR Zone = {(XrStructureType)XR_TYPE_DISPLAY_ZONE_DXR};
+		uint32 ZoneW = 0, ZoneH = 0;
+		if (bSharedTextureMode && FDisplayXRPlatform::GetEditorZoneSize(ZoneW, ZoneH))
+		{
+			Zone.zoneId = 1;
+			Zone.rect.offset = {0, 0};
+			Zone.rect.extent = {(int32_t)ZoneW, (int32_t)ZoneH};
+			Zone.next = PL.next;
+			PL.next = &Zone;
+
+			static bool bLoggedZoneSubmit = false;
+			if (!bLoggedZoneSubmit)
+			{
+				bLoggedZoneSubmit = true;
+				UE_LOG(LogDisplayXRCompositor, Log,
+					TEXT("Compositor Thread: zones frame active — zone 1 = %ux%u chained on the projection layer"),
+					ZoneW, ZoneH);
+			}
+		}
+
 		const XrCompositionLayerBaseHeader* Layers[] = {(const XrCompositionLayerBaseHeader*)&PL};
 
 		XrFrameEndInfo EI = {XR_TYPE_FRAME_END_INFO};
@@ -446,9 +472,9 @@ bool FDisplayXRCompositor::Initialize(void* InParentHWND, void* InD3DDevice, voi
 	//    window. The fullscreen game window has no visible pixels behind it
 	//    so a WS_CHILD overlay is harmless.
 	//  - Editor native-PIE (OverrideCompositorHWND set): the override HWND is
-	//    our own raw-Win32 top-level mirror. Skip the child and bind the
-	//    session directly — matches the shipped FDisplayXRPreviewSession
-	//    pattern and keeps the DWM composite simple.
+	//    editor-owned (the texture-mode proxy over the PIE viewport, or the
+	//    legacy top-level mirror). Skip the child and bind the session
+	//    directly.
 	const bool bUseParentDirectly = (FDisplayXRPlatform::OverrideCompositorHWND != nullptr);
 	ParentHWND = InParentHWND;  // track either way so Tick's rect call has an HWND
 	if (!bUseParentDirectly)
@@ -457,9 +483,31 @@ bool FDisplayXRCompositor::Initialize(void* InParentHWND, void* InD3DDevice, voi
 	}
 	void* const SessionHWND = bUseParentDirectly ? InParentHWND : ChildHWND;
 
-	// Create session with UE's device + our dedicated runtime queue + bound window
-	if (!Session->IsSessionCreated()) {
-		if (!Session->CreateSessionWithGraphics(UEDevice, RuntimeQueue, SessionHWND)) {
+	// Texture-mode preview (#38): create the shared surface the runtime weaves
+	// into BEFORE session creation — its handle rides the window-binding chain.
+	// On failure fall back to handle mode (the proxy window becomes a plain
+	// bound window and the runtime presents into it — visible but harmless).
+	bSharedTextureMode = bUseParentDirectly && FDisplayXRPlatform::bRequestSharedTextureBinding;
+	if (bSharedTextureMode && !CreateWovenSharedTexture())
+	{
+		UE_LOG(LogDisplayXRCompositor, Warning,
+			TEXT("Compositor: shared texture creation failed — falling back to handle-mode binding"));
+		bSharedTextureMode = false;
+	}
+
+	// Create session with UE's device + our dedicated runtime queue + bound window.
+	//
+	// Editor PIE (override HWND set): the bound window — and the texture-vs-
+	// handle mode — changes every play session while the XrSession persists on
+	// the module, so a session surviving from a previous cycle is bound to a
+	// window that no longer exists (and never saw this cycle's shared-texture
+	// handle: the binding rides xrCreateSession). Rebind unconditionally —
+	// CreateSessionWithGraphics destroys the old session first. Game mode keeps
+	// the historical create-once behavior.
+	const bool bForceRebind = bUseParentDirectly;
+	if (!Session->IsSessionCreated() || bForceRebind) {
+		if (!Session->CreateSessionWithGraphics(UEDevice, RuntimeQueue, SessionHWND,
+			bSharedTextureMode ? WovenSharedHandle : nullptr)) {
 			UE_LOG(LogDisplayXRCompositor, Error, TEXT("Compositor: Session creation failed"));
 			return false;
 		}
@@ -479,6 +527,7 @@ void FDisplayXRCompositor::Shutdown()
 	SwapchainImagesRHI.Empty();
 	ArraySwapchainRHI.Empty();
 	DestroySwapchain();
+	DestroyWovenSharedTexture();
 	DestroyChildWindow();
 #if PLATFORM_WINDOWS
 	if (RuntimeQueue) { static_cast<ID3D12CommandQueue*>(RuntimeQueue)->Release(); RuntimeQueue = nullptr; }
@@ -486,6 +535,94 @@ void FDisplayXRCompositor::Shutdown()
 	if (BeginFrameReadyEvent) { FPlatformProcess::ReturnSynchEventToPool(BeginFrameReadyEvent); BeginFrameReadyEvent = nullptr; }
 	if (EndFrameReadyEvent) { FPlatformProcess::ReturnSynchEventToPool(EndFrameReadyEvent); EndFrameReadyEvent = nullptr; }
 	bReady = false;
+}
+
+bool FDisplayXRCompositor::CreateWovenSharedTexture()
+{
+#if PLATFORM_WINDOWS
+	ID3D12Device* Dev = static_cast<ID3D12Device*>(UEDevice);
+	if (!Dev || !Session) return false;
+
+	// Worst-case atlas across all rendering modes (ADR-010 / INV-4.2 / INV-5.2):
+	// allocated once, never resized. A window resize changes the zone rect the
+	// runtime weaves into this surface, never the surface itself.
+	uint32 W = 0, H = 0;
+	Session->GetWorstCaseAtlasSize(W, H);
+	if (!W || !H) return false;
+
+	D3D12_RESOURCE_DESC RD = {};
+	RD.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+	RD.Width = W;
+	RD.Height = H;
+	RD.DepthOrArraySize = 1;
+	RD.MipLevels = 1;
+	RD.SampleDesc.Count = 1;
+	// BGRA to match the reference apps; the runtime builds its RTV from our
+	// GetDesc().Format, so the format is ours to choose. The presenter's blit
+	// must stay a format-converting shader draw — a CopyTextureRegion cannot
+	// cross the RGBA/BGRA copy groups.
+	RD.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
+	RD.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
+	// ALLOW_SIMULTANEOUS_ACCESS: the runtime's queue weaves into this while
+	// UE's graphics queue samples it. v1 accepts a potential single-frame tear
+	// (Unity parity — no fence on this path either).
+	RD.Flags = D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET | D3D12_RESOURCE_FLAG_ALLOW_SIMULTANEOUS_ACCESS;
+
+	D3D12_HEAP_PROPERTIES HP = {};
+	HP.Type = D3D12_HEAP_TYPE_DEFAULT;
+
+	ID3D12Resource* Res = nullptr;
+	HRESULT hr = Dev->CreateCommittedResource(&HP, D3D12_HEAP_FLAG_SHARED, &RD,
+		D3D12_RESOURCE_STATE_COMMON, nullptr, IID_PPV_ARGS(&Res));
+	if (FAILED(hr) || !Res)
+	{
+		UE_LOG(LogDisplayXRCompositor, Error, TEXT("Compositor: woven texture CreateCommittedResource failed (0x%08x)"), (uint32)hr);
+		return false;
+	}
+	Res->SetName(L"DisplayXR.WovenPreview");
+
+	HANDLE SharedHandle = nullptr;
+	hr = Dev->CreateSharedHandle(Res, nullptr, GENERIC_ALL, nullptr, &SharedHandle);
+	if (FAILED(hr) || !SharedHandle)
+	{
+		UE_LOG(LogDisplayXRCompositor, Error, TEXT("Compositor: woven texture CreateSharedHandle failed (0x%08x)"), (uint32)hr);
+		Res->Release();
+		return false;
+	}
+
+	WovenResource = Res;
+	WovenSharedHandle = SharedHandle;
+
+	// Wrap for UE sampling (render thread requirement, same as the swapchain wrap).
+	ID3D12DynamicRHI* DynamicRHI = GetID3D12DynamicRHI();
+	FTextureRHIRef* OutRef = &WovenTextureRHI;
+	ENQUEUE_RENDER_COMMAND(WrapDisplayXRWovenTexture)(
+		[OutRef, Res, DynamicRHI](FRHICommandListImmediate& RHICmdList)
+		{
+			*OutRef = DynamicRHI->RHICreateTexture2DFromResource(
+				PF_B8G8R8A8, ETextureCreateFlags::ShaderResource,
+				FClearValueBinding::Black, Res);
+		});
+	FlushRenderingCommands();
+
+	UE_LOG(LogDisplayXRCompositor, Log,
+		TEXT("Compositor: woven shared texture %ux%u BGRA (worst-case, allocate-once) handle=%p wrapped=%d"),
+		W, H, WovenSharedHandle, WovenTextureRHI.IsValid() ? 1 : 0);
+	GLog->Flush();
+	return WovenTextureRHI.IsValid();
+#else
+	return false;
+#endif
+}
+
+void FDisplayXRCompositor::DestroyWovenSharedTexture()
+{
+#if PLATFORM_WINDOWS
+	WovenTextureRHI.SafeRelease();
+	if (WovenSharedHandle) { ::CloseHandle((HANDLE)WovenSharedHandle); WovenSharedHandle = nullptr; }
+	if (WovenResource) { static_cast<ID3D12Resource*>(WovenResource)->Release(); WovenResource = nullptr; }
+#endif
+	bSharedTextureMode = false;
 }
 
 // =============================================================================
@@ -889,13 +1026,13 @@ bool FDisplayXRCompositor::CreateSwapchain()
 	XrSession S = Session->GetXrSession();
 	if (S == XR_NULL_HANDLE || !xrCreateSwapchainFunc) return false;
 
-	// Swapchain must be at FULL display resolution (not atlas size).
-	// The runtime's compositor expects this — tiles are sub-images within it.
-	FDisplayXRDisplayInfo DI = Session->GetDisplayInfo();
-	SwapchainWidth = DI.DisplayPixelWidth > 0 ? (uint32)DI.DisplayPixelWidth : 3840;
-	SwapchainHeight = DI.DisplayPixelHeight > 0 ? (uint32)DI.DisplayPixelHeight : 2160;
-	UE_LOG(LogDisplayXRCompositor, Log, TEXT("Compositor: Display info: %dx%d → swapchain %dx%d"),
-		DI.DisplayPixelWidth, DI.DisplayPixelHeight, SwapchainWidth, SwapchainHeight);
+	// Swapchain is worst-case sized across all rendering modes (INV-4.2) and
+	// never reallocated — tiles are sub-images within it. By the time the
+	// swapchain is created the session exists, so the enumerated mode table is
+	// available; for every current mode set the max equals full panel pixels.
+	Session->GetWorstCaseAtlasSize(SwapchainWidth, SwapchainHeight);
+	UE_LOG(LogDisplayXRCompositor, Log, TEXT("Compositor: worst-case atlas → swapchain %dx%d"),
+		SwapchainWidth, SwapchainHeight);
 	GLog->Flush();
 	if (!SwapchainWidth || !SwapchainHeight) return false;
 

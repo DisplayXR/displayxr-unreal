@@ -127,6 +127,10 @@ public:
 	 */
 	void RearmCompositorCreation();
 
+	/** The compositor, or null before deferred creation / after session-end
+	 *  teardown. Game thread only — teardown resets it on the game thread. */
+	FDisplayXRCompositor* GetCompositor() const { return Compositor.Get(); }
+
 private:
 	void ComputeViews();
 

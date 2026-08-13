@@ -5,6 +5,7 @@
 
 #include "CoreMinimal.h"
 #include "IHeadMountedDisplayModule.h"
+#include "RHIResources.h"
 
 class FAutoConsoleCommand;
 class FDisplayXRSession;
@@ -51,6 +52,15 @@ public:
 	 * only.
 	 */
 	DISPLAYXRCORE_API static void NotifyPlaySessionEnded();
+
+	/**
+	 * Texture-mode preview (#38): the woven texture the runtime weaves into,
+	 * wrapped for UE sampling. Invalid until the compositor has created the
+	 * shared surface, and again after session-end teardown. Game thread only —
+	 * the editor presenter polls this and hands the ref to the render thread
+	 * via a render command.
+	 */
+	DISPLAYXRCORE_API static FTextureRHIRef GetWovenTextureRHI_GameThread();
 
 private:
 	void RegisterDevInputProcessor();
