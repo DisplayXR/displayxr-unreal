@@ -26,7 +26,7 @@ Output goes to `Packages/DisplayXR_<version>/`.
 
 1. **DisplayXRCore** (Runtime, `Win64|Mac|Android`, `PostConfigInit`) — OpenXR integration, stereo device, camera components, Kooima C libraries, Blueprint function library.
 2. **DisplayXRMaterials** (Runtime, all platforms, `Default`) — Custom material expression nodes (`StereoIndex`, `StereoSelect`, `SideBySideCoords`, `TopBottomCoords`).
-3. **DisplayXREditor** (Editor, `Win64|Mac`, `PostEngineInit`) — Editor preview session, viewport widget, component proxies.
+3. **DisplayXREditor** (Editor, `Win64|Mac`, `PostEngineInit`) — In-tab weaved PIE preview (`FDisplayXRPIEPreview`, Windows only), component proxies.
 
 ### OpenXR Integration
 

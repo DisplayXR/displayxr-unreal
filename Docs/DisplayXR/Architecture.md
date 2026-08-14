@@ -16,7 +16,7 @@ One-page reference for the DisplayXR Unreal plugin. Covers the class hierarchy, 
 |---|---|---|
 | `DisplayXRCore` | Session, device, compositor, rig components, Blueprint API, Kooima C libs | `PostConfigInit` |
 | `DisplayXRMaterials` | Material expression nodes (`StereoIndex`, `StereoSelect`, `SideBySideCoords`, `TopBottomCoords`) | `Default` |
-| `DisplayXREditor` | Editor preview session, component visualization proxies, rig editor UI | `PostEngineInit` (editor only) |
+| `DisplayXREditor` | In-tab weaved PIE preview, component visualization proxies, rig editor UI | `PostEngineInit` (editor only) |
 
 Only the `XRBase` UE plugin is required (`DisplayXR.uplugin`). The plugin **does not** depend on UE's `OpenXR` plugin.
 
@@ -51,9 +51,9 @@ UDisplayXRCamera (UActorComponent) — Camera-centric rig tunables
 UDisplayXRDisplay (UActorComponent) — Display-centric rig tunables
 
 [Editor module]
-FDisplayXRPreviewSession    — Current SceneCapture2D-based editor preview
-                              (see EditorPreview.md; replacement tracked in
-                              EditorPreviewNative.md).
+FDisplayXRPIEPreview        — In-tab weaved PIE preview (see EditorPreview.md):
+                              texture-mode session binding, invisible proxy
+                              phase-anchor window, woven blit into the tab.
 UDisplayXRCameraProxy /     — UPrimitiveComponent proxies for editor
 UDisplayXRDisplayProxy        visualization of the rig transform/frustum.
 ```
@@ -114,8 +114,8 @@ FDisplayXRPlatform::RequestEyeTrackingMode(bManual);
 The plugin computes **no** Kooima math. It chains an `XrDisplayRigDXR` /
 `XrCameraRigDXR` descriptor onto `xrLocateViews` (the `XR_DXR_view_rig`
 extension, `DisplayXR/displayxr-runtime` #396 W7 / ADR-024) and consumes the
-render-ready `XrView{pose, fov}` the runtime returns — for both the runtime
-device path and the editor preview session.
+render-ready `XrView{pose, fov}` the runtime returns — the editor preview
+drives the same device path.
 
 This is why there is no `displayxr-common` submodule and no `displayxr::math`
 link here; the [displayxr-unity](https://github.com/DisplayXR/displayxr-unity)

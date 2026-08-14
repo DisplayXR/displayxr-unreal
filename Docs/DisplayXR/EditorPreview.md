@@ -1,115 +1,89 @@
-# Editor Preview System
+# Editor Preview — weaved 3D inside the PIE viewport tab
 
-## Key Difference from Unity
+Pressing **Play** in the Unreal editor shows the DisplayXR runtime's **woven**
+output directly inside the PIE viewport tab, driven through UE's own stereo
+pipeline. No separate window, no second render path, no build step — the tab
+can be floated like any editor tab, but that's an option, not a requirement.
+This is parity with the [displayxr-unity](https://github.com/DisplayXR/displayxr-unity)
+Game-view preview (its v2.8.0 weave-to-texture design).
 
-In Unity, the editor preview requires a **standalone OpenXR session** (`displayxr_standalone_*` API) because Unity's XR subsystem only creates the OpenXR session when entering Play Mode. Without PIE, there is no `XrInstance` or `XrSession` — so the Unity plugin must create and manage its own, completely independent of Unity's XR loader.
+Enabled by default (`r.DisplayXR.EditorNativePIE`, set `0` to disable).
+**Windows only. Requires a runtime advertising `XR_DXR_display_zones`** — the
+weave canvas comes from a display zone; without the extension the module warns
+once at Play and the editor stays 2D.
 
-**Unreal is different.** Unreal's `FOpenXRHMD` creates the `XrInstance` and `XrSession` **at engine startup**, not at PIE entry. This means:
+## How it works
 
-1. The OpenXR session with the DisplayXR runtime **already exists in the editor**
-2. Our `xrLocateViews` hook **already fires** whenever the OpenXR subsystem ticks
-3. Eye tracking data is **already flowing** to the plugin via the double-buffered `EyeDataBuffer`
-4. The runtime is **already connected** to the 3D display
+Per play session (`FDisplayXREditorModule` + `FDisplayXRPIEPreview`):
 
-This eliminates the need for a standalone session. We can use Unreal's existing OpenXR session for editor preview.
+1. **Stereo on the PIE viewport.** `OnPostPIEStarted` forces
+   `bEnableStereoRendering` on the game viewport widget so
+   `FDisplayXRDevice` drives the PIE render — the same device path a packaged
+   game uses. The flag is unforced at Stop (in "Selected Viewport" mode PIE
+   borrows the level editor's own widget, which survives PIE).
+2. **UE renders the SBS atlas into the viewport's own render target.** In this
+   mode the device refuses every separate-render-target hook. This is
+   deliberate and load-bearing: a docked stereo viewport that uses a separate
+   RT flips Slate's window present onto its stereo-composite path, which
+   renders the *entire editor window's UI* into the XR render target (that is
+   UE's VR-headset design, and why Epic's VR Preview always spawns a
+   standalone window). The PIE viewport is also unset from the window's
+   registered-viewport slot for the duration, for the same reason.
+3. **The atlas is handed to the runtime per frame.**
+   `PostRenderViewFamily_RenderThread` acquires an OpenXR swapchain image,
+   blits the tile region into it (XRBase's format-safe `AddXRCopyTexturePass`),
+   and releases. One extra copy per frame, editor-only — the game path keeps
+   the zero-copy swapchain-as-RT design.
+4. **The runtime weaves into a shared texture.** The session is bound in
+   texture mode: `XrWin32WindowBindingCreateInfoDXR.sharedTextureHandle` is a
+   worst-case-sized shared D3D12 surface (runtime ADR-010: allocate once,
+   never resize), and `windowHandle` is an **invisible, click-through proxy
+   child window** glued over the viewport — it never presents; the display
+   processor needs a real HWND to anchor interlace phase. One full-window
+   `XrDisplayZoneDXR` rides `xrLocateViews` (zone-scoped locate — the rect IS
+   the canvas) and the projection layer at `xrEndFrame`.
+5. **The woven canvas is blitted into the tab.** A render-thread hook on
+   `FSlateRenderer::OnBackBufferReadyToPresent` draws the woven texture 1:1
+   into the backbuffer region under the viewport — after Slate painted the
+   pre-weave atlas there, so the overwrite *is* the preview, and losing the
+   hook degrades to the atlas rather than to nothing.
 
-## Recommended Approach: Use Unreal's OpenXR Session
+## Live tracking
 
-### Strategy
+The preview follows the viewport every editor tick: layout moves (splitters,
+panel changes) apply immediately, size changes settle through a 0.35 s
+debounce before the zone/proxy/blit update together (per-frame canvas resize
+causes runtime swapchain-realloc storms), and moving the tab to another
+top-level window restarts the preview against it (never `SetParent` on the
+weaver-bound HWND — that collapses stereo permanently). Whole-window drags
+cost nothing: the proxy is a child window whose screen position the display
+processor tracks by itself. Canvas dimensions are forced even so the SBS tile
+halving is exact across UE's view rects, the atlas copy, and the runtime's
+sample rects.
 
-Instead of creating a second OpenXR session, leverage the one `FOpenXRHMD` already manages:
+## Session lifecycle
 
-1. **Eye positions**: Already available via our `xrLocateViews` hook — accessible through `UDisplayXRFunctionLibrary::GetUserPosition()` even in edit mode
-2. **Stereo rendering in editor**: Enable stereo in the editor viewport via `FSceneViewExtensionBase` or by activating `FOpenXRHMD`'s stereo rendering path
-3. **Frame submission**: `FOpenXRHMD` calls `xrEndFrame` as part of its render loop — if stereo is enabled, the runtime receives frames and handles interlacing
+The XrSession outlives PIE, so every play session **rebinds** it (the
+window binding and texture handle ride `xrCreateSession`). Expect ~1 s of
+pre-weave SBS in the tab at Play while that happens. At Stop the compositor is
+torn down while its bound proxy is still alive, the panel is handed back to 2D
+(`xrRequestDisplayModeDXR`), and compositor creation stays disarmed until the
+next Play so teardown races can't rebind against a dying window.
 
-### Implementation Path (Try in Order)
+## Known limitations
 
-**Step 1 — Verify the session exists in editor:**
-Build the plugin, place in a UE 5.7 project. Check logs for `"DisplayXR: Session created"` and `"DisplayXR: Display X.XXX x X.XXX m"` at editor startup (not PIE).
+- Editor backbuffers on 10-bit/HDR outputs get a one-shot WARN: the weave
+  geometry is exact, colors may be slightly off until a PQ-aware encode pass
+  exists.
+- The proxy window's rect must stay in physical pixels; mixed-DPI multi-monitor
+  layouts are untested.
 
-**Step 2 — Check if stereo rendering can be activated in editor:**
-`FOpenXRHMD` may already support editor stereo if `IsStereoEnabled()` returns true. Check if `FOpenXRHMD` renders stereo in the editor viewport; if not, HMD plugin priority may need to be raised.
+## History
 
-**Step 3 — If stereo isn't automatic, use FSceneViewExtensionBase:**
-Create an editor view extension that:
-- Queries eye positions from the extension plugin
-- Applies Kooima projection to the editor viewport camera
-- This gives a center-eye 3D-aware view in the editor
-
-**Step 4 — For full stereo preview, use SceneCapture:**
-If full left/right eye preview is needed (beyond center-eye):
-- Create two `USceneCaptureComponent2D` with Kooima-derived transforms
-- Capture to render targets each frame
-- Submit through the existing session's swapchain
-- Display composited output via shared texture in a Slate window
-
-### Fallback: Standalone Session
-
-If Step 1 reveals that `FOpenXRHMD` does NOT create the session at startup (e.g., it defers until stereo is enabled, or it doesn't tick in editor mode), then fall back to the Unity approach:
-
-- Create a standalone `XrInstance` + `XrSession` in `FDisplayXRPreviewSession`
-- Link the OpenXR loader directly (separate from Unreal's)
-- Manage the full frame loop independently
-
-This is the approach implemented in Unity — see "Reference: Unity Implementation" below.
-
-## Preview Window UI
-
-Menu: **Window > DisplayXR Preview**
-
-Controls:
-- **Start/Stop button** — Enables/disables editor stereo preview
-- **Camera dropdown** — Lists all `UDisplayXRCamera` and `UDisplayXRDisplay` rigs in the scene
-- **Rendering mode selector** — Enumerates modes from runtime via `xrEnumerateDisplayRenderingModesDXR`
-- **Status footer** — Resolution, display dimensions, tracking status, current mode
-- **Shared texture display** — Shows composited 3D output from the runtime
-
-Hotkeys:
-- **V** — Cycle rendering mode
-- **0–8** — Select rendering mode directly
-- **Tab** — Cycle active rig (via `FDisplayXRRigManager`)
-
-## During PIE (Play Mode)
-
-During PIE, Unreal's `FOpenXRHMD` renders stereo normally:
-- Our `xrLocateViews` hook applies Kooima projection
-- The runtime receives stereo frames via `xrEndFrame`
-- The display processor interlaces and outputs to the 3D display
-- The Game Viewport shows the normal camera view
-
-No special overlay or camera suppression needed — the OpenXR pipeline handles everything.
-
-## Current Implementation Status
-
-### Implemented
-- `SDisplayXRPreviewWindow` — Slate UI with Start/Stop, status display
-- `FDisplayXREditorModule` — Menu registration under Window menu
-- `FDisplayXRPreviewSession` — Class structure (currently stubbed for standalone approach)
-
-### Needs Rework
-- `FDisplayXRPreviewSession` — May be simplified or replaced depending on whether Unreal's session works in editor (see "Implementation Path" above)
-- Shared texture display in preview window
-
-### To Be Determined After First Build
-- Whether `FOpenXRHMD` ticks and calls `xrLocateViews` in the editor
-- Whether editor stereo rendering can be activated
-- Whether a `FSceneViewExtensionBase` is sufficient for center-eye preview
-
-## Reference: Unity Implementation
-
-The Unity plugin **requires** a standalone session because Unity's XR subsystem only initializes during Play Mode.
-
-Key files in `dfattal/unity-3d-display`:
-- `Editor/DisplayXRPreviewSession.cs` (~500 lines) — Creates independent `XrInstance`/`XrSession` via `displayxr_standalone_*()` P/Invoke calls
-- `Editor/DisplayXRPreviewWindow.cs` (~400 lines) — Editor window with camera dropdown, mode selector, auto-refresh
-- `Runtime/DisplayXRGameViewOverlay.cs` (~340 lines) — Renders shared texture in Game View during Play Mode, suppresses camera rendering
-- `native~/displayxr_standalone.h/.cpp` — Native C/C++ standalone session API
-
-Unity's approach during Play Mode:
-1. Disables Unity's XR loader (`PlayerSettings.SetPlatformXREnabled = false` via SessionState)
-2. The standalone preview session continues rendering via SceneCapture
-3. `DisplayXRGameViewOverlay` displays the shared texture in Game View
-4. On exiting Play Mode, re-enables Unity's XR loader
-
-**This complexity is unnecessary in Unreal** because `FOpenXRHMD` manages the session across the entire editor lifecycle, not just during gameplay.
+The shipped preview was previously `FDisplayXRPreviewSession` — a second,
+standalone OpenXR session rendering via `USceneCapture2D` into its own
+top-level window — plus an interim raw-Win32 "mirror window" experiment. Both
+were deleted when this design landed; the archaeology (including the
+Slate stereo-composite trap that shaped step 2) lives in
+[`EditorPreviewNative.md`](./EditorPreviewNative.md) and
+[issue #38](https://github.com/DisplayXR/displayxr-unreal/issues/38).

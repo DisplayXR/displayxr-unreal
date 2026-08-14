@@ -396,7 +396,6 @@ FTextureRHIRef FDisplayXRCoreModule::GetWovenTextureRHI_GameThread()
 	return nullptr;
 }
 
-bool FDisplayXRPlatform::bSuppressCompositor = false;
 void* FDisplayXRPlatform::OverrideCompositorHWND = nullptr;
 void* FDisplayXRPlatform::SavedShellForegroundHWND = nullptr;
 bool FDisplayXRPlatform::bRequestSharedTextureBinding = false;
