@@ -390,7 +390,14 @@ FTextureRHIRef FDisplayXRCoreModule::GetWovenTextureRHI_GameThread()
 	{
 		if (FDisplayXRCompositor* Compositor = Device->GetCompositor())
 		{
-			return Compositor->GetWovenTextureRHI();
+			// Withhold the texture until the display processor has actually
+			// woven a few frames into it: blitting a freshly created (black)
+			// surface over the tab is the "editor goes black on restart"
+			// symptom. Until then the tab keeps showing UE's own SBS render.
+			if (Compositor->GetZonesFramesSubmitted() >= 3)
+			{
+				return Compositor->GetWovenTextureRHI();
+			}
 		}
 	}
 	return nullptr;

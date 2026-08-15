@@ -403,6 +403,13 @@ void FDisplayXRCompositor::CompositorLoop()
 		EI.layers = Layers;
 		r = xrEndFrameFunc(XrSess, &EI);
 
+		// A zones frame that reached the runtime = the display processor wove
+		// into the shared texture. The presenter's publish gate counts these.
+		if (XR_SUCCEEDED(r) && PL.next == &Zone)
+		{
+			ZonesFramesSubmitted.IncrementExchange();
+		}
+
 		if (BeginFrameReadyEvent) BeginFrameReadyEvent->Reset();
 
 		static bool bFirst = true;

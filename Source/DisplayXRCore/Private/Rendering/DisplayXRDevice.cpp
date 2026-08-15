@@ -738,6 +738,14 @@ void FDisplayXRDevice::ShutdownCompositorForSessionEnd()
 
 	Compositor.Reset();
 
+	// The XrSession outlives the play session, still bound to a window that is
+	// about to be destroyed. Park view location until the next rebind so the
+	// next Play doesn't render camera jumps off the zombie binding.
+	if (Session)
+	{
+		Session->ParkForRebind();
+	}
+
 	// The wrapped swapchain textures we handed UE are gone; make the next
 	// compositor's readiness re-trigger AllocateRenderTargetTextures.
 	bSwapchainRTReallocPending = true;

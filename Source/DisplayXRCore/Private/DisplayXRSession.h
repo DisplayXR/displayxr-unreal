@@ -137,6 +137,18 @@ public:
 	 *  actually created with. */
 	bool IsTextureModeBound() const { return bTextureModeBound; }
 
+	/**
+	 * Park view location until the next CreateSessionWithGraphics.
+	 *
+	 * Called when an editor play session ends: the XrSession outlives PIE
+	 * still bound to a window that no longer exists, and locating views
+	 * against that zombie binding returns wild poses/fovs — the next Play then
+	 * renders visible camera jumps until the rebind lands. Parked, LocateViews
+	 * early-outs and the device keeps consuming the LAST GOOD view data:
+	 * stale but stable. Unparked automatically by CreateSessionWithGraphics.
+	 */
+	void ParkForRebind() { bParkedForRebind.Store(true); }
+
 	// --- Accessors for compositor integration ---
 
 	XrSession GetXrSession() const { return Session; }
@@ -230,6 +242,10 @@ private:
 	uint32 MaxAtlasH = 0;
 	// Whether the live session was created with a shared-texture binding.
 	bool bTextureModeBound = false;
+	// Between editor play sessions: LocateViews early-outs so nothing consumes
+	// the zombie window binding. Game thread writes, game thread reads (Tick);
+	// atomic for cheap cross-thread visibility all the same.
+	TAtomic<bool> bParkedForRebind{false};
 
 	// Function pointers (resolved via xrGetInstanceProcAddr)
 	PFN_xrGetInstanceProcAddr xrGetInstanceProcAddrFunc = nullptr;
