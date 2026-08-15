@@ -547,76 +547,26 @@ void FDisplayXRCompositor::Shutdown()
 bool FDisplayXRCompositor::CreateWovenSharedTexture()
 {
 #if PLATFORM_WINDOWS
-	ID3D12Device* Dev = static_cast<ID3D12Device*>(UEDevice);
-	if (!Dev || !Session) return false;
+	if (!Session) return false;
 
 	// Worst-case atlas across all rendering modes (ADR-010 / INV-4.2 / INV-5.2):
 	// allocated once, never resized. A window resize changes the zone rect the
-	// runtime weaves into this surface, never the surface itself.
+	// runtime weaves into this surface, never the surface itself. The surface
+	// itself is PROCESS-lifetime (module-owned cache) — creating it costs
+	// ~1.5 s and the worst-case size never changes, so play-session restarts
+	// reuse it and only rebind the same handle.
 	uint32 W = 0, H = 0;
 	Session->GetWorstCaseAtlasSize(W, H);
 	if (!W || !H) return false;
 
-	D3D12_RESOURCE_DESC RD = {};
-	RD.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
-	RD.Width = W;
-	RD.Height = H;
-	RD.DepthOrArraySize = 1;
-	RD.MipLevels = 1;
-	RD.SampleDesc.Count = 1;
-	// BGRA to match the reference apps; the runtime builds its RTV from our
-	// GetDesc().Format, so the format is ours to choose. The presenter's blit
-	// must stay a format-converting shader draw — a CopyTextureRegion cannot
-	// cross the RGBA/BGRA copy groups.
-	RD.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
-	RD.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
-	// ALLOW_SIMULTANEOUS_ACCESS: the runtime's queue weaves into this while
-	// UE's graphics queue samples it. v1 accepts a potential single-frame tear
-	// (Unity parity — no fence on this path either).
-	RD.Flags = D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET | D3D12_RESOURCE_FLAG_ALLOW_SIMULTANEOUS_ACCESS;
-
-	D3D12_HEAP_PROPERTIES HP = {};
-	HP.Type = D3D12_HEAP_TYPE_DEFAULT;
-
-	ID3D12Resource* Res = nullptr;
-	HRESULT hr = Dev->CreateCommittedResource(&HP, D3D12_HEAP_FLAG_SHARED, &RD,
-		D3D12_RESOURCE_STATE_COMMON, nullptr, IID_PPV_ARGS(&Res));
-	if (FAILED(hr) || !Res)
+	if (!FDisplayXRCoreModule::GetOrCreateWovenSurface(W, H, WovenSharedHandle, WovenTextureRHI))
 	{
-		UE_LOG(LogDisplayXRCompositor, Error, TEXT("Compositor: woven texture CreateCommittedResource failed (0x%08x)"), (uint32)hr);
 		return false;
 	}
-	Res->SetName(L"DisplayXR.WovenPreview");
-
-	HANDLE SharedHandle = nullptr;
-	hr = Dev->CreateSharedHandle(Res, nullptr, GENERIC_ALL, nullptr, &SharedHandle);
-	if (FAILED(hr) || !SharedHandle)
-	{
-		UE_LOG(LogDisplayXRCompositor, Error, TEXT("Compositor: woven texture CreateSharedHandle failed (0x%08x)"), (uint32)hr);
-		Res->Release();
-		return false;
-	}
-
-	WovenResource = Res;
-	WovenSharedHandle = SharedHandle;
-
-	// Wrap for UE sampling (render thread requirement, same as the swapchain wrap).
-	ID3D12DynamicRHI* DynamicRHI = GetID3D12DynamicRHI();
-	FTextureRHIRef* OutRef = &WovenTextureRHI;
-	ENQUEUE_RENDER_COMMAND(WrapDisplayXRWovenTexture)(
-		[OutRef, Res, DynamicRHI](FRHICommandListImmediate& RHICmdList)
-		{
-			*OutRef = DynamicRHI->RHICreateTexture2DFromResource(
-				PF_B8G8R8A8, ETextureCreateFlags::ShaderResource,
-				FClearValueBinding::Black, Res);
-		});
-	FlushRenderingCommands();
-
 	UE_LOG(LogDisplayXRCompositor, Log,
-		TEXT("Compositor: woven shared texture %ux%u BGRA (worst-case, allocate-once) handle=%p wrapped=%d"),
-		W, H, WovenSharedHandle, WovenTextureRHI.IsValid() ? 1 : 0);
-	GLog->Flush();
-	return WovenTextureRHI.IsValid();
+		TEXT("Compositor: woven surface %ux%u bound (handle=%p, module-cached)"),
+		W, H, WovenSharedHandle);
+	return true;
 #else
 	return false;
 #endif
@@ -624,11 +574,11 @@ bool FDisplayXRCompositor::CreateWovenSharedTexture()
 
 void FDisplayXRCompositor::DestroyWovenSharedTexture()
 {
-#if PLATFORM_WINDOWS
+	// References only — the surface itself is module-owned and outlives the
+	// compositor (reused by the next play session's rebind).
 	WovenTextureRHI.SafeRelease();
-	if (WovenSharedHandle) { ::CloseHandle((HANDLE)WovenSharedHandle); WovenSharedHandle = nullptr; }
-	if (WovenResource) { static_cast<ID3D12Resource*>(WovenResource)->Release(); WovenResource = nullptr; }
-#endif
+	WovenSharedHandle = nullptr;
+	WovenResource = nullptr;
 	bSharedTextureMode = false;
 }
 

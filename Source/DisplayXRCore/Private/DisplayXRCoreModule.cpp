@@ -18,6 +18,14 @@
 #include "Engine/World.h"
 #include "Engine/LocalPlayer.h"
 #include "Engine/Engine.h"
+#include "RenderingThread.h"
+
+#if PLATFORM_WINDOWS
+#include "Windows/AllowWindowsPlatformTypes.h"
+#include <d3d12.h>
+#include "Windows/HideWindowsPlatformTypes.h"
+#include "ID3D12DynamicRHI.h"
+#endif
 
 #if PLATFORM_WINDOWS
 #include "Windows/AllowWindowsPlatformTypes.h"
@@ -288,6 +296,7 @@ void FDisplayXRCoreModule::ShutdownModule()
 #endif
 
 	AtlasCaptureCmd.Reset();
+	ReleaseWovenSurface();
 
 	if (PostEngineInitHandle.IsValid())
 	{
@@ -381,6 +390,121 @@ void FDisplayXRCoreModule::NotifyPlaySessionEnded()
 	{
 		Device->ShutdownCompositorForSessionEnd();
 	}
+}
+
+bool FDisplayXRCoreModule::GetOrCreateWovenSurface(uint32 W, uint32 H,
+	void*& OutSharedHandle, FTextureRHIRef& OutTextureRHI)
+{
+#if PLATFORM_WINDOWS
+	check(IsInGameThread());
+	if (!ModuleInstance || !W || !H)
+	{
+		return false;
+	}
+	FDisplayXRCoreModule& M = *ModuleInstance;
+
+	// Cache hit: same worst-case size (the normal case — it never changes for
+	// a given display). A shared committed resource + NT handle + RHI wrap
+	// costs ~1.5 s; paying it once per editor run instead of once per Play is
+	// most of the restart smoothing.
+	if (M.WovenTextureRHI.IsValid() && M.WovenSharedHandle && M.WovenW == W && M.WovenH == H)
+	{
+		OutSharedHandle = M.WovenSharedHandle;
+		OutTextureRHI = M.WovenTextureRHI;
+		return true;
+	}
+	M.ReleaseWovenSurface();
+
+	ID3D12Device* Dev = GDynamicRHI ? static_cast<ID3D12Device*>(GDynamicRHI->RHIGetNativeDevice()) : nullptr;
+	if (!Dev)
+	{
+		return false;
+	}
+
+	D3D12_RESOURCE_DESC RD = {};
+	RD.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+	RD.Width = W;
+	RD.Height = H;
+	RD.DepthOrArraySize = 1;
+	RD.MipLevels = 1;
+	RD.SampleDesc.Count = 1;
+	// BGRA to match the reference apps; the runtime builds its RTV from our
+	// GetDesc().Format. The presenter's blit must stay a format-converting
+	// shader draw — a copy cannot cross the RGBA/BGRA copy groups.
+	RD.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
+	RD.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
+	// ALLOW_SIMULTANEOUS_ACCESS: the runtime's queue weaves into this while
+	// UE's graphics queue samples it (accepted single-frame tear, Unity parity).
+	RD.Flags = D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET | D3D12_RESOURCE_FLAG_ALLOW_SIMULTANEOUS_ACCESS;
+
+	D3D12_HEAP_PROPERTIES HP = {};
+	HP.Type = D3D12_HEAP_TYPE_DEFAULT;
+
+	ID3D12Resource* Res = nullptr;
+	HRESULT hr = Dev->CreateCommittedResource(&HP, D3D12_HEAP_FLAG_SHARED, &RD,
+		D3D12_RESOURCE_STATE_COMMON, nullptr, IID_PPV_ARGS(&Res));
+	if (FAILED(hr) || !Res)
+	{
+		UE_LOG(LogDisplayXRCore, Error, TEXT("DisplayXR: woven surface CreateCommittedResource failed (0x%08x)"), (uint32)hr);
+		return false;
+	}
+	Res->SetName(L"DisplayXR.WovenPreview");
+
+	HANDLE SharedHandle = nullptr;
+	hr = Dev->CreateSharedHandle(Res, nullptr, GENERIC_ALL, nullptr, &SharedHandle);
+	if (FAILED(hr) || !SharedHandle)
+	{
+		UE_LOG(LogDisplayXRCore, Error, TEXT("DisplayXR: woven surface CreateSharedHandle failed (0x%08x)"), (uint32)hr);
+		Res->Release();
+		return false;
+	}
+
+	ID3D12DynamicRHI* DynamicRHI = GetID3D12DynamicRHI();
+	FTextureRHIRef* OutRef = &M.WovenTextureRHI;
+	ENQUEUE_RENDER_COMMAND(WrapDisplayXRWovenSurface)(
+		[OutRef, Res, DynamicRHI](FRHICommandListImmediate&)
+		{
+			*OutRef = DynamicRHI->RHICreateTexture2DFromResource(
+				PF_B8G8R8A8, ETextureCreateFlags::ShaderResource,
+				FClearValueBinding::Black, Res);
+		});
+	FlushRenderingCommands();
+
+	if (!M.WovenTextureRHI.IsValid())
+	{
+		::CloseHandle(SharedHandle);
+		Res->Release();
+		return false;
+	}
+
+	M.WovenResource = Res;
+	M.WovenSharedHandle = SharedHandle;
+	M.WovenW = W;
+	M.WovenH = H;
+	UE_LOG(LogDisplayXRCore, Log,
+		TEXT("DisplayXR: woven surface %ux%u BGRA created (process-lifetime, reused across play sessions) handle=%p"),
+		W, H, SharedHandle);
+
+	OutSharedHandle = M.WovenSharedHandle;
+	OutTextureRHI = M.WovenTextureRHI;
+	return true;
+#else
+	return false;
+#endif
+}
+
+void FDisplayXRCoreModule::ReleaseWovenSurface()
+{
+#if PLATFORM_WINDOWS
+	if (WovenTextureRHI.IsValid())
+	{
+		FlushRenderingCommands();
+		WovenTextureRHI.SafeRelease();
+	}
+	if (WovenSharedHandle) { ::CloseHandle((HANDLE)WovenSharedHandle); WovenSharedHandle = nullptr; }
+	if (WovenResource) { static_cast<ID3D12Resource*>(WovenResource)->Release(); WovenResource = nullptr; }
+	WovenW = WovenH = 0;
+#endif
 }
 
 FTextureRHIRef FDisplayXRCoreModule::GetWovenTextureRHI_GameThread()

@@ -62,7 +62,25 @@ public:
 	 */
 	DISPLAYXRCORE_API static FTextureRHIRef GetWovenTextureRHI_GameThread();
 
+	/**
+	 * Process-lifetime woven surface for the texture-mode preview: created on
+	 * first use at the worst-case size (which never changes for a display) and
+	 * REUSED across play sessions — creating a shared committed resource +
+	 * RHI wrap costs ~1.5 s and was paid on every editor Play. Returns false
+	 * only if D3D12 creation fails. Freed at module shutdown.
+	 */
+	DISPLAYXRCORE_API static bool GetOrCreateWovenSurface(uint32 W, uint32 H,
+		void*& OutSharedHandle, FTextureRHIRef& OutTextureRHI);
+
 private:
+	void ReleaseWovenSurface();
+
+	// Woven-surface cache (see GetOrCreateWovenSurface).
+	void* WovenResource = nullptr;      // ID3D12Resource* (owned)
+	void* WovenSharedHandle = nullptr;  // NT HANDLE (owned)
+	FTextureRHIRef WovenTextureRHI;
+	uint32 WovenW = 0, WovenH = 0;
+
 	void RegisterDevInputProcessor();
 
 	TSharedPtr<FDisplayXRSession> Session;

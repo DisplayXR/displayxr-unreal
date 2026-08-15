@@ -10,6 +10,8 @@
 #include "Engine/GameInstance.h"
 #include "Engine/GameViewportClient.h"
 #include "Widgets/SViewport.h"
+#include "Widgets/SWindow.h"
+#include "Framework/Application/SlateApplication.h"
 
 #if PLATFORM_WINDOWS
 #include "Windows/AllowWindowsPlatformTypes.h"
@@ -125,6 +127,18 @@ void FDisplayXREditorModule::OnPostPIEStarted(bool bIsSimulating)
 
 		PIEPreview = MakeShared<FDisplayXRPIEPreview>();
 		PreviewStartAttempts = 0;
+
+		// On a RESTART the borrowed level-viewport widget usually still has
+		// valid geometry from the previous session — start synchronously and
+		// skip the deferred tick entirely (shaves seconds off Play #2+; the
+		// first Play of a session falls through to the ticker as before).
+		if (PIEPreview->TryStart(ViewportWidget.ToSharedRef()))
+		{
+			FDisplayXRCoreModule::NotifyPlaySessionStarting();
+			UE_LOG(LogDisplayXREditor, Log, TEXT("DisplayXR: [NativePIE] texture-mode in-tab preview started synchronously"));
+		}
+		else
+		{
 		TWeakPtr<SViewport> WeakViewport = ViewportWidget;
 		PreviewStartTicker = FTSTicker::GetCoreTicker().AddTicker(FTickerDelegate::CreateLambda(
 			[this, WeakViewport](float) -> bool
@@ -141,7 +155,17 @@ void FDisplayXREditorModule::OnPostPIEStarted(bool bIsSimulating)
 					PreviewStartTicker.Reset();
 					return false;
 				}
-				if (++PreviewStartAttempts > 600)
+				if (++PreviewStartAttempts % 60 == 0)
+				{
+					// Diagnose slow deferred starts: what is the widget missing?
+					const FVector2D Size = VP->GetCachedGeometry().GetAbsoluteSize();
+					const TSharedPtr<SWindow> Win = FSlateApplication::Get().FindWidgetWindow(VP.ToSharedRef());
+					UE_LOG(LogDisplayXREditor, Log,
+						TEXT("DisplayXR: [NativePIE] preview start still deferred (attempt %d): geometry=%.0fx%.0f window=%s"),
+						PreviewStartAttempts, Size.X, Size.Y,
+						Win.IsValid() ? *Win->GetTitle().ToString() : TEXT("<none>"));
+				}
+				if (PreviewStartAttempts > 600)
 				{
 					UE_LOG(LogDisplayXREditor, Warning,
 						TEXT("DisplayXR: [NativePIE] viewport never got geometry/window — no preview this session"));
@@ -160,6 +184,7 @@ void FDisplayXREditorModule::OnPostPIEStarted(bool bIsSimulating)
 				return true;
 			}));
 		UE_LOG(LogDisplayXREditor, Log, TEXT("DisplayXR: [NativePIE] texture-mode in-tab preview arming (deferred start)"));
+		}
 	}
 
 	// Flip the flag UEngine::IsStereoscopic3D checks via FViewport::IsStereoRenderingAllowed().
