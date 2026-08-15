@@ -306,8 +306,6 @@ bool FDisplayXRDevice::GetHMDDistortionEnabled(EShadingPath ShadingPath) const
 
 bool FDisplayXRDevice::IsStereoEnabled() const
 {
-	static bool bLogged = false;
-	if (!bLogged) { bLogged = true; UE_LOG(LogDisplayXRDevice, Log, TEXT("[%s] IsStereoEnabled first-call -> true"), WorldCtxTag()); GLog->Flush(); }
 	return true;
 }
 
@@ -440,13 +438,6 @@ bool FDisplayXRDevice::ShouldUseSeparateRenderTarget() const
 	// swapchain — one extra copy, editor-only. Game path keeps zero-copy.
 	const bool bSeparate = !FDisplayXRPlatform::bRequestSharedTextureBinding;
 
-	static int32 SUSCount = 0;
-	++SUSCount;
-	if (SUSCount <= 3 || SUSCount % 300 == 0)
-	{
-		UE_LOG(LogDisplayXRDevice, Log, TEXT("[%s] ShouldUseSeparateRenderTarget #%d -> %d"), WorldCtxTag(), SUSCount, bSeparate ? 1 : 0);
-		GLog->Flush();
-	}
 	return bSeparate;
 }
 
@@ -491,10 +482,6 @@ bool FDisplayXRDevice::AllocateRenderTargetTextures(uint32 SizeX, uint32 SizeY, 
 	TArray<FTextureRHIRef>& OutTargetableTextures,
 	TArray<FTextureRHIRef>& OutShaderResourceTextures, uint32 NumSamples)
 {
-	static int32 ARTCount = 0;
-	++ARTCount;
-	const bool bShouldLog = (ARTCount <= 5);
-
 	// Editor in-tab texture mode: refuse (see AllocateRenderTargetTexture).
 	if (FDisplayXRPlatform::bRequestSharedTextureBinding)
 	{
@@ -503,15 +490,6 @@ bool FDisplayXRDevice::AllocateRenderTargetTextures(uint32 SizeX, uint32 SizeY, 
 
 	if (!Compositor.IsValid() || !Compositor->IsReady())
 	{
-		if (bShouldLog)
-		{
-			UE_LOG(LogDisplayXRDevice, Log, TEXT("[%s] AllocateRenderTargetTextures #%d early-return: compositor=%s ready=%d (%ux%u)"),
-				WorldCtxTag(), ARTCount,
-				Compositor.IsValid() ? TEXT("valid") : TEXT("null"),
-				(Compositor.IsValid() && Compositor->IsReady()) ? 1 : 0,
-				SizeX, SizeY);
-			GLog->Flush();
-		}
 		// Fall back to UE's default / singular allocator until compositor is ready.
 		return false;
 	}
@@ -519,21 +497,14 @@ bool FDisplayXRDevice::AllocateRenderTargetTextures(uint32 SizeX, uint32 SizeY, 
 	TArray<FTextureRHIRef> Wrapped;
 	if (!Compositor->GetSwapchainImagesRHI(Wrapped) || Wrapped.Num() == 0)
 	{
-		if (bShouldLog)
-		{
-			UE_LOG(LogDisplayXRDevice, Log, TEXT("[%s] AllocateRenderTargetTextures #%d early-return: swapchain images empty"),
-				WorldCtxTag(), ARTCount);
-			GLog->Flush();
-		}
 		return false;
 	}
 
 	OutTargetableTextures = Wrapped;
 	OutShaderResourceTextures = Wrapped;
 
-	UE_LOG(LogDisplayXRDevice, Log, TEXT("[%s] AllocateRenderTargetTextures #%d -> %d swapchain images (%ux%u)"),
-		WorldCtxTag(), ARTCount, Wrapped.Num(), SizeX, SizeY);
-	GLog->Flush();
+	UE_LOG(LogDisplayXRDevice, Log, TEXT("[%s] AllocateRenderTargetTextures -> %d swapchain images (%ux%u)"),
+		WorldCtxTag(), Wrapped.Num(), SizeX, SizeY);
 	return true;
 }
 
@@ -561,9 +532,6 @@ void FDisplayXRDevice::CalculateRenderTargetSize(const FViewport& Viewport, uint
 		return;
 	}
 
-	const uint32 InX = InOutSizeX;
-	const uint32 InY = InOutSizeY;
-
 	// When compositor is ready we render directly into swapchain images, which
 	// are at full display resolution (e.g. 3840x2160). Tiles are sub-rects.
 	if (Compositor.IsValid() && Compositor->IsReady())
@@ -584,30 +552,10 @@ void FDisplayXRDevice::CalculateRenderTargetSize(const FViewport& Viewport, uint
 		if (InOutSizeY == 0) InOutSizeY = 1080;
 	}
 
-	static bool bLogged = false;
-	static uint32 LastX = 0, LastY = 0;
-	if (!bLogged || InOutSizeX != LastX || InOutSizeY != LastY)
-	{
-		bLogged = true;
-		LastX = InOutSizeX;
-		LastY = InOutSizeY;
-		UE_LOG(LogDisplayXRDevice, Log, TEXT("[%s] CalculateRenderTargetSize: in=%ux%u -> out=%ux%u (compositorReady=%d)"),
-			WorldCtxTag(), InX, InY, InOutSizeX, InOutSizeY,
-			(Compositor.IsValid() && Compositor->IsReady()) ? 1 : 0);
-		GLog->Flush();
-	}
 }
 
 bool FDisplayXRDevice::NeedReAllocateViewportRenderTarget(const FViewport& Viewport)
 {
-	static bool bLoggedFirst = false;
-	if (!bLoggedFirst)
-	{
-		bLoggedFirst = true;
-		UE_LOG(LogDisplayXRDevice, Log, TEXT("[%s] NeedReAllocateViewportRenderTarget first-call"), WorldCtxTag());
-		GLog->Flush();
-	}
-
 	// Editor in-tab texture mode: no separate RT, so no reallocation ever.
 	if (FDisplayXRPlatform::bRequestSharedTextureBinding)
 	{
@@ -694,20 +642,6 @@ static TSharedPtr<SWidget> GetTopMostWidget(TSharedPtr<SWidget> Widget)
 
 void FDisplayXRDevice::UpdateViewport(bool bUseSeparateRenderTarget, const FViewport& Viewport, SViewport* ViewportWidget)
 {
-	static bool bLoggedFirst = false;
-	static bool bLastSep = false;
-	if (!bLoggedFirst || bLastSep != bUseSeparateRenderTarget)
-	{
-		const FIntPoint VS = Viewport.GetSizeXY();
-		UE_LOG(LogDisplayXRDevice, Log, TEXT("[%s] UpdateViewport %s: bSep=%d viewportSize=%dx%d widget=%p"),
-			WorldCtxTag(),
-			bLoggedFirst ? TEXT("change") : TEXT("first-call"),
-			bUseSeparateRenderTarget ? 1 : 0, VS.X, VS.Y, ViewportWidget);
-		GLog->Flush();
-		bLoggedFirst = true;
-		bLastSep = bUseSeparateRenderTarget;
-	}
-
 	FXRRenderTargetManager::UpdateViewport(bUseSeparateRenderTarget, Viewport, ViewportWidget);
 
 	// Resolve the game window HWND from the viewport widget chain. Cached on the
@@ -804,6 +738,14 @@ void FDisplayXRDevice::ShutdownCompositorForSessionEnd()
 
 	Compositor.Reset();
 
+	// The XrSession outlives the play session, still bound to a window that is
+	// about to be destroyed. Park view location until the next rebind so the
+	// next Play doesn't render camera jumps off the zombie binding.
+	if (Session)
+	{
+		Session->ParkForRebind();
+	}
+
 	// The wrapped swapchain textures we handed UE are gone; make the next
 	// compositor's readiness re-trigger AllocateRenderTargetTextures.
 	bSwapchainRTReallocPending = true;
@@ -827,15 +769,6 @@ void FDisplayXRDevice::RearmCompositorCreation()
 void FDisplayXRDevice::RenderTexture_RenderThread(FRDGBuilder& GraphBuilder, FRDGTextureRef BackBuffer,
 	FRDGTextureRef SrcTexture, FVector2f WindowSize) const
 {
-	static int32 RTCount = 0;
-	RTCount++;
-	if (RTCount <= 3)
-	{
-		UE_LOG(LogDisplayXRDevice, Log, TEXT("[%s] RenderTexture_RenderThread #%d: BackBuffer=%p SrcTexture=%p"),
-			WorldCtxTag(), RTCount, (void*)BackBuffer, (void*)SrcTexture);
-		GLog->Flush();
-	}
-
 	// Zero-copy path: SrcTexture IS the OpenXR swapchain image UE rendered into.
 	// The OpenXR compositor owns display output on the light-field panel.
 	//
@@ -853,9 +786,6 @@ void FDisplayXRDevice::RenderTexture_RenderThread(FRDGBuilder& GraphBuilder, FRD
 
 void FDisplayXRDevice::PostRenderViewFamily_RenderThread(FRDGBuilder& GraphBuilder, FSceneViewFamily& InViewFamily)
 {
-	static bool bLogged = false;
-	if (!bLogged) { bLogged = true; UE_LOG(LogDisplayXRDevice, Log, TEXT("[%s] PostRenderViewFamily_RenderThread first-call"), WorldCtxTag()); GLog->Flush(); }
-
 	if (!Compositor.IsValid() || !Compositor->IsReady()) return;
 
 	FDisplayXRCompositor* Comp = Compositor.Get();
@@ -963,37 +893,16 @@ void FDisplayXRDevice::SetupViewFamily(FSceneViewFamily& InViewFamily)
 		return;
 	}
 
-	static int32 SVFCount = 0;
-	SVFCount++;
-
 	Session->Tick();
 
 	// Tick compositor for deferred swapchain creation (needs session running)
 	if (Compositor)
 	{
-		if (SVFCount <= 3 || SVFCount % 300 == 0)
-		{
-			UE_LOG(LogDisplayXRDevice, Log, TEXT("[%s] SetupViewFamily #%d — compositor=%p ready=%d sessionRunning=%d"),
-				WorldCtxTag(), SVFCount, Compositor.Get(), Compositor->IsReady() ? 1 : 0, Session->IsSessionRunning() ? 1 : 0);
-			GLog->Flush();
-		}
 		Compositor->Tick();
-	}
-	else if (SVFCount <= 3)
-	{
-		UE_LOG(LogDisplayXRDevice, Log, TEXT("[%s] SetupViewFamily #%d — no compositor yet"), WorldCtxTag(), SVFCount);
-		GLog->Flush();
 	}
 
 	CachedViewConfig = Session->GetViewConfig();
 	ComputeViews();
-
-	if (SVFCount <= 3)
-	{
-		UE_LOG(LogDisplayXRDevice, Log, TEXT("[%s] SetupViewFamily #%d done — viewConfig %dx%d views=%d"),
-			WorldCtxTag(), SVFCount, CachedViewConfig.GetAtlasW(), CachedViewConfig.GetAtlasH(), CachedViewConfig.GetViewCount());
-		GLog->Flush();
-	}
 }
 
 void FDisplayXRDevice::SetupView(FSceneViewFamily& InViewFamily, FSceneView& InView)
@@ -1003,28 +912,6 @@ void FDisplayXRDevice::SetupView(FSceneViewFamily& InViewFamily, FSceneView& InV
 void FDisplayXRDevice::SetupViewPoint(APlayerController* Player, FMinimalViewInfo& InViewInfo)
 {
 	PlayerViewLocation_GameThread = InViewInfo.Location;
-
-	// Phase 3 diagnostic: log which pawn owns the base camera + its pose. In GAME
-	// this is the possessed rig pawn's camera (sitting on the display plane); in
-	// PIE with the native path, if this shows a different pawn or an off-plane
-	// pose, that's why the -619cm stereo offset produces a garbage view.
-	static bool bLogged = false;
-	if (!bLogged)
-	{
-		bLogged = true;
-		AActor* Pawn = Player ? Player->GetPawn() : nullptr;
-		AActor* ViewTarget = Player ? Player->GetViewTarget() : nullptr;
-		UE_LOG(LogDisplayXRDevice, Log,
-			TEXT("[%s] SetupViewPoint first-call: controller=%s pawn=%s viewTarget=%s loc=(%.2f,%.2f,%.2f) rot=(%.2f,%.2f,%.2f) fov=%.2f"),
-			WorldCtxTag(),
-			*GetNameSafe(Player),
-			Pawn ? *Pawn->GetName() : TEXT("<none>"),
-			ViewTarget ? *ViewTarget->GetName() : TEXT("<none>"),
-			InViewInfo.Location.X, InViewInfo.Location.Y, InViewInfo.Location.Z,
-			InViewInfo.Rotation.Pitch, InViewInfo.Rotation.Yaw, InViewInfo.Rotation.Roll,
-			InViewInfo.FOV);
-		GLog->Flush();
-	}
 
 	// Don't modify InViewInfo — let UE handle camera rotation naturally.
 	// The per-view offset is applied in CalculateStereoViewOffset.
@@ -1038,14 +925,10 @@ void FDisplayXRDevice::SetupViewProjectionMatrix(FSceneViewProjectionData& InOut
 
 void FDisplayXRDevice::BeginRenderViewFamily(FSceneViewFamily& InViewFamily)
 {
-	static bool bLogged = false;
-	if (!bLogged) { bLogged = true; UE_LOG(LogDisplayXRDevice, Log, TEXT("[%s] BeginRenderViewFamily first-call"), WorldCtxTag()); GLog->Flush(); }
 }
 
 void FDisplayXRDevice::PreRenderView_RenderThread(FRDGBuilder& GraphBuilder, FSceneView& InView)
 {
-	static bool bLogged = false;
-	if (!bLogged) { bLogged = true; UE_LOG(LogDisplayXRDevice, Log, TEXT("[%s] PreRenderView_RenderThread first-call"), WorldCtxTag()); GLog->Flush(); }
 	// Game-thread CalculateStereoViewOffset + GetStereoProjectionMatrix handle
 	// the per-view setup. No render-thread override needed — doing so would
 	// fight UE's view matrix which already includes the mouse rotation.

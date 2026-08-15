@@ -881,6 +881,14 @@ void FDisplayXRSession::Tick()
 
 void FDisplayXRSession::LocateViews()
 {
+	// Parked between editor play sessions: the session is still bound to a
+	// window that no longer exists, and locating against it returns garbage.
+	// Keep the last-good view data — stale but stable — until the rebind.
+	if (bParkedForRebind.Load())
+	{
+		return;
+	}
+
 	PFN_xrLocateViews xrLocateViewsFunc = nullptr;
 	xrGetInstanceProcAddrFunc(Instance, "xrLocateViews",
 		(PFN_xrVoidFunction*)&xrLocateViewsFunc);
@@ -1377,6 +1385,7 @@ bool FDisplayXRSession::CreateSessionWithGraphics(void* D3DDevice, void* Command
 		return false;
 	}
 	bTextureModeBound = (WindowHandle != nullptr && SharedTextureHandle != nullptr);
+	bParkedForRebind.Store(false);
 
 	// Create reference space
 	PFN_xrCreateReferenceSpace xrCreateReferenceSpaceFunc = nullptr;

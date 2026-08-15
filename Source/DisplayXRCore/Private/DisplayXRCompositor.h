@@ -94,6 +94,12 @@ public:
 	 *  thread via a render command). */
 	FTextureRHIRef GetWovenTextureRHI() const { return WovenTextureRHI; }
 
+	/** Frames submitted with a zone chained — i.e. frames the display
+	 *  processor actually wove into the shared texture. The presenter waits
+	 *  for a few of these before blitting, so a freshly created (black) woven
+	 *  texture never covers the tab during session warmup. */
+	int32 GetZonesFramesSubmitted() const { return ZonesFramesSubmitted.Load(); }
+
 private:
 	bool CreateChildWindow(void* InParentHWND);
 	void DestroyChildWindow();
@@ -165,6 +171,7 @@ private:
 	void* WovenResource = nullptr;      // ID3D12Resource* (owned)
 	void* WovenSharedHandle = nullptr;  // NT HANDLE passed to the runtime (owned)
 	FTextureRHIRef WovenTextureRHI;     // UE wrap for the presenter's blit
+	TAtomic<int32> ZonesFramesSubmitted{0}; // compositor thread writes, game thread reads
 
 	// Compositor thread
 	FRunnableThread* Thread = nullptr;

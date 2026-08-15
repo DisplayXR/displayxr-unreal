@@ -58,10 +58,6 @@ struct FDisplayXRPlatform
 		return S && S->IsActive();
 	}
 
-	/** Set by editor module to suppress game-mode compositor creation during PIE
-	 *  when the standalone preview session handles 3D output instead. */
-	DISPLAYXRCORE_API static bool bSuppressCompositor;
-
 	/** Override HWND for compositor: if non-null, the compositor uses this window
 	 *  instead of the game viewport's HWND. Set by the editor preview module. */
 	DISPLAYXRCORE_API static void* OverrideCompositorHWND;
