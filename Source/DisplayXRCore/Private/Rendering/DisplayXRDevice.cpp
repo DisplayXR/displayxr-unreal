@@ -361,6 +361,7 @@ void FDisplayXRDevice::AdjustViewRect(const int32 ViewIndex, int32& X, int32& Y,
 		Y = (ViewIndex / Cols) * TileH;
 		SizeX = TileW;
 		SizeY = TileH;
+		FDisplayXRPlatform::SetViewTileSize((uint32)TileW, (uint32)TileH); // fov aspect source
 		return;
 	}
 
@@ -379,6 +380,7 @@ void FDisplayXRDevice::AdjustViewRect(const int32 ViewIndex, int32& X, int32& Y,
 	Y = Row * TileH;
 	SizeX = TileW;
 	SizeY = TileH;
+	FDisplayXRPlatform::SetViewTileSize((uint32)TileW, (uint32)TileH); // fov aspect source
 }
 
 FMatrix FDisplayXRDevice::GetStereoProjectionMatrix(const int32 ViewIndex) const

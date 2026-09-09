@@ -952,7 +952,28 @@ void FDisplayXRSession::LocateViews()
 			CameraRig.ipdFactor = T.IpdFactor;
 			CameraRig.parallaxFactor = T.ParallaxFactor;
 			CameraRig.convergenceDiopters = T.InvConvergenceDistance;
-			CameraRig.verticalFov = T.FovOverride > 0.0f ? T.FovOverride : 0.6283185307f; // ~36 deg
+			// FovOverride is UE's horizontal FieldOfView; the rig wants the
+			// vertical angle. Convert with the per-view tile aspect (panel
+			// tile aspect until AdjustViewRect has published one).
+			float VerticalFov = 0.6283185307f; // ~36 deg
+			if (T.FovOverride > 0.0f)
+			{
+				uint32 TileW = 0, TileH = 0;
+				float Aspect = 0.0f;
+				if (FDisplayXRPlatform::GetViewTileSize(TileW, TileH))
+				{
+					Aspect = (float)TileW / (float)TileH;
+				}
+				else
+				{
+					const FDisplayXRViewConfig VC = GetViewConfig();
+					Aspect = VC.GetTileH() > 0 ? (float)VC.GetTileW() / (float)VC.GetTileH() : 0.0f;
+				}
+				VerticalFov = Aspect > 0.0f
+					? 2.0f * FMath::Atan(FMath::Tan(T.FovOverride * 0.5f) / Aspect)
+					: T.FovOverride;
+			}
+			CameraRig.verticalFov = VerticalFov;
 			// 1.0: the runtime returns the eye in metres, which
 			// OpenXRPositionToUE then converts to UE centimetres — the same
 			// metres->cm step the old Kooima path applied to eye_display.

@@ -34,7 +34,8 @@ struct DISPLAYXRCORE_API FDisplayXRTunables
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "DisplayXR", meta = (UIMin = "0.0"))
 	float InvConvergenceDistance = 0.0f;
 
-	/** FOV override in radians (0=compute from display, camera-centric only). */
+	/** Camera horizontal fov in radians (UCameraComponent::FieldOfView); converted to
+	 *  the rig's vertical fov at locate time. 0 = rig default. Camera-centric only. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "DisplayXR")
 	float FovOverride = 0.0f;
 

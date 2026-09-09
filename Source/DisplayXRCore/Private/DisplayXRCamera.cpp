@@ -76,7 +76,7 @@ void UDisplayXRCamera::PushTunables()
 	T.IpdFactor = IpdFactor;
 	T.ParallaxFactor = ParallaxFactor;
 	T.InvConvergenceDistance = InvConvergenceDistance;
-	T.FovOverride = FMath::DegreesToRadians(CachedFOV);
+	T.FovOverride = FMath::DegreesToRadians(CachedFOV); // horizontal; session converts to vertical
 	T.NearZ = Camera->OrthoNearClipPlane > 0.0f ? Camera->OrthoNearClipPlane * 0.01f : 0.1f;
 	T.FarZ = 10000.0f;
 	T.bCameraCentric = true;

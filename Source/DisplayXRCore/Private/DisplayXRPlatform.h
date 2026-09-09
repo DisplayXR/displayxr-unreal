@@ -92,6 +92,24 @@ struct FDisplayXRPlatform
 		return OutW > 0 && OutH > 0;
 	}
 
+	/** Per-view tile size (W << 32 | H, pixels) published by AdjustViewRect; the
+	 *  session uses its aspect to convert the camera's horizontal fov to vertical.
+	 *  0 = not published yet. */
+	DISPLAYXRCORE_API static TAtomic<uint64> ViewTileSizePacked;
+
+	static void SetViewTileSize(uint32 W, uint32 H)
+	{
+		ViewTileSizePacked.Store(((uint64)W << 32) | (uint64)H);
+	}
+
+	static bool GetViewTileSize(uint32& OutW, uint32& OutH)
+	{
+		const uint64 Packed = ViewTileSizePacked.Load();
+		OutW = (uint32)(Packed >> 32);
+		OutH = (uint32)(Packed & 0xffffffffu);
+		return OutW > 0 && OutH > 0;
+	}
+
 	/** The OS foreground window captured at module load (PostConfigInit) — under
 	 *  the shell this is the shell/launcher that spawned us. UE grabs foreground
 	 *  when it shows its game window on launch, which makes the shell stop

@@ -4,6 +4,11 @@ All notable changes to the DisplayXR Unreal plugin are documented here.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Fixed
+- **Camera-centric rig sent the camera's horizontal FOV as `verticalFov`.** `UDisplayXRCamera` forwarded `UCameraComponent::FieldOfView` — which Unreal defines as the *horizontal* angle — straight into the rig's vertical field, so the stereo frustum came out ~1.8x taller than the 2D view on a 2.1:1 viewport. (The Unity sibling is correct as-is: its `Camera.fieldOfView` is vertical.) The session now converts horizontal → vertical through the per-view tile aspect UE actually renders each eye at, published from `AdjustViewRect` (editor and game paths), with the panel-derived tile aspect as the fallback before the first view rect. `FDisplayXRTunables::FovOverride` keeps its name and now documents that it carries the horizontal angle.
+
 ## [0.7.0] - 2026-08-15
 
 ### Added
