@@ -26,7 +26,7 @@ Unreal Engine plugin for rendering on eye-tracked 3D light field displays via th
 The plugin hooks into Unreal's OpenXR pipeline to provide:
 
 - **Eye-tracked stereo rendering** — Kooima asymmetric frustum projection driven by real-time eye positions from the DisplayXR runtime
-- **Two stereo rig modes** — camera-centric (add to an existing pawn camera) or display-centric (place a virtual display in the scene)
+- **Two stereo rig modes** — camera-centric (the camera moves through the scene) or display-centric (the camera is the display plane and the viewer moves around it)
 - **Zero-copy atlas handoff** — UE renders directly into the OpenXR swapchain (see [AtlasHandoff](Docs/DisplayXR/AtlasHandoff.md))
 - **Editor preview** — a standalone OpenXR session in the editor so you can see stereo output without running PIE (see [EditorPreview](Docs/DisplayXR/EditorPreview.md))
 
@@ -50,11 +50,11 @@ One unified session loads the DisplayXR OpenXR runtime directly on every platfor
 
 ### Camera-Centric Mode
 
-Attach a `UDisplayXRCamera` component to your pawn's camera. Set `ConvergenceDistance`, `LookaroundFactor`, and `BaselineFactor` as desired. The rig rotates with the camera.
+Attach a `UDisplayXRCamera` component under your pawn's camera. Set `IpdFactor`, `ParallaxFactor`, and `InvConvergenceDistance` as desired. The rig follows the camera.
 
 ### Display-Centric Mode
 
-Attach a `UDisplayXRDisplay` component to an actor representing a virtual display in the scene. Stereo is computed relative to the display's world transform.
+Attach a `UDisplayXRDisplay` component under the camera. The camera transform is the display plane — the viewer moves around it — so there is no separate display actor to place. With several cameras on one pawn, attach one rig under each camera; only the rig on the camera being rendered from is active.
 
 See [DisplayRigSetup](Docs/DisplayXR/DisplayRigSetup.md) for the full walkthrough.
 

@@ -46,7 +46,7 @@ Simplest camera-centric rig:
 5. Adjust `IpdFactor`, `ParallaxFactor`, `ConvergenceDistance` if you want — defaults work.
 6. Set this pawn as the level's **Default Pawn Class** via Game Mode.
 
-For display-centric rigs (virtual display placed in the scene rather than on the camera), use a **DisplayXR Display** component instead. See [DisplayRigSetup.md](./DisplayRigSetup.md).
+For display-centric rigs (the camera is the display plane and the viewer moves around it), use a **DisplayXR Display** component instead. See [DisplayRigSetup.md](./DisplayRigSetup.md).
 
 ## 4. Press Play
 

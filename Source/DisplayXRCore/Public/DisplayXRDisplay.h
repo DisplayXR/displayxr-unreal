@@ -4,25 +4,26 @@
 #pragma once
 
 #include "CoreMinimal.h"
-#include "Components/ActorComponent.h"
+#include "DisplayXRRigComponent.h"
 #include "DisplayXRDisplay.generated.h"
 
 /**
  * Display-centric stereo rig for DisplayXR.
  *
- * Attach to an actor representing the virtual display surface. The parent
- * transform defines the display position/orientation; the camera is a child.
+ * Attach under the camera it drives (or anywhere on the same actor). The camera
+ * transform IS the display plane and the viewer moves around it — as in the Unity
+ * plugin, where DisplayXRDisplay sits on the Camera. The rig does not place a
+ * display independently of the camera. Only the rig on the camera the local player
+ * renders from is pushed (see FDisplayXRRigManager).
  *
  * Mirrors DisplayXRDisplay from the Unity plugin.
  */
 UCLASS(ClassGroup = "DisplayXR", meta = (BlueprintSpawnableComponent, DisplayName = "DisplayXR Display"))
-class DISPLAYXRCORE_API UDisplayXRDisplay : public UActorComponent
+class DISPLAYXRCORE_API UDisplayXRDisplay : public UDisplayXRRigComponent
 {
 	GENERATED_BODY()
 
 public:
-	UDisplayXRDisplay();
-
 	/** Scales inter-eye distance (0=mono, 1=full stereo). */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "DisplayXR|Display", meta = (UIMin = "0.0", UIMax = "3.0"))
 	float IpdFactor = 1.0f;
@@ -39,15 +40,5 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "DisplayXR|Display", meta = (UIMin = "0.0"))
 	float VirtualDisplayHeight = 0.0f;
 
-	// UActorComponent interface
-	virtual void OnRegister() override;
-	virtual void OnUnregister() override;
-	virtual void TickComponent(float DeltaTime, ELevelTick TickType,
-	                           FActorComponentTickFunction* ThisTickFunction) override;
-
-	/** Find the camera component on the owning actor or its children. */
-	class UCameraComponent* GetCamera() const;
-
-private:
-	void PushTunables();
+	virtual void BuildTunables(FDisplayXRTunables& OutTunables) override;
 };

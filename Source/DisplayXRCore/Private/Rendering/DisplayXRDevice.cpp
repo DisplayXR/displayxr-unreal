@@ -8,6 +8,7 @@
 #include "Widgets/SViewport.h"
 #include "UnrealEngine.h"
 #include "DynamicRHI.h"
+#include "SceneInterface.h"   // FSceneInterface::GetWorld (rig manager push)
 #include "SceneView.h"
 #include "Camera/CameraTypes.h"
 #include "GameFramework/PlayerController.h"
@@ -893,6 +894,13 @@ void FDisplayXRDevice::SetupViewFamily(FSceneViewFamily& InViewFamily)
 	if (!Session)
 	{
 		return;
+	}
+
+	// Single tunables pusher: the rig on the camera the local player renders from
+	// goes to the session before this frame's locate.
+	if (InViewFamily.Scene)
+	{
+		FDisplayXRRigManager::PushActiveRig(InViewFamily.Scene->GetWorld());
 	}
 
 	Session->Tick();

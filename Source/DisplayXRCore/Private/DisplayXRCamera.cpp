@@ -3,7 +3,6 @@
 
 #include "DisplayXRCamera.h"
 #include "DisplayXRPlatform.h"
-#include "DisplayXRRigManager.h"
 #include "Camera/CameraComponent.h"
 #include "Camera/CameraTypes.h"
 #include "Engine/Engine.h"
@@ -63,81 +62,26 @@ static float ComputeVerticalFov(const UCameraComponent* Camera, float FovDeg, co
 	return M11 > 0.0f ? 2.0f * FMath::Atan(1.0f / M11) : 0.0f;
 }
 
-UDisplayXRCamera::UDisplayXRCamera()
-{
-	PrimaryComponentTick.bCanEverTick = true;
-	PrimaryComponentTick.TickGroup = TG_PostUpdateWork;
-}
-
-void UDisplayXRCamera::OnRegister()
-{
-	Super::OnRegister();
-
-	UCameraComponent* Camera = GetCamera();
-	if (Camera)
-	{
-		FDisplayXRRigManager::Register(Camera, this);
-	}
-}
-
-void UDisplayXRCamera::OnUnregister()
+void UDisplayXRCamera::BuildTunables(FDisplayXRTunables& T)
 {
 	UCameraComponent* Camera = GetCamera();
-	if (Camera)
-	{
-		FDisplayXRRigManager::Unregister(Camera);
-	}
-
-	Super::OnUnregister();
-}
-
-void UDisplayXRCamera::TickComponent(float DeltaTime, ELevelTick TickType,
-                                      FActorComponentTickFunction* ThisTickFunction)
-{
-	Super::TickComponent(DeltaTime, TickType, ThisTickFunction);
-	PushTunables();
-}
-
-UCameraComponent* UDisplayXRCamera::GetCamera() const
-{
-	if (AActor* Owner = GetOwner())
-	{
-		return Owner->FindComponentByClass<UCameraComponent>();
-	}
-	return nullptr;
-}
-
-void UDisplayXRCamera::PushTunables()
-{
-	if (!FDisplayXRPlatform::IsAvailable())
+	if (!Camera)
 	{
 		return;
 	}
 
-	// Only push if our owning pawn is currently possessed by a player
-	UCameraComponent* Camera = GetCamera();
-	if (!Camera) return;
-	APawn* OwnerPawn = Cast<APawn>(GetOwner());
-	if (!OwnerPawn || !OwnerPawn->IsLocallyControlled()) return;
-
-	// Cache FOV on first tick to avoid XR feedback loop
+	// Cache FOV on first use to avoid XR feedback loop
 	if (!bFOVCached)
 	{
 		CachedFOV = Camera->FieldOfView;
 		bFOVCached = true;
 	}
 
-	// Build tunables
-	FDisplayXRTunables T;
 	T.IpdFactor = IpdFactor;
 	T.ParallaxFactor = ParallaxFactor;
 	T.InvConvergenceDistance = InvConvergenceDistance;
-	T.FovOverride = ComputeVerticalFov(Camera, CachedFOV, OwnerPawn);
+	T.FovOverride = ComputeVerticalFov(Camera, CachedFOV, Cast<APawn>(GetOwner()));
 	T.NearZ = Camera->OrthoNearClipPlane > 0.0f ? Camera->OrthoNearClipPlane * 0.01f : 0.1f;
 	T.FarZ = 10000.0f;
 	T.bCameraCentric = true;
-	FDisplayXRPlatform::SetTunables(T);
-
-	// Push scene transform (camera world transform)
-	FDisplayXRPlatform::SetSceneTransform(Camera->GetComponentTransform(), true);
 }
