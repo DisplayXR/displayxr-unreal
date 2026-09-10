@@ -43,19 +43,24 @@ FDisplayXRPlatform (static)   — Routes API calls to the active session via
                                 and Blueprint functions call this, never the
                                 session directly.
 
-FDisplayXRRigManager (static) — Registry of UCameraComponent ↔ UDisplayXRCamera
-                                pairs. Picks the active rig so only one pushes
-                                tunables per frame.
+FDisplayXRRigManager (static) — Registry of rig components. Single tunables
+                                pusher: once per frame (SetupViewFamily) it
+                                pushes the rig on the camera the local player
+                                renders from.
 
-UDisplayXRCamera (UActorComponent) — Camera-centric rig tunables
-UDisplayXRDisplay (UActorComponent) — Display-centric rig tunables
+UDisplayXRRigComponent (USceneComponent) — Abstract rig base; attaches under the
+                                           camera it drives (else the owner's
+                                           first camera). Fills BuildTunables().
+UDisplayXRCamera  (UDisplayXRRigComponent) — Camera-centric rig tunables
+UDisplayXRDisplay (UDisplayXRRigComponent) — Display-centric rig tunables
 
 [Editor module]
 FDisplayXRPIEPreview        — In-tab weaved PIE preview (see EditorPreview.md):
                               texture-mode session binding, invisible proxy
                               phase-anchor window, woven blit into the tab.
-UDisplayXRCameraProxy /     — UPrimitiveComponent proxies for editor
-UDisplayXRDisplayProxy        visualization of the rig transform/frustum.
+FDisplayXRCameraVisualizer / — FComponentVisualizers: convergence plane
+FDisplayXRDisplayVisualizer    (camera rig) and display plane (display rig),
+                               drawn while the component is selected.
 ```
 
 ## Per-frame data flow (game mode, Windows/D3D12)
