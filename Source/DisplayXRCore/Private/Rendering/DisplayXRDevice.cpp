@@ -28,6 +28,16 @@
 
 DEFINE_LOG_CATEGORY_STATIC(LogDisplayXRDevice, Log, All);
 
+// 2D UI per eye tile — see Docs/DisplayXR/UICompositing.md. Read once at device
+// creation (set it in DefaultEngine.ini [ConsoleVariables] or with -dpcvars).
+static TAutoConsoleVariable<int32> CVarDisplayXRUIPerEyeTiles(
+	TEXT("r.DisplayXR.UIPerEyeTiles"),
+	1,
+	TEXT("Game path: composite the window's 2D UI (UMG/Slate) into every eye tile, at the screen plane.\n")
+	TEXT("1 (default): UE renders the atlas into its own render target, the tiles are copied into the swapchain image and the UI Slate paints is alpha-blended into each tile.\n")
+	TEXT("0: v0.7.0 behaviour — UE renders straight into the swapchain image and Slate paints the window UI once across both tiles."),
+	ECVF_ReadOnly);
+
 // =============================================================================
 // PIE-instrumentation helpers (Phase 1 of EditorPreviewNative.md investigation)
 // Temporary: every log line below tagged [GAME]/[EDITOR]/[PIE] tells us which
@@ -190,7 +200,20 @@ FDisplayXRDevice::FDisplayXRDevice(const FAutoRegister& AutoRegister, FDisplayXR
 	, FSceneViewExtensionBase(AutoRegister)
 	, Session(InSession)
 {
-	UE_LOG(LogDisplayXRDevice, Log, TEXT("[%s] DisplayXR Device: Created"), WorldCtxTag());
+	bUIPerEyeTiles = CVarDisplayXRUIPerEyeTiles.GetValueOnGameThread() != 0;
+	UE_LOG(LogDisplayXRDevice, Log, TEXT("[%s] DisplayXR Device: Created (UI per eye tile: %s)"),
+		WorldCtxTag(), bUIPerEyeTiles ? TEXT("on") : TEXT("off"));
+}
+
+bool FDisplayXRDevice::UsesUIPerEyeTiles() const
+{
+	// Editor texture mode has its own atlas hand-off, and the IPC array-copy
+	// path copies the tiles at release time out of the texture UE rendered —
+	// both keep the v0.7.0 flow.
+	return bUIPerEyeTiles
+		&& !FDisplayXRPlatform::bRequestSharedTextureBinding
+		&& Compositor.IsValid()
+		&& !Compositor->UsesArrayCopyPath();
 }
 
 FDisplayXRDevice::~FDisplayXRDevice()
@@ -497,6 +520,17 @@ bool FDisplayXRDevice::AllocateRenderTargetTextures(uint32 SizeX, uint32 SizeY, 
 		return false;
 	}
 
+	// Per-eye UI: UE renders the atlas into its own target (the singular
+	// allocator above, window-sized — see CalculateRenderTargetSize).
+	// PostRenderViewFamily copies the tiles into an acquired swapchain image and
+	// RenderTexture_RenderThread composites the UI Slate paints into that target.
+	if (UsesUIPerEyeTiles())
+	{
+		UE_LOG(LogDisplayXRDevice, Log, TEXT("[%s] AllocateRenderTargetTextures -> own atlas RT (UI per eye tile), %ux%u"),
+			WorldCtxTag(), SizeX, SizeY);
+		return false;
+	}
+
 	TArray<FTextureRHIRef> Wrapped;
 	if (!Compositor->GetSwapchainImagesRHI(Wrapped) || Wrapped.Num() == 0)
 	{
@@ -515,12 +549,46 @@ int32 FDisplayXRDevice::AcquireColorTexture()
 {
 	check(IsInGameThread());
 	if (!Compositor.IsValid() || !Compositor->IsReady()) return -1;
+	// Per-eye UI: UE renders into its own target; the swapchain image is
+	// acquired on the render thread when the atlas is copied over.
+	if (UsesUIPerEyeTiles()) return -1;
 	return Compositor->AcquireImage_GameThread();
 }
 
 EPixelFormat FDisplayXRDevice::GetActualColorSwapchainFormat() const
 {
 	return PF_B8G8R8A8;
+}
+
+bool FDisplayXRDevice::GetUITargetSize(const FViewport& Viewport, uint32& OutW, uint32& OutH) const
+{
+	// Measure UE's OWN window, not the bound overlay CacheWindowSize() prefers:
+	// the runtime sizes that overlay from what we render, so driving the target
+	// off it is a feedback loop (observed oscillating 1920<->3840 with no user
+	// resize, tripping the D3D12 scissor ensure). UE's window is also exactly
+	// the rect Slate lays the UI out in and clips it to, which is what this
+	// target has to match.
+	// The viewport's own size, which is the window client area Slate lays the UI
+	// out in and clips it to — no HWND involved. Deliberately not
+	// CacheWindowSize(): it prefers the compositor's bound overlay, whose size
+	// the runtime derives from what we render (a feedback loop), and it reads
+	// GameHWND, which UpdateViewport clears on frames that carry no viewport
+	// widget. Both made the target alternate between window and panel size every
+	// few frames, reallocating constantly and tripping D3D12's scissor ensure.
+	const FIntPoint Size = Viewport.GetSizeXY();
+	if (Size.X <= 0 || Size.Y <= 0)
+	{
+		OutW = OutH = 0;
+		return false;
+	}
+
+	// Never exceed the swapchain: the tiles are sub-rects of it and the copy
+	// clamps to both extents anyway.
+	const uint32 MaxW = Compositor.IsValid() ? Compositor->GetSwapchainWidth() : 0;
+	const uint32 MaxH = Compositor.IsValid() ? Compositor->GetSwapchainHeight() : 0;
+	OutW = MaxW ? FMath::Min((uint32)Size.X, MaxW) : (uint32)Size.X;
+	OutH = MaxH ? FMath::Min((uint32)Size.Y, MaxH) : (uint32)Size.Y;
+	return true;
 }
 
 void FDisplayXRDevice::CalculateRenderTargetSize(const FViewport& Viewport, uint32& InOutSizeX, uint32& InOutSizeY)
@@ -533,6 +601,26 @@ void FDisplayXRDevice::CalculateRenderTargetSize(const FViewport& Viewport, uint
 	if (FDisplayXRPlatform::bRequestSharedTextureBinding)
 	{
 		return;
+	}
+
+	// Per-eye UI: UE's own atlas target must be WINDOW-sized. Slate paints the
+	// window UI with a window-sized projection but the target's full extent as
+	// the viewport, while its clipping scissors stay in window pixels — on a
+	// panel-sized target the UI comes out stretched by extent/window and clipped
+	// to the top-left window rect, so only the UI's top-left quarter is ever
+	// drawn (1920x1080 window on a 3840x2160 panel) and no source rect can
+	// recover the rest. With target == window the UI is painted 1:1 and complete.
+	// The tiles (window x view_scale, top-left) always fit inside it and keep
+	// their rects, so AdjustViewRect and the swapchain copy are unchanged.
+	if (UsesUIPerEyeTiles() && Compositor->IsReady())
+	{
+		uint32 UIW = 0, UIH = 0;
+		if (GetUITargetSize(Viewport, UIW, UIH))
+		{
+			InOutSizeX = UIW;
+			InOutSizeY = UIH;
+			return;
+		}
 	}
 
 	// When compositor is ready we render directly into swapchain images, which
@@ -754,6 +842,10 @@ void FDisplayXRDevice::ShutdownCompositorForSessionEnd()
 	bSwapchainRTReallocPending = true;
 	CachedWindowW = 0;
 	CachedWindowH = 0;
+
+	// Render thread is idle (flushed above): drop any swapchain image still
+	// waiting for its UI composite — the swapchain it belongs to is gone.
+	PendingUI_RT.Reset();
 }
 
 void FDisplayXRDevice::RearmCompositorCreation()
@@ -772,19 +864,105 @@ void FDisplayXRDevice::RearmCompositorCreation()
 void FDisplayXRDevice::RenderTexture_RenderThread(FRDGBuilder& GraphBuilder, FRDGTextureRef BackBuffer,
 	FRDGTextureRef SrcTexture, FVector2f WindowSize) const
 {
-	// Zero-copy path: SrcTexture IS the OpenXR swapchain image UE rendered into.
-	// The OpenXR compositor owns display output on the light-field panel.
+	// Slate calls this after painting the window's 2D UI into SrcTexture (the
+	// viewport render target) — the stereo-composite path in
+	// FSlateRHIRenderer::DrawWindow_RenderThread.
 	//
-	// A host-window preview blit (center-view tile → game window backbuffer)
-	// that respects window resize is tracked as TODO: previous attempts via
-	// FPixelShaderUtils::AddFullscreenPass + FCopyRectPS failed D3D12 PSO
-	// creation with E_INVALIDARG when the Slate backbuffer format was HDR10
-	// (R10G10B10A2_UNORM). Needs a different RDG pattern — possibly using
-	// AddDrawTexturePass for format conversion + a separate scale pass, or
-	// a compute-shader copy. Left as a no-op for now; combined with Issues 3+5
-	// the window still resizes freely and the content region tracks it, but
-	// the game-window preview may show black-pad regions where the
-	// content-region rect is smaller than the host window.
+	// Per-eye UI path (Docs/DisplayXR/UICompositing.md): SrcTexture is UE's own
+	// window-sized atlas RT, holding only the premultiplied UI now that
+	// PostRenderViewFamily has copied the tiles out and cleared it. Scale the UI
+	// into every eye tile and release the swapchain image it left pending.
+	//
+	// Zero-copy path (r.DisplayXR.UIPerEyeTiles 0): nothing pending, and the
+	// image was already released in PostRenderViewFamily — no-op, as in v0.7.0.
+	if (!PendingUI_RT.IsValid())
+	{
+		return;
+	}
+
+	FDisplayXRCompositor* Comp = Compositor.Get();
+	if (!Comp || !SrcTexture)
+	{
+		PendingUI_RT.Reset();
+		return;
+	}
+
+	FRDGTextureRef DstRDG = RegisterExternalTexture(GraphBuilder, PendingUI_RT.Swapchain.GetReference(), TEXT("DisplayXRSwapchainDst"));
+
+	// The target is window-sized here (CalculateRenderTargetSize), so Slate
+	// painted the UI 1:1 and the whole texture is the UI layer.
+	const FIntRect UIRect(FIntPoint::ZeroValue, SrcTexture->Desc.Extent);
+
+	FXRCopyTextureOptions Options(GMaxRHIFeatureLevel);
+	Options.LoadAction = ERenderTargetLoadAction::ELoad;
+	Options.BlendMod = EXRCopyTextureBlendModifier::PremultipliedAlphaBlend;
+	for (const FIntRect& Tile : PendingUI_RT.TileRects)
+	{
+		if (!Tile.IsEmpty())
+		{
+			AddXRCopyTexturePass(GraphBuilder, RDG_EVENT_NAME("DisplayXRUIToEyeTile"),
+				SrcTexture, UIRect, DstRDG, Tile, Options);
+		}
+	}
+
+	FRHITexture* DstRHI = PendingUI_RT.Swapchain.GetReference();
+	GraphBuilder.AddPass(
+		RDG_EVENT_NAME("DisplayXR_ReleaseSwapchain"),
+		ERDGPassFlags::NeverCull,
+		[Comp, DstRHI](FRHICommandListImmediate& RHICmdList)
+		{
+			Comp->ReleaseImage_RenderThread(RHICmdList, DstRHI);
+		});
+	PendingUI_RT.Reset();
+}
+
+// Acquire a swapchain image and copy this frame's atlas — the union of the
+// family's view rects, exactly the tile region UE wrote (AdjustViewRect math) —
+// from the texture UE rendered into it. Same rect on both sides: tiles sit at
+// identical offsets in UE's target and in the swapchain, matching the imageRects
+// the compositor submits. Returns false when no image could be acquired.
+static bool CopyAtlasToSwapchain(FDisplayXRCompositor* Comp, FRDGBuilder& GraphBuilder,
+	const FSceneViewFamily& InViewFamily, FRHITexture* SrcTextureRHI,
+	FTextureRHIRef& OutDst, FIntRect& OutAtlasRect, TArray<FIntRect>& OutTileRects, int32& OutIdx)
+{
+	// Events + xr calls + atomics only — thread-agnostic despite the name;
+	// the engine does not acquire for us on these paths.
+	OutIdx = Comp->AcquireImage_GameThread();
+	if (OutIdx < 0) return false;
+	OutDst = Comp->GetSwapchainImageRHI(OutIdx);
+	if (!OutDst.IsValid()) return false;
+
+	const FIntRect Bounds(0, 0,
+		FMath::Min<int32>(SrcTextureRHI->GetSizeX(), OutDst->GetSizeX()),
+		FMath::Min<int32>(SrcTextureRHI->GetSizeY(), OutDst->GetSizeY()));
+
+	OutAtlasRect = FIntRect(0, 0, 0, 0);
+	OutTileRects.Reset();
+	for (const FSceneView* View : InViewFamily.Views)
+	{
+		if (View)
+		{
+			FIntRect Tile = View->UnscaledViewRect;
+			Tile.Clip(Bounds);
+			OutTileRects.Add(Tile);
+			OutAtlasRect.Union(Tile);
+		}
+	}
+	if (OutAtlasRect.IsEmpty()) return false;
+
+	FRDGTextureRef SrcRDG = GraphBuilder.FindExternalTexture(SrcTextureRHI);
+	if (!SrcRDG)
+	{
+		SrcRDG = RegisterExternalTexture(GraphBuilder, SrcTextureRHI, TEXT("DisplayXRAtlasSrc"));
+	}
+	FRDGTextureRef DstRDG = RegisterExternalTexture(GraphBuilder, OutDst.GetReference(), TEXT("DisplayXRSwapchainDst"));
+
+	FXRCopyTextureOptions Options(GMaxRHIFeatureLevel);
+	Options.LoadAction = ERenderTargetLoadAction::ELoad;
+	Options.BlendMod = EXRCopyTextureBlendModifier::Opaque;
+	AddXRCopyTexturePass(GraphBuilder, RDG_EVENT_NAME("DisplayXRAtlasToSwapchain"),
+		SrcRDG, OutAtlasRect, DstRDG, OutAtlasRect, Options);
+	return true;
 }
 
 void FDisplayXRDevice::PostRenderViewFamily_RenderThread(FRDGBuilder& GraphBuilder, FSceneViewFamily& InViewFamily)
@@ -808,48 +986,67 @@ void FDisplayXRDevice::PostRenderViewFamily_RenderThread(FRDGBuilder& GraphBuild
 	// Hand the atlas to the runtime here instead: acquire a swapchain image,
 	// blit the tile region, release. One extra copy per frame, editor-only.
 	// ------------------------------------------------------------------
-	if (FDisplayXRPlatform::bRequestSharedTextureBinding)
+	// ------------------------------------------------------------------
+	// Per-eye UI (game path, r.DisplayXR.UIPerEyeTiles): UE rendered the atlas
+	// into its OWN target. Copy the tiles into a swapchain image now, then clear
+	// the target so the window UI Slate is about to paint lands on a transparent
+	// layer; RenderTexture_RenderThread blends that layer into every tile and
+	// releases the image. One tile-area copy per frame instead of zero-copy.
+	// ------------------------------------------------------------------
+	if (UsesUIPerEyeTiles())
 	{
 		if (!SrcTextureRHI) return;
 
-		// Events + xr calls + atomics only — thread-agnostic despite the name;
-		// the engine no longer acquires for us with the separate RT off.
-		const int32 Idx = Comp->AcquireImage_GameThread();
-		if (Idx < 0) return;
-		FTextureRHIRef DstRef = Comp->GetSwapchainImageRHI(Idx);
-		if (!DstRef.IsValid())
+		// Slate did not paint the window last frame (minimised / occluded), so
+		// the image it was meant to finish is still held: release it as-is.
+		if (PendingUI_RT.IsValid())
+		{
+			FRHITexture* StaleRHI = PendingUI_RT.Swapchain.GetReference();
+			GraphBuilder.AddPass(
+				RDG_EVENT_NAME("DisplayXR_ReleaseSwapchainStale"),
+				ERDGPassFlags::NeverCull,
+				[Comp, StaleRHI](FRHICommandListImmediate& RHICmdList)
+				{
+					Comp->ReleaseImage_RenderThread(RHICmdList, StaleRHI);
+				});
+			PendingUI_RT.Reset();
+		}
+
+		FTextureRHIRef DstRef;
+		FIntRect AtlasRect;
+		TArray<FIntRect> TileRects;
+		int32 Idx = -1;
+		if (!CopyAtlasToSwapchain(Comp, GraphBuilder, InViewFamily, SrcTextureRHI, DstRef, AtlasRect, TileRects, Idx))
 		{
 			return;
 		}
 
-		// The union of the family's view rects is exactly the tile region UE
-		// wrote (AdjustViewRect math). Same rect on both sides: tiles sit at
-		// identical offsets in the viewport RT and the swapchain, matching the
-		// imageRects the compositor submits from the proxy's client size.
-		FIntRect AtlasRect(0, 0, 0, 0);
-		for (const FSceneView* View : InViewFamily.Views)
-		{
-			if (View)
-			{
-				AtlasRect.Union(View->UnscaledViewRect);
-			}
-		}
-		AtlasRect.Clip(FIntRect(0, 0, SrcTextureRHI->GetSizeX(), SrcTextureRHI->GetSizeY()));
-		AtlasRect.Clip(FIntRect(0, 0, DstRef->GetSizeX(), DstRef->GetSizeY()));
-		if (AtlasRect.IsEmpty()) return;
-
+		// Transparent black: Slate's element blend then leaves premultiplied
+		// colour + coverage alpha, which the per-tile blit composites directly.
 		FRDGTextureRef SrcRDG = GraphBuilder.FindExternalTexture(SrcTextureRHI);
 		if (!SrcRDG)
 		{
 			SrcRDG = RegisterExternalTexture(GraphBuilder, SrcTextureRHI, TEXT("DisplayXRAtlasSrc"));
 		}
-		FRDGTextureRef DstRDG = RegisterExternalTexture(GraphBuilder, DstRef.GetReference(), TEXT("DisplayXRSwapchainDst"));
+		AddClearRenderTargetPass(GraphBuilder, SrcRDG, FLinearColor::Transparent);
 
-		FXRCopyTextureOptions Options(GMaxRHIFeatureLevel);
-		Options.LoadAction = ERenderTargetLoadAction::ELoad;
-		Options.BlendMod = EXRCopyTextureBlendModifier::Opaque;
-		AddXRCopyTexturePass(GraphBuilder, RDG_EVENT_NAME("DisplayXRAtlasToSwapchain"),
-			SrcRDG, AtlasRect, DstRDG, AtlasRect, Options);
+		PendingUI_RT.Swapchain = DstRef;
+		PendingUI_RT.TileRects = MoveTemp(TileRects);
+		return;
+	}
+
+	if (FDisplayXRPlatform::bRequestSharedTextureBinding)
+	{
+		if (!SrcTextureRHI) return;
+
+		FTextureRHIRef DstRef;
+		FIntRect AtlasRect;
+		TArray<FIntRect> TileRects;
+		int32 Idx = -1;
+		if (!CopyAtlasToSwapchain(Comp, GraphBuilder, InViewFamily, SrcTextureRHI, DstRef, AtlasRect, TileRects, Idx))
+		{
+			return;
+		}
 
 		static int32 CopyCount = 0;
 		++CopyCount;

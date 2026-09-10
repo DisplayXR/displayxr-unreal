@@ -78,6 +78,7 @@ In-depth docs live in [Docs/DisplayXR/](Docs/DisplayXR/):
 - [Architecture](Docs/DisplayXR/Architecture.md) — one-page class hierarchy, ownership, per-frame flow
 - [AtlasHandoff](Docs/DisplayXR/AtlasHandoff.md) — zero-copy UE → OpenXR swapchain pipeline
 - [DisplayRigSetup](Docs/DisplayXR/DisplayRigSetup.md) — pawn/camera rig configuration, input, rig modes
+- [UICompositing](Docs/DisplayXR/UICompositing.md) — how 2D UI (UMG/Slate) reaches both eyes at the screen plane
 - [EditorPreview](Docs/DisplayXR/EditorPreview.md) — current `SceneCapture2D`-based preview
 - [EditorPreviewNative](Docs/DisplayXR/EditorPreviewNative.md) — in-flight plan for native `FDisplayXRDevice` → PIE preview
 - [EyeTracking](Docs/DisplayXR/EyeTracking.md) — `xrLocateViews` → Kooima → per-view projection pipeline

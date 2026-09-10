@@ -4,6 +4,11 @@ All notable changes to the DisplayXR Unreal plugin are documented here.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Fixed
+- **2D UI (UMG/Slate) was painted once across the eye atlas.** On the game path Slate's stereo-composite step paints the whole window's UI into the viewport render target — the swapchain image holding both eye tiles — so the left eye showed the left part of the HUD and the right eye the right part, each scaled up by the weave; the UI was also painted after the image had been released. UE now renders the atlas into its own window-sized target, `PostRenderViewFamily` copies the tiles into the swapchain image and clears the target, Slate paints the UI onto that transparent layer, and `RenderTexture_RenderThread` alpha-blends it into every eye tile (screen plane) before releasing the image. Costs one tile-area copy per frame; `r.DisplayXR.UIPerEyeTiles 0` restores the zero-copy flow. Hit-testing is unchanged (window pixels in, window pixels out). The target is sized from the viewport (not the compositor's bound overlay, whose size the runtime derives from what we render — a feedback loop). See `Docs/DisplayXR/UICompositing.md`.
+
 ## [0.8.0] - 2026-09-09
 
 ### Added
