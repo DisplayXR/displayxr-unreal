@@ -394,10 +394,21 @@ void FDisplayXRDevice::AdjustViewRect(const int32 ViewIndex, int32& X, int32& Y,
 	// the SAME window-relative dims (compositor's ComputeTileDims, same HWND), so
 	// the content aspect tracks the window → correct under resize (like the cube),
 	// while the array slice stays fixed-size so it never trips needs_scale.
-	const int32 TileW = FMath::Max(1, FMath::RoundToInt(CachedWindowW * CachedViewConfig.ScaleX));
-	const int32 TileH = FMath::Max(1, FMath::RoundToInt(CachedWindowH * CachedViewConfig.ScaleY));
+	int32 TileW = FMath::Max(1, FMath::RoundToInt(CachedWindowW * CachedViewConfig.ScaleX));
+	int32 TileH = FMath::Max(1, FMath::RoundToInt(CachedWindowH * CachedViewConfig.ScaleY));
 
 	const int32 Cols = FMath::Max(CachedViewConfig.TileColumns, 1);
+	if (UsesUIPerEyeTiles())
+	{
+		// Per-eye UI: UE's atlas target is window-sized (CalculateRenderTargetSize)
+		// while the tile dims above come from the overlay HWND. The two are
+		// measured separately and disagree for one frame on a resize (the overlay
+		// grows first, the target reallocates next frame), so keep the views
+		// inside the incoming target rect -- never render off the RT.
+		const int32 Rows = FMath::Max(CachedViewConfig.TileRows, 1);
+		TileW = FMath::Max(1, FMath::Min(TileW, (int32)SizeX / Cols));
+		TileH = FMath::Max(1, FMath::Min(TileH, (int32)SizeY / Rows));
+	}
 	const int32 Col = ViewIndex % Cols;
 	const int32 Row = ViewIndex / Cols;
 	X = Col * TileW;
@@ -976,6 +987,17 @@ void FDisplayXRDevice::PostRenderViewFamily_RenderThread(FRDGBuilder& GraphBuild
 {
 	if (!Compositor.IsValid() || !Compositor->IsReady()) return;
 
+	// Only the viewport's own family hands off to the swapchain. Scene / reflection
+	// captures also reach this extension (IsActiveThisFrame_Internal accepts a null
+	// viewport), and on the per-eye UI path they would acquire an image, copy their
+	// own texture into it and have that texture cleared to transparent; on the
+	// other paths they released the frame's image prematurely.
+	if (InViewFamily.Views.Num() > 0 && InViewFamily.Views[0]
+		&& (InViewFamily.Views[0]->bIsSceneCapture || InViewFamily.Views[0]->bIsReflectionCapture || InViewFamily.Views[0]->bIsPlanarReflection))
+	{
+		return;
+	}
+
 	FDisplayXRCompositor* Comp = Compositor.Get();
 
 	// The view family's render target: the swapchain image on the zero-copy
@@ -992,16 +1014,18 @@ void FDisplayXRDevice::PostRenderViewFamily_RenderThread(FRDGBuilder& GraphBuild
 	// another. Outside the UsesUIPerEyeTiles() gate on purpose — the path can
 	// turn off (cvar aside, it reads the compositor state) while an image is
 	// held, and then nothing inside the gate would ever release it.
+	//
+	// Released SYNCHRONOUSLY, not as an RDG pass: CopyAtlasToSwapchain below
+	// acquires at graph-build time, and while the stale image is still marked
+	// acquired the compositor hands back the same index. A deferred release
+	// would then run at execute time after that acquire -- releasing the image
+	// (and letting xrEndFrame submit it) before this frame's copy writes into
+	// it, with the final release in RenderTexture_RenderThread a no-op. The
+	// previous frame's graph has already executed, so its copy is queued ahead
+	// of the transition + xrReleaseSwapchainImage recorded here.
 	if (PendingUI_RT.IsValid())
 	{
-		FRHITexture* StaleRHI = PendingUI_RT.Swapchain.GetReference();
-		GraphBuilder.AddPass(
-			RDG_EVENT_NAME("DisplayXR_ReleaseSwapchainStale"),
-			ERDGPassFlags::NeverCull,
-			[Comp, StaleRHI](FRHICommandListImmediate& RHICmdList)
-			{
-				Comp->ReleaseImage_RenderThread(RHICmdList, StaleRHI);
-			});
+		Comp->ReleaseImage_RenderThread(GraphBuilder.RHICmdList, PendingUI_RT.Swapchain.GetReference());
 		PendingUI_RT.Reset();
 	}
 
