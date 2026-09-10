@@ -66,7 +66,16 @@ viewport's own size has no such dependency and is exactly the rect Slate lays th
 
 The target still reallocates a few times while a level loads, as the viewport settles on its size;
 it is stable in steady state and tracks a window resize in one step. Tiles are clamped to both
-extents in the copy, so a transitional frame where the sizes disagree is safe.
+extents in the copy, so a transitional frame never samples outside either texture.
+
+One transitional frame per resize is imperfect, though. `NeedReAllocateViewportRenderTarget` is how
+UE notices the size changed and it runs on the frame *after* the change, so that frame is still
+drawn into the previous target while Slate lays the UI out at the new window size — the same
+projection-vs-extent mismatch described above, scaled by `new window / old target` and clipped to
+the new window rect. The UI can therefore jump for a single frame mid-resize. Not observed by eye
+(one frame, only while dragging) and the steady state either side is correct, so it is recorded
+rather than worked around; the settle-debounce this plugin already uses for the editor preview's
+canvas is where to start if it matters.
 
 ## Input and hit-testing (CommonUI, Lyra)
 
@@ -76,7 +85,9 @@ scales each tile back up to the window's client rect when it weaves — the maps
 identity. A widget therefore appears at the window position Slate thinks it has, so mouse
 hit-testing, CommonUI's input routing, analog cursors and focus all keep working. The cursor is a
 Slate element too, so it renders in both eyes at the screen plane — the same plane the hit test
-happens in. Input forwarding from the overlay child window (`OverlayProc`) is unchanged.
+happens in. Input forwarding from the overlay child window (`OverlayProc`) is unchanged. Verified
+in Lyra: hovering and clicking the pause-menu and settings widgets responds at the cursor, both
+windowed and fullscreen.
 
 Resolution caveat: the UI ends up at tile resolution (half the window at 0.5 scale) before the
 weave scales it back up, so text is softer than in 2D. A full-resolution UI layer would need
