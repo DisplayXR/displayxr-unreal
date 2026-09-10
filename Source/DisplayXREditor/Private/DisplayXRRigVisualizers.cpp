@@ -74,12 +74,14 @@ void FDisplayXRDisplayVisualizer::DrawVisualization(const UActorComponent* Compo
 	}
 
 	// Display plane extents: VirtualDisplayHeight when set, else the physical display
-	// the runtime reports, else a 16:9 placeholder.
+	// the runtime reports, else the session's 0.194 m placeholder. VirtualDisplayHeight
+	// is METRES (the session forwards it to the rig as such; see DisplayXRSession.cpp),
+	// UE world units are cm.
 	const FDisplayXRDisplayInfo Info = FDisplayXRPlatform::GetDisplayInfo();
 	const bool bPhysical = Info.bIsValid && Info.DisplayHeightMeters > 0.0f;
 	const float Aspect = bPhysical ? Info.DisplayWidthMeters / Info.DisplayHeightMeters : 16.0f / 9.0f;
-	const float HeightCm = Rig->VirtualDisplayHeight > 0.0f ? Rig->VirtualDisplayHeight
-		: (bPhysical ? Info.DisplayHeightMeters * 100.0f : 30.0f);
+	const float HeightCm = 100.0f * (Rig->VirtualDisplayHeight > 0.0f ? Rig->VirtualDisplayHeight
+		: (bPhysical ? Info.DisplayHeightMeters : 0.194f));
 	const float HalfH = HeightCm * 0.5f;
 
 	// The camera transform is the display plane.
