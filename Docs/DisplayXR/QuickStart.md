@@ -43,7 +43,7 @@ Simplest camera-centric rig:
 2. Add a `Camera` component.
 3. Tick **Use Pawn Control Rotation** on the camera (required — see [DisplayRigSetup.md](./DisplayRigSetup.md)).
 4. Add a **DisplayXR Camera** component (under *DisplayXR* category) to the same pawn.
-5. Adjust `IpdFactor`, `ParallaxFactor`, `ConvergenceDistance` if you want — defaults work.
+5. Adjust `IpdFactor`, `ParallaxFactor`, `InvConvergenceDistance` if you want — defaults work. Select the rig component to see its convergence plane drawn in the viewport.
 6. Set this pawn as the level's **Default Pawn Class** via Game Mode.
 
 For display-centric rigs (the camera is the display plane and the viewer moves around it), use a **DisplayXR Display** component instead. See [DisplayRigSetup.md](./DisplayRigSetup.md).

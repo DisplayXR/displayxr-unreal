@@ -5,7 +5,12 @@
 #include "DisplayXRPIEPreview.h"
 #include "DisplayXRPlatform.h"
 #include "DisplayXRCoreModule.h"
+#include "DisplayXRCamera.h"
+#include "DisplayXRDisplay.h"
+#include "DisplayXRRigVisualizers.h"
 #include "Editor.h"
+#include "Editor/UnrealEdEngine.h"
+#include "UnrealEdGlobals.h"
 #include "Engine/Engine.h"
 #include "Engine/GameInstance.h"
 #include "Engine/GameViewportClient.h"
@@ -42,6 +47,14 @@ void FDisplayXREditorModule::StartupModule()
 	PostPIEStartedHandle = FEditorDelegates::PostPIEStarted.AddRaw(this, &FDisplayXREditorModule::OnPostPIEStarted);
 	PrePIEEndedHandle = FEditorDelegates::PrePIEEnded.AddRaw(this, &FDisplayXREditorModule::OnPrePIEEnded);
 
+	// Rig gizmos: convergence plane (camera rig) and display plane (display rig),
+	// drawn while the component is selected in the level or Blueprint viewport.
+	if (GUnrealEd)
+	{
+		GUnrealEd->RegisterComponentVisualizer(UDisplayXRCamera::StaticClass()->GetFName(), MakeShared<FDisplayXRCameraVisualizer>());
+		GUnrealEd->RegisterComponentVisualizer(UDisplayXRDisplay::StaticClass()->GetFName(), MakeShared<FDisplayXRDisplayVisualizer>());
+	}
+
 	UE_LOG(LogDisplayXREditor, Log, TEXT("DisplayXR: Editor module started (in-tab weaved preview on Play)"));
 }
 
@@ -65,6 +78,12 @@ void FDisplayXREditorModule::ShutdownModule()
 
 	FEditorDelegates::PostPIEStarted.Remove(PostPIEStartedHandle);
 	FEditorDelegates::PrePIEEnded.Remove(PrePIEEndedHandle);
+
+	if (GUnrealEd)
+	{
+		GUnrealEd->UnregisterComponentVisualizer(UDisplayXRCamera::StaticClass()->GetFName());
+		GUnrealEd->UnregisterComponentVisualizer(UDisplayXRDisplay::StaticClass()->GetFName());
+	}
 
 	UE_LOG(LogDisplayXREditor, Log, TEXT("DisplayXR: Editor module shut down"));
 }

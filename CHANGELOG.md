@@ -6,10 +6,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+### Added
+- **Rig gizmos in the editor.** Selecting a `DisplayXR Camera` draws its convergence plane — the screen plane at `1/InvConvergenceDistance` in front of the camera, sized from the camera's FOV and aspect, with edges back to the camera; inverse distance 0 (parallel) shows a 2 m preview plane in a different hue. Selecting a `DisplayXR Display` draws the display plane at the camera transform, sized from `VirtualDisplayHeight` or the physical display the runtime reports. Implemented as `FComponentVisualizer`s registered by `DisplayXREditor`; no runtime-module change. Tuning convergence no longer needs a Play-and-look cycle.
+
 ### Fixed
 - **Camera-centric rig sent the camera's horizontal FOV as `verticalFov`.** `UDisplayXRCamera` forwarded `UCameraComponent::FieldOfView` — which Unreal defines as the *horizontal* angle — straight into the rig's vertical field, so the stereo frustum did not match the 2D view (90° tall instead of 58.7° for the default camera). (The Unity sibling is correct as-is: its `Camera.fieldOfView` is vertical.) The rig now derives the vertical angle the way UE itself does — `FMinimalViewInfo::CalculateProjectionMatrixGivenViewRectangle` with the local player's aspect-ratio axis constraint and the stereo canvas rect (published from `AdjustViewRect`), reading the vertical half-angle off the projection matrix — so `MaintainYFOV` / `MaintainXFOV` / `MajorAxisFOV` and constrained-aspect cameras all match their 2D framing. `FDisplayXRTunables::FovOverride` now carries the vertical angle.
 - **Per-camera rigs.** `UDisplayXRCamera` / `UDisplayXRDisplay` are now scene components (via the new `UDisplayXRRigComponent` base) so a rig attaches under the camera it drives; unattached rigs still bind to the owner's first camera as before. `FDisplayXRRigManager` is the single tunables pusher: once per frame (`SetupViewFamily`, before the locate) it sends the tunables of the one rig on the camera the local player renders from — the view target's first active camera component, `AActor::CalcCamera`'s rule. Previously every rig pushed every tick into the single session slot, so with several cameras on one pawn the last rig to tick won, non-deterministically.
 - **Docs: the display plane is the camera transform.** The `UDisplayXRDisplay` header and README described a display placed independently of the camera ("parent transform defines the display; camera is a child"); that was a mis-port. In both plugins the camera transform is the display plane and the viewer moves around it.
+
+### Removed
+- `DisplayXRComponentProxies` (`UDisplayXRCameraProxy` / `UDisplayXRDisplayProxy`): dead code — nothing instantiated them and they drew a fixed 100 cm frustum unrelated to any tunable.
 
 ## [0.7.0] - 2026-08-15
 
