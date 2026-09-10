@@ -59,8 +59,8 @@ public:
 	/** Acquire the next swapchain image. Returns image index or -1 on failure.
 	 *  Events + xr calls + atomics only — thread-agnostic despite the name.
 	 *  Called by the engine's FSceneViewport from the game thread on the
-	 *  zero-copy path, and by PostRenderViewFamily_RenderThread on the editor
-	 *  texture-mode atlas-copy path. */
+	 *  zero-copy path, and by PostRenderViewFamily_RenderThread on both the
+	 *  editor texture-mode and the per-eye-UI atlas-copy paths. */
 	int32 AcquireImage_GameThread();
 
 	/** Wrapped swapchain image for the editor atlas-copy path (#38). */
