@@ -621,6 +621,13 @@ void FDisplayXRDevice::CalculateRenderTargetSize(const FViewport& Viewport, uint
 			InOutSizeY = UIH;
 			return;
 		}
+		// Falling through to the panel-sized target below means Slate clips the
+		// UI to the window rect inside a larger target and only its top-left
+		// part reaches the tiles. Should not happen — the viewport always knows
+		// its size — so say so rather than degrade silently.
+		UE_LOG(LogDisplayXRDevice, Warning,
+			TEXT("[%s] Per-eye UI: viewport reported no size; the atlas target stays panel-sized and the UI will be clipped"),
+			WorldCtxTag());
 	}
 
 	// When compositor is ready we render directly into swapchain images, which
@@ -979,13 +986,25 @@ void FDisplayXRDevice::PostRenderViewFamily_RenderThread(FRDGBuilder& GraphBuild
 		SrcTextureRHI = InViewFamily.RenderTarget->GetRenderTargetTexture();
 	}
 
-	// ------------------------------------------------------------------
-	// Editor in-tab texture mode (#38): UE rendered the SBS atlas into the
-	// viewport's OWN target (Slate must never see a stereo separate-RT
-	// window — it would composite the whole editor UI into the swapchain).
-	// Hand the atlas to the runtime here instead: acquire a swapchain image,
-	// blit the tile region, release. One extra copy per frame, editor-only.
-	// ------------------------------------------------------------------
+	// An image is still held from a frame whose UI composite never ran: Slate
+	// skipped the window paint (minimised / occluded), or the per-eye UI path
+	// stopped applying mid-flight. Release it before this frame acquires
+	// another. Outside the UsesUIPerEyeTiles() gate on purpose — the path can
+	// turn off (cvar aside, it reads the compositor state) while an image is
+	// held, and then nothing inside the gate would ever release it.
+	if (PendingUI_RT.IsValid())
+	{
+		FRHITexture* StaleRHI = PendingUI_RT.Swapchain.GetReference();
+		GraphBuilder.AddPass(
+			RDG_EVENT_NAME("DisplayXR_ReleaseSwapchainStale"),
+			ERDGPassFlags::NeverCull,
+			[Comp, StaleRHI](FRHICommandListImmediate& RHICmdList)
+			{
+				Comp->ReleaseImage_RenderThread(RHICmdList, StaleRHI);
+			});
+		PendingUI_RT.Reset();
+	}
+
 	// ------------------------------------------------------------------
 	// Per-eye UI (game path, r.DisplayXR.UIPerEyeTiles): UE rendered the atlas
 	// into its OWN target. Copy the tiles into a swapchain image now, then clear
@@ -996,21 +1015,6 @@ void FDisplayXRDevice::PostRenderViewFamily_RenderThread(FRDGBuilder& GraphBuild
 	if (UsesUIPerEyeTiles())
 	{
 		if (!SrcTextureRHI) return;
-
-		// Slate did not paint the window last frame (minimised / occluded), so
-		// the image it was meant to finish is still held: release it as-is.
-		if (PendingUI_RT.IsValid())
-		{
-			FRHITexture* StaleRHI = PendingUI_RT.Swapchain.GetReference();
-			GraphBuilder.AddPass(
-				RDG_EVENT_NAME("DisplayXR_ReleaseSwapchainStale"),
-				ERDGPassFlags::NeverCull,
-				[Comp, StaleRHI](FRHICommandListImmediate& RHICmdList)
-				{
-					Comp->ReleaseImage_RenderThread(RHICmdList, StaleRHI);
-				});
-			PendingUI_RT.Reset();
-		}
 
 		FTextureRHIRef DstRef;
 		FIntRect AtlasRect;
