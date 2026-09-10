@@ -4,6 +4,7 @@
 #include "DisplayXRRigComponent.h"
 #include "DisplayXRRigManager.h"
 #include "Camera/CameraComponent.h"
+#include "GameFramework/Actor.h"
 
 UDisplayXRRigComponent::UDisplayXRRigComponent()
 {

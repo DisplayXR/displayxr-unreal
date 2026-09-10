@@ -45,9 +45,11 @@ There is **no** `DISPLAYXR_USE_UNREAL_OPENXR` compile flag. Platform differences
 
 ### Component Hierarchy
 
-- `UDisplayXRCamera` — Camera-centric rig. Properties: `Enable3D`, `ConvergenceDistance`, `LookaroundFactor`, `BaselineFactor`.
-- `UDisplayXRDisplay` — Display-centric rig. Stereo computed relative to the display's world transform.
-- `ADisplayXRRigManager` — Selects the active rig at play time.
+- `UDisplayXRRigComponent` — Abstract `USceneComponent` base for both rigs. A rig attaches under the camera it drives (else binds to the owner's first camera) and fills `BuildTunables()`; rigs do not tick or push.
+- `UDisplayXRCamera` — Camera-centric rig. Properties: `IpdFactor`, `ParallaxFactor`, `InvConvergenceDistance`. The camera's horizontal `FieldOfView` is converted to the rig's vertical fov with UE's own projection rules.
+- `UDisplayXRDisplay` — Display-centric rig. The camera transform IS the display plane; the viewer moves around it. Properties: `IpdFactor`, `ParallaxFactor`, `PerspectiveFactor`, `VirtualDisplayHeight` (metres).
+- `FDisplayXRRigManager` — Static registry and the single tunables pusher: once per frame (`SetupViewFamily`) it pushes the rig on the camera the local player renders from, or defaults when that camera has no rig.
+- Editor: `FDisplayXRCameraVisualizer` / `FDisplayXRDisplayVisualizer` draw the convergence plane / display plane while the component is selected.
 
 ### Public API
 

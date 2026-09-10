@@ -39,9 +39,9 @@ UCameraComponent* FDisplayXRRigManager::FindViewCamera(const UWorld* World)
 {
 	const APlayerController* PC = World ? World->GetFirstPlayerController() : nullptr;
 	AActor* ViewTarget = (PC && PC->PlayerCameraManager) ? PC->PlayerCameraManager->GetViewTarget() : nullptr;
-	if (!ViewTarget)
+	if (!ViewTarget || !ViewTarget->bFindCameraComponentWhenViewTarget)
 	{
-		return nullptr;
+		return nullptr; // AActor::CalcCamera renders from the eyes viewpoint, not a camera
 	}
 
 	// Same rule as AActor::CalcCamera: the first active camera component wins.
@@ -80,13 +80,15 @@ void FDisplayXRRigManager::PushActiveRig(const UWorld* World)
 			break;
 		}
 	}
-	if (!Rig)
-	{
-		return;
-	}
 
+	// The session outlives PIE and keeps the last push, so a view camera without a
+	// rig must reset to defaults rather than inherit the previous rig's tunables
+	// (e.g. a Sequencer cut to a bare ACameraActor, or a rig-less level next Play).
 	FDisplayXRTunables T;
-	Rig->BuildTunables(T);
+	if (Rig)
+	{
+		Rig->BuildTunables(T);
+	}
 	FDisplayXRPlatform::SetTunables(T);
 
 	// Diagnostic only since #396 W7: the view rig is submitted with an identity

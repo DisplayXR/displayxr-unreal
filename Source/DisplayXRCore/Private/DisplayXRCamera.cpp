@@ -8,7 +8,7 @@
 #include "Engine/Engine.h"
 #include "Engine/GameViewportClient.h"
 #include "Engine/LocalPlayer.h"
-#include "GameFramework/Pawn.h"
+#include "Engine/World.h"
 #include "GameFramework/PlayerController.h"
 #include "SceneView.h"
 #include "UnrealClient.h"
@@ -17,7 +17,7 @@
 // UE's horizontal angle; the vertical one depends on the local player's aspect-ratio
 // axis constraint and the camera's own aspect settings, so reuse UE's function and
 // read the vertical half-angle off the projection matrix (M[1][1] = 1 / tan(vfov/2)).
-static float ComputeVerticalFov(const UCameraComponent* Camera, float FovDeg, const APawn* Pawn)
+static float ComputeVerticalFov(const UCameraComponent* Camera, float FovDeg, const APlayerController* PC)
 {
 	if (Camera->ProjectionMode == ECameraProjectionMode::Orthographic)
 	{
@@ -35,7 +35,6 @@ static float ComputeVerticalFov(const UCameraComponent* Camera, float FovDeg, co
 	}
 
 	TEnumAsByte<EAspectRatioAxisConstraint> Constraint = AspectRatio_MaintainYFOV; // engine default
-	const APlayerController* PC = Pawn ? Cast<APlayerController>(Pawn->GetController()) : nullptr;
 	if (const ULocalPlayer* LP = PC ? PC->GetLocalPlayer() : nullptr)
 	{
 		Constraint = LP->AspectRatioAxisConstraint;
@@ -80,7 +79,10 @@ void UDisplayXRCamera::BuildTunables(FDisplayXRTunables& T)
 	T.IpdFactor = IpdFactor;
 	T.ParallaxFactor = ParallaxFactor;
 	T.InvConvergenceDistance = InvConvergenceDistance;
-	T.FovOverride = ComputeVerticalFov(Camera, CachedFOV, Cast<APawn>(GetOwner()));
+	// The rig's owner need not be a pawn (view target may be any actor); the
+	// aspect-ratio axis constraint belongs to the local player that renders.
+	const UWorld* World = GetWorld();
+	T.FovOverride = ComputeVerticalFov(Camera, CachedFOV, World ? World->GetFirstPlayerController() : nullptr);
 	T.NearZ = Camera->OrthoNearClipPlane > 0.0f ? Camera->OrthoNearClipPlane * 0.01f : 0.1f;
 	T.FarZ = 10000.0f;
 	T.bCameraCentric = true;
