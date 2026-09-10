@@ -2,10 +2,97 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #include "DisplayXRRigManager.h"
+#include "DisplayXRPlatform.h"
+#include "DisplayXRRigComponent.h"
 #include "Camera/CameraComponent.h"
+#include "Camera/PlayerCameraManager.h"
+#include "Engine/World.h"
+#include "GameFramework/PlayerController.h"
 
+TArray<TWeakObjectPtr<UDisplayXRRigComponent>> FDisplayXRRigManager::RegisteredRigs;
 TArray<TWeakObjectPtr<UCameraComponent>> FDisplayXRRigManager::RegisteredCameras;
 TWeakObjectPtr<UCameraComponent> FDisplayXRRigManager::ActiveCamera;
+
+void FDisplayXRRigManager::RegisterRig(UDisplayXRRigComponent* Rig)
+{
+	if (!Rig)
+	{
+		return;
+	}
+	RegisteredRigs.AddUnique(Rig);
+	Register(Rig->GetCamera());
+}
+
+void FDisplayXRRigManager::UnregisterRig(UDisplayXRRigComponent* Rig)
+{
+	RegisteredRigs.RemoveAll([Rig](const TWeakObjectPtr<UDisplayXRRigComponent>& Weak)
+	{
+		return !Weak.IsValid() || Weak.Get() == Rig;
+	});
+	if (Rig)
+	{
+		Unregister(Rig->GetCamera());
+	}
+}
+
+UCameraComponent* FDisplayXRRigManager::FindViewCamera(const UWorld* World)
+{
+	const APlayerController* PC = World ? World->GetFirstPlayerController() : nullptr;
+	AActor* ViewTarget = (PC && PC->PlayerCameraManager) ? PC->PlayerCameraManager->GetViewTarget() : nullptr;
+	if (!ViewTarget)
+	{
+		return nullptr;
+	}
+
+	// Same rule as AActor::CalcCamera: the first active camera component wins.
+	TInlineComponentArray<UCameraComponent*> Cameras;
+	ViewTarget->GetComponents(Cameras);
+	for (UCameraComponent* Camera : Cameras)
+	{
+		if (Camera->IsActive())
+		{
+			return Camera;
+		}
+	}
+	return nullptr;
+}
+
+void FDisplayXRRigManager::PushActiveRig(const UWorld* World)
+{
+	if (!World || !FDisplayXRPlatform::IsAvailable())
+	{
+		return;
+	}
+
+	UCameraComponent* ViewCamera = FindViewCamera(World);
+	if (!ViewCamera)
+	{
+		return;
+	}
+
+	UDisplayXRRigComponent* Rig = nullptr;
+	for (const TWeakObjectPtr<UDisplayXRRigComponent>& Weak : RegisteredRigs)
+	{
+		UDisplayXRRigComponent* Candidate = Weak.Get();
+		if (Candidate && Candidate->GetWorld() == World && Candidate->GetCamera() == ViewCamera)
+		{
+			Rig = Candidate;
+			break;
+		}
+	}
+	if (!Rig)
+	{
+		return;
+	}
+
+	FDisplayXRTunables T;
+	Rig->BuildTunables(T);
+	FDisplayXRPlatform::SetTunables(T);
+
+	// Diagnostic only since #396 W7: the view rig is submitted with an identity
+	// pose (UE applies camera placement itself); the session logs this alongside it.
+	FDisplayXRPlatform::SetSceneTransform(ViewCamera->GetComponentTransform(), true);
+}
 
 void FDisplayXRRigManager::Register(UCameraComponent* Camera, UDisplayXRCamera* CameraRig)
 {

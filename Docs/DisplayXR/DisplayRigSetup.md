@@ -7,7 +7,7 @@ How to set up a pawn/camera rig for DisplayXR stereoscopic 3D in Unreal Engine.
 1. Create a **Pawn** or **Character** Blueprint (e.g., `BP_DisplayRig`)
 2. Add a **Camera Component** as the root or child of the root
 3. **Enable `Use Pawn Control Rotation`** on the camera component — this is critical for mouse rotation to work
-4. Optionally add a `DisplayXRDisplay` or `DisplayXRCamera` component to control stereo tunables
+4. Optionally attach a `DisplayXRDisplay` or `DisplayXRCamera` component under the camera to control stereo tunables (with several cameras, one rig per camera; only the rig on the rendered camera is active)
 5. Set your **Game Mode** to use this pawn as the Default Pawn Class
 
 ## Why Use Pawn Control Rotation

@@ -4,6 +4,12 @@ All notable changes to the DisplayXR Unreal plugin are documented here.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Fixed
+- **Per-camera rigs.** `UDisplayXRCamera` / `UDisplayXRDisplay` are now scene components (via the new `UDisplayXRRigComponent` base) so a rig attaches under the camera it drives; unattached rigs still bind to the owner's first camera as before. `FDisplayXRRigManager` is the single tunables pusher: once per frame (`SetupViewFamily`, before the locate) it sends the tunables of the one rig on the camera the local player renders from — the view target's first active camera component, `AActor::CalcCamera`'s rule. Previously every rig pushed every tick into the single session slot, so with several cameras on one pawn the last rig to tick won, non-deterministically.
+- **Docs: the display plane is the camera transform.** The `UDisplayXRDisplay` header and README described a display placed independently of the camera ("parent transform defines the display; camera is a child"); that was a mis-port. In both plugins the camera transform is the display plane and the viewer moves around it.
+
 ## [0.7.0] - 2026-08-15
 
 ### Added
