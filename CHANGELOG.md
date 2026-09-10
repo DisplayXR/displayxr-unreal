@@ -7,7 +7,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 ## [Unreleased]
 
 ### Fixed
-- **Camera-centric rig sent the camera's horizontal FOV as `verticalFov`.** `UDisplayXRCamera` forwarded `UCameraComponent::FieldOfView` — which Unreal defines as the *horizontal* angle — straight into the rig's vertical field, so the stereo frustum came out ~1.8x taller than the 2D view on a 2.1:1 viewport. (The Unity sibling is correct as-is: its `Camera.fieldOfView` is vertical.) The session now converts horizontal → vertical through the per-view tile aspect UE actually renders each eye at, published from `AdjustViewRect` (editor and game paths), with the panel-derived tile aspect as the fallback before the first view rect. `FDisplayXRTunables::FovOverride` keeps its name and now documents that it carries the horizontal angle.
+- **Camera-centric rig sent the camera's horizontal FOV as `verticalFov`.** `UDisplayXRCamera` forwarded `UCameraComponent::FieldOfView` — which Unreal defines as the *horizontal* angle — straight into the rig's vertical field, so the stereo frustum did not match the 2D view (90° tall instead of 58.7° for the default camera). (The Unity sibling is correct as-is: its `Camera.fieldOfView` is vertical.) The rig now derives the vertical angle the way UE itself does — `FMinimalViewInfo::CalculateProjectionMatrixGivenViewRectangle` with the local player's aspect-ratio axis constraint and the stereo canvas rect (published from `AdjustViewRect`), reading the vertical half-angle off the projection matrix — so `MaintainYFOV` / `MaintainXFOV` / `MajorAxisFOV` and constrained-aspect cameras all match their 2D framing. `FDisplayXRTunables::FovOverride` now carries the vertical angle.
 
 ## [0.7.0] - 2026-08-15
 

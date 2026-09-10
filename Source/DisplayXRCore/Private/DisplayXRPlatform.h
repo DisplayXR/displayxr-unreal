@@ -92,19 +92,19 @@ struct FDisplayXRPlatform
 		return OutW > 0 && OutH > 0;
 	}
 
-	/** Per-view tile size (W << 32 | H, pixels) published by AdjustViewRect; the
-	 *  session uses its aspect to convert the camera's horizontal fov to vertical.
-	 *  0 = not published yet. */
-	DISPLAYXRCORE_API static TAtomic<uint64> ViewTileSizePacked;
+	/** Canvas size (W << 32 | H, pixels) the stereo views are laid out in — the
+	 *  window client rect or the editor zone — published by AdjustViewRect. The camera
+	 *  rig derives its vertical fov against this rect. 0 = not published yet. */
+	DISPLAYXRCORE_API static TAtomic<uint64> ViewCanvasSizePacked;
 
-	static void SetViewTileSize(uint32 W, uint32 H)
+	static void SetViewCanvasSize(uint32 W, uint32 H)
 	{
-		ViewTileSizePacked.Store(((uint64)W << 32) | (uint64)H);
+		ViewCanvasSizePacked.Store(((uint64)W << 32) | (uint64)H);
 	}
 
-	static bool GetViewTileSize(uint32& OutW, uint32& OutH)
+	static bool GetViewCanvasSize(uint32& OutW, uint32& OutH)
 	{
-		const uint64 Packed = ViewTileSizePacked.Load();
+		const uint64 Packed = ViewCanvasSizePacked.Load();
 		OutW = (uint32)(Packed >> 32);
 		OutH = (uint32)(Packed & 0xffffffffu);
 		return OutW > 0 && OutH > 0;

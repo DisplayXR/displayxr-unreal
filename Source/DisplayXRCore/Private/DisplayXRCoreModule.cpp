@@ -531,6 +531,6 @@ void* FDisplayXRPlatform::OverrideCompositorHWND = nullptr;
 void* FDisplayXRPlatform::SavedShellForegroundHWND = nullptr;
 bool FDisplayXRPlatform::bRequestSharedTextureBinding = false;
 TAtomic<uint64> FDisplayXRPlatform::EditorZoneSizePacked{0};
-TAtomic<uint64> FDisplayXRPlatform::ViewTileSizePacked{0};
+TAtomic<uint64> FDisplayXRPlatform::ViewCanvasSizePacked{0};
 
 IMPLEMENT_MODULE(FDisplayXRCoreModule, DisplayXRCore)
