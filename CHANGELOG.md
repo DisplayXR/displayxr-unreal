@@ -4,6 +4,14 @@ All notable changes to the DisplayXR Unreal plugin are documented here.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+- **Rig gizmos in the editor.** Selecting a `DisplayXR Camera` draws its convergence plane — the screen plane at `1/InvConvergenceDistance` in front of the camera, sized from the camera's FOV and aspect, with edges back to the camera; inverse distance 0 (parallel) shows a 2 m preview plane in a different hue. Selecting a `DisplayXR Display` draws the display plane at the camera transform, sized from `VirtualDisplayHeight` or the physical display the runtime reports. Implemented as `FComponentVisualizer`s registered by `DisplayXREditor`; no runtime-module change. Tuning convergence no longer needs a Play-and-look cycle.
+
+### Removed
+- `DisplayXRComponentProxies` (`UDisplayXRCameraProxy` / `UDisplayXRDisplayProxy`): dead code — nothing instantiated them and they drew a fixed 100 cm frustum unrelated to any tunable.
+
 ## [0.7.0] - 2026-08-15
 
 ### Added
