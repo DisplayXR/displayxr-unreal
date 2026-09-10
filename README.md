@@ -27,7 +27,7 @@ The plugin hooks into Unreal's OpenXR pipeline to provide:
 
 - **Eye-tracked stereo rendering** — Kooima asymmetric frustum projection driven by real-time eye positions from the DisplayXR runtime
 - **Two stereo rig modes** — camera-centric (the camera moves through the scene) or display-centric (the camera is the display plane and the viewer moves around it)
-- **Zero-copy atlas handoff** — UE renders directly into the OpenXR swapchain (see [AtlasHandoff](Docs/DisplayXR/AtlasHandoff.md))
+- **Atlas handoff** — UE's stereo atlas is handed to the OpenXR swapchain each frame, with the window's 2D UI composited into every eye (see [AtlasHandoff](Docs/DisplayXR/AtlasHandoff.md), [UICompositing](Docs/DisplayXR/UICompositing.md))
 - **Editor preview** — a standalone OpenXR session in the editor so you can see stereo output without running PIE (see [EditorPreview](Docs/DisplayXR/EditorPreview.md))
 
 One unified session loads the DisplayXR OpenXR runtime directly on every platform; UE's `OpenXR` plugin is **not** a dependency. Platform differences (Windows D3D12, macOS Metal, Android Vulkan) live inside the session and compositor, not in a product-level compile flag. See [Architecture.md](Docs/DisplayXR/Architecture.md) for the full picture.
@@ -76,7 +76,7 @@ In-depth docs live in [Docs/DisplayXR/](Docs/DisplayXR/):
 
 - [QuickStart](Docs/DisplayXR/QuickStart.md) — install runtime → install plugin → press Play
 - [Architecture](Docs/DisplayXR/Architecture.md) — one-page class hierarchy, ownership, per-frame flow
-- [AtlasHandoff](Docs/DisplayXR/AtlasHandoff.md) — zero-copy UE → OpenXR swapchain pipeline
+- [AtlasHandoff](Docs/DisplayXR/AtlasHandoff.md) — UE → OpenXR swapchain pipeline (zero-copy flow and the swapchain contract)
 - [DisplayRigSetup](Docs/DisplayXR/DisplayRigSetup.md) — pawn/camera rig configuration, input, rig modes
 - [UICompositing](Docs/DisplayXR/UICompositing.md) — how 2D UI (UMG/Slate) reaches both eyes at the screen plane
 - [EditorPreview](Docs/DisplayXR/EditorPreview.md) — current `SceneCapture2D`-based preview

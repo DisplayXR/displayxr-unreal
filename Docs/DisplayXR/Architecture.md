@@ -7,7 +7,7 @@ One-page reference for the DisplayXR Unreal plugin. Covers the class hierarchy, 
 - **One module**, `FDisplayXRCoreModule`, implements `IHeadMountedDisplayModule` and makes itself the active HMD with priority +10 above `OpenXRHMD` / `SteamVR`.
 - **One session**, `FDisplayXRSession`, loads the DisplayXR OpenXR runtime *directly* (not through UE's `OpenXRHMD`) and owns the `XrInstance` / `XrSession`.
 - **One custom HMD device**, `FDisplayXRDevice`, extending `FHeadMountedDisplayBase + FXRRenderTargetManager + FSceneViewExtensionBase`. UE drives it through the standard HMD interfaces.
-- **One compositor thread**, `FDisplayXRCompositor`, handles the `xrWaitFrame` / `xrBeginFrame` / `xrEndFrame` handshake off UE's game and render threads. UE renders directly into the OpenXR swapchain (zero-copy, see [AtlasHandoff.md](./AtlasHandoff.md)).
+- **One compositor thread**, `FDisplayXRCompositor`, handles the `xrWaitFrame` / `xrBeginFrame` / `xrEndFrame` handshake off UE's game and render threads. UE renders the atlas into its own window-sized target and the tiles are copied into the OpenXR swapchain so the 2D UI can be composited per eye (see [UICompositing.md](./UICompositing.md)); `r.DisplayXR.UIPerEyeTiles 0` restores the zero-copy flow (see [AtlasHandoff.md](./AtlasHandoff.md)).
 - **No dual compile-time paths.** Platform differences (DLL loading, window binding, D3D12 vs Metal) live inside session and compositor code behind `#if PLATFORM_WINDOWS / PLATFORM_MAC / PLATFORM_LINUX`. There is no `DISPLAYXR_USE_UNREAL_OPENXR` or similar product-level flag — if you see it referenced somewhere, the doc is stale.
 
 ## Module map

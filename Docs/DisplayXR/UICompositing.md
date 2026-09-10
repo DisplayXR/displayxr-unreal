@@ -93,6 +93,21 @@ Resolution caveat: the UI ends up at tile resolution (half the window at 0.5 sca
 weave scales it back up, so text is softer than in 2D. A full-resolution UI layer would need
 runtime support (see Local2D below).
 
+## Known limitations
+
+- **`AHUD` / `FCanvas` drawing.** `UGameViewportClient::Draw` paints the HUD canvas once,
+  at the primary view's rect, after the scene graph has run, i.e. onto the cleared UI
+  layer. That tile-sized drawing is then scaled by `tile / window` into each eye like the
+  rest of the layer, so canvas HUD content lands undersized in the top-left of each tile.
+  Use UMG/Slate for UI meant for the stereo display; canvas HUDs are a 2D-only affordance.
+- **Scene captures.** `SceneCapture2D` / reflection-capture families skip the hand-off
+  entirely (`PostRenderViewFamily_RenderThread` returns early), so their targets are never
+  cleared or copied into the swapchain.
+- **Acquire moved to the render thread.** The swapchain acquire (`BeginFrameReady` wait +
+  `xrWaitSwapchainImage`) now happens in `PostRenderViewFamily_RenderThread` instead of
+  `AcquireColorTexture` on the game thread, so a runtime pacing stall shows up as a
+  render-thread stall. Same total wait, different thread.
+
 ## Alternatives considered
 
 - **UE `IStereoLayers` (quad layers)** — the plugin would implement a layer manager and

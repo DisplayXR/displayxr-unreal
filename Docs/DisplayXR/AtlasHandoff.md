@@ -6,6 +6,15 @@ tiles directly into OpenXR swapchain images (wrapped as `FRHITexture`s), and
 the DisplayXR compositor reads them for display composition. No cross-device
 copies, no shared textures, no cross-device fences.
 
+> **Since 0.9.0 the game path defaults to one tile-area copy per frame**, not zero-copy:
+> UE renders the atlas into its own window-sized target so the window's 2D UI can be
+> composited into every eye tile; see [UICompositing.md](./UICompositing.md). The
+> zero-copy flow described here is what `r.DisplayXR.UIPerEyeTiles 0` restores, and
+> the swapchain wrapping, acquire/release contract and compositor-thread handshake
+> below are shared by both flows. Where this document says the release happens in
+> `PostRenderViewFamily_RenderThread`, read: on the zero-copy flow; the per-eye UI
+> flow releases in `RenderTexture_RenderThread` after the UI blend.
+
 ## The Problem
 
 UE renders an N-view atlas (e.g., 3840×2160 with 2×1 tiles of 1920×1080 in the
