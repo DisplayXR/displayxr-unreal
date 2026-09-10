@@ -173,4 +173,30 @@ private:
 	// DisplayXR panel pixel dims when HWND is stale / off-screen / platform-
 	// unavailable, so the plugin still produces a valid content region.
 	void CacheWindowSize() const;
+
+	// --- 2D UI per eye tile (game path) — see Docs/DisplayXR/UICompositing.md ---
+
+	// Latched from r.DisplayXR.UIPerEyeTiles at construction.
+	bool bUIPerEyeTiles = true;
+
+	// True when this frame's atlas goes through UE's own render target so the
+	// window UI Slate paints can be composited into every eye tile: game path
+	// only (editor texture mode and the IPC array-copy path keep their flows).
+	bool UsesUIPerEyeTiles() const;
+
+	// Atlas-target size for the per-eye UI path: the viewport's own size, clamped
+	// to the swapchain. Deliberately not CacheWindowSize() — see the definition.
+	bool GetUITargetSize(const FViewport& Viewport, uint32& OutW, uint32& OutH) const;
+
+	// Render-thread hand-off between PostRenderViewFamily (atlas copied into an
+	// acquired swapchain image, UE's RT cleared for Slate) and
+	// RenderTexture_RenderThread (UI blended into each tile, image released).
+	struct FPendingUIComposite
+	{
+		FTextureRHIRef Swapchain;
+		TArray<FIntRect> TileRects;
+		bool IsValid() const { return Swapchain.IsValid(); }
+		void Reset() { Swapchain = nullptr; TileRects.Reset(); }
+	};
+	mutable FPendingUIComposite PendingUI_RT;
 };
