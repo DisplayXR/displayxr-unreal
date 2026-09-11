@@ -4,6 +4,11 @@ All notable changes to the DisplayXR Unreal plugin are documented here.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Fixed
+- **Instanced stereo (`vr.InstancedStereo`) crashed the game within seconds.** Not a plugin defect: UE 5.7's real-time sky-light reflection capture takes a bitwise snapshot of the view (`ViewSnapshotCache::Create`, which nulls only the uniform-buffer refs), sets it to a full-view pass and calls `UpdateProjectionMatrix`, whose `SetupViewFrustum` assigns `StereoCullingFrustum = nullptr` on the snapshot — releasing a `TSharedPtr` the snapshot never owned. The real owners then double-release the instanced-stereo culling frustum and the process dies on whichever release lands on reused memory (`FSceneView::~FSceneView`, the async scene-renderer cleanup, or a corrupted pointer in the renderer). Reproduced 9/9 with this plugin on both atlas paths and with UE's own `OpenXRHMD` against the same runtime; in Shipping it presents as a black window with no frames reaching the runtime. `FDisplayXRDevice` now detects instanced stereo at creation (`FStereoShaderAspects`) and forces `r.SkyLight.RealTimeReflectionCapture=0` with a warning, which ran a five-minute on-panel test at ~48 fps with zero crashes; sky lights fall back to their captured cubemap. `r.DisplayXR.InstancedStereoWorkarounds 0` opts out. It also warns when the runtime reports a tile layout ISR cannot render (more than two views or more than one row). See `Docs/DisplayXR/InstancedStereo.md`.
+
 ## [0.9.1] - 2026-09-10
 
 ### Fixed

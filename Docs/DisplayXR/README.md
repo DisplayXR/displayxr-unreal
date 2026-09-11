@@ -14,6 +14,7 @@ Unreal Engine integration with the DisplayXR OpenXR runtime for eye-tracked 3D l
 ### Architecture
 - [Architecture](./Architecture.md) — One-page class hierarchy, ownership, per-frame data flow
 - [Atlas Handoff](./AtlasHandoff.md) — Zero-copy UE → OpenXR swapchain (single-device D3D12, Acquire/Release handshake)
+- [Instanced Stereo](./InstancedStereo.md) — `vr.InstancedStereo` with this plugin: what works, the UE 5.7 sky-light capture crash, the workaround the device applies
 - [Eye Tracking](./EyeTracking.md) — Parallax pipeline: `xrLocateViews` → Kooima → per-view projection, coordinate conventions
 - [ADRs](./adr/) — Decision records for load-bearing choices (direct runtime loading, zero-copy atlas, UE-native projection)
 

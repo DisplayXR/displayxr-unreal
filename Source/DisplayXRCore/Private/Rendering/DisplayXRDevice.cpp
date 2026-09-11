@@ -5,6 +5,7 @@
 #include "DisplayXRStereoMath.h"
 #include "DisplayXRRigManager.h"
 #include "DisplayXRPlatform.h"
+#include "StereoRenderUtils.h"
 #include "Widgets/SViewport.h"
 #include "UnrealEngine.h"
 #include "DynamicRHI.h"
@@ -36,6 +37,16 @@ static TAutoConsoleVariable<int32> CVarDisplayXRUIPerEyeTiles(
 	TEXT("Game path: composite the window's 2D UI (UMG/Slate) into every eye tile, at the screen plane.\n")
 	TEXT("1 (default): UE renders the atlas into its own render target, the tiles are copied into the swapchain image and the UI Slate paints is alpha-blended into each tile.\n")
 	TEXT("0: v0.7.0 behaviour — UE renders straight into the swapchain image and Slate paints the window UI once across both tiles."),
+	ECVF_ReadOnly);
+
+// Instanced stereo (vr.InstancedStereo) workarounds — see Docs/DisplayXR/InstancedStereo.md.
+// Read once at device creation (set it in DefaultEngine.ini [ConsoleVariables] or with -dpcvars).
+static TAutoConsoleVariable<int32> CVarDisplayXRInstancedStereoWorkarounds(
+	TEXT("r.DisplayXR.InstancedStereoWorkarounds"),
+	1,
+	TEXT("When the project is compiled with instanced stereo (vr.InstancedStereo=1), apply the engine workarounds the plugin knows about.\n")
+	TEXT("1 (default): force r.SkyLight.RealTimeReflectionCapture=0. UE 5.7's real-time sky-light capture takes a bitwise snapshot of the view and re-runs frustum setup on it, which double-releases the instanced-stereo culling frustum and crashes the game within seconds (verified with UE's own OpenXR plugin too). Sky lights fall back to their captured cubemap.\n")
+	TEXT("0: leave the engine alone."),
 	ECVF_ReadOnly);
 
 // =============================================================================
@@ -195,6 +206,66 @@ static void DisplayXRRemoveWndProcHook()
 // Constructor
 // =============================================================================
 
+// Instanced stereo is a cook-time shader decision (vr.InstancedStereo, baked into
+// every shader as INSTANCED_STEREO); the stereo device is never consulted and
+// cannot veto it. What the plugin can do is say what it supports and work around
+// what the engine gets wrong. Runs once, at device creation, after the RHI is up
+// (GMaxRHIShaderPlatform is valid here) and before any world — so before any sky
+// light component registers. Details and evidence: Docs/DisplayXR/InstancedStereo.md.
+static void ApplyInstancedStereoWorkarounds(const FDisplayXRSession* Session)
+{
+	const UE::StereoRenderUtils::FStereoShaderAspects Aspects(GMaxRHIShaderPlatform);
+	if (!Aspects.IsInstancedStereoEnabled())
+	{
+		return;
+	}
+
+	UE_LOG(LogDisplayXRDevice, Log,
+		TEXT("[%s] Instanced stereo is compiled in (vr.InstancedStereo=1, multi-viewport %s). Both eyes render in one pass into the side-by-side atlas."),
+		WorldCtxTag(), Aspects.IsInstancedMultiViewportEnabled() ? TEXT("on") : TEXT("off"));
+
+	// ISR draws exactly two eyes, side by side, both at Y = 0 (FSceneRenderer::
+	// SetStereoViewport hard-codes MinY = 0 and pairs view N with view N+1). Any
+	// other tile layout the runtime reports renders black tiles under ISR.
+	if (Session)
+	{
+		const FDisplayXRViewConfig VC = Session->GetViewConfig();
+		if (VC.TileRows > 1 || VC.GetViewCount() > 2)
+		{
+			UE_LOG(LogDisplayXRDevice, Warning,
+				TEXT("[%s] This display reports a %dx%d tile layout (%d views); instanced stereo only renders two side-by-side views at Y=0. Set vr.InstancedStereo=False for this display."),
+				WorldCtxTag(), VC.TileColumns, VC.TileRows, VC.GetViewCount());
+		}
+	}
+
+	if (CVarDisplayXRInstancedStereoWorkarounds.GetValueOnGameThread() == 0)
+	{
+		UE_LOG(LogDisplayXRDevice, Warning,
+			TEXT("[%s] r.DisplayXR.InstancedStereoWorkarounds is 0: real-time sky-light capture stays on. UE 5.7 crashes within seconds under instanced stereo when a sky light has Real Time Capture enabled."),
+			WorldCtxTag());
+		return;
+	}
+
+	// UE 5.7.4: ReflectionEnvironmentRealTimeCapture.cpp takes MainView.CreateSnapshot()
+	// (an FMemory::Memcpy of the FViewInfo that nulls only the uniform-buffer refs),
+	// sets StereoPass = eSSP_FULL and calls UpdateProjectionMatrix(), whose
+	// SetupViewFrustum() assigns StereoCullingFrustum = nullptr on the snapshot.
+	// That assignment releases a TSharedPtr the snapshot never owned, so the real
+	// owners (the game-thread FSceneView and the FViewInfo) double-release it and
+	// the process dies on whichever release lands on reused memory. The frustum
+	// only exists under single-pass stereo, hence ISR-only. Reproduced with UE's
+	// own OpenXRHMD plugin, so it is not ours to fix — but we can keep the path
+	// from running. SetByCode outranks scalability / device-profile writes.
+	IConsoleVariable* SkyCapture = IConsoleManager::Get().FindConsoleVariable(TEXT("r.SkyLight.RealTimeReflectionCapture"));
+	if (SkyCapture && SkyCapture->GetInt() != 0)
+	{
+		SkyCapture->Set(0, ECVF_SetByCode);
+		UE_LOG(LogDisplayXRDevice, Warning,
+			TEXT("[%s] Instanced stereo: forcing r.SkyLight.RealTimeReflectionCapture=0 for this process. UE 5.7's real-time sky-light capture double-releases the instanced-stereo culling frustum (bitwise view snapshot + UpdateProjectionMatrix) and crashes the game within seconds; sky lights fall back to their captured cubemap. r.DisplayXR.InstancedStereoWorkarounds 0 disables this. See Docs/DisplayXR/InstancedStereo.md."),
+			WorldCtxTag());
+	}
+}
+
 FDisplayXRDevice::FDisplayXRDevice(const FAutoRegister& AutoRegister, FDisplayXRSession* InSession)
 	: FHeadMountedDisplayBase(nullptr)
 	, FSceneViewExtensionBase(AutoRegister)
@@ -203,6 +274,8 @@ FDisplayXRDevice::FDisplayXRDevice(const FAutoRegister& AutoRegister, FDisplayXR
 	bUIPerEyeTiles = CVarDisplayXRUIPerEyeTiles.GetValueOnGameThread() != 0;
 	UE_LOG(LogDisplayXRDevice, Log, TEXT("[%s] DisplayXR Device: Created (UI per eye tile: %s)"),
 		WorldCtxTag(), bUIPerEyeTiles ? TEXT("on") : TEXT("off"));
+
+	ApplyInstancedStereoWorkarounds(InSession);
 }
 
 bool FDisplayXRDevice::UsesUIPerEyeTiles() const

@@ -79,6 +79,7 @@ In-depth docs live in [Docs/DisplayXR/](Docs/DisplayXR/):
 - [AtlasHandoff](Docs/DisplayXR/AtlasHandoff.md) — UE → OpenXR swapchain pipeline (zero-copy flow and the swapchain contract)
 - [DisplayRigSetup](Docs/DisplayXR/DisplayRigSetup.md) — pawn/camera rig configuration, input, rig modes
 - [UICompositing](Docs/DisplayXR/UICompositing.md) — how 2D UI (UMG/Slate) reaches both eyes at the screen plane
+- [InstancedStereo](Docs/DisplayXR/InstancedStereo.md) — `vr.InstancedStereo` support, the UE 5.7 sky-light capture crash and the plugin's workaround
 - [EditorPreview](Docs/DisplayXR/EditorPreview.md) — current `SceneCapture2D`-based preview
 - [EditorPreviewNative](Docs/DisplayXR/EditorPreviewNative.md) — in-flight plan for native `FDisplayXRDevice` → PIE preview
 - [EyeTracking](Docs/DisplayXR/EyeTracking.md) — `xrLocateViews` → Kooima → per-view projection pipeline
