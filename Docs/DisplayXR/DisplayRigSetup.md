@@ -23,6 +23,14 @@ UE's stereo rendering pipeline reads the camera's `ViewInfo.Rotation` to build t
 - Camera component with `bUsePawnControlRotation = true` → `ViewInfo.Rotation = controller rotation` ✓
 - UE's `LocalPlayer::CalcSceneView` builds the view matrix from `ViewInfo.Rotation`
 
+**The plugin reports "no head tracking" to UE**, so camera code takes the same paths it
+would on a flat display: the game keeps owning camera placement and only the per-eye
+offset comes from the stereo device. A camera component that asks
+`UCameraComponent::IsXRHeadTrackedCamera()` therefore gets `false` and keeps its own view
+calculation — components that branch on it often discard theirs, which would strand the
+view at the world origin and stop control rotation from reaching it. Set
+`vr.HeadTracking.bEnforced 1` if you want the head-tracked paths anyway.
+
 ## Display-Centric vs Camera-Centric
 
 The stereo mode depends on which component is on the rig:

@@ -252,8 +252,18 @@ bool FDisplayXRDevice::GetCurrentPose(int32 DeviceId, FQuat& OutOrientation, FVe
 {
 	// Return false: we're a display device, not a head-mounted tracker.
 	// Returning true with identity would lock the camera to face forward,
-	// overriding mouse rotation.
+	// overriding mouse rotation. Same statement as IsHeadTrackingAllowed --
+	// keep the two in step.
 	return false;
+}
+
+bool FDisplayXRDevice::IsHeadTrackingAllowed() const
+{
+	// See the header: FHeadMountedDisplayBase would answer IsStereoEnabled() ||
+	// IsHeadTrackingEnforced(), and our IsStereoEnabled() is always true, so games would
+	// read "the HMD owns the camera". A fixed display does not. Skipping the base class
+	// still honours vr.HeadTracking.bEnforced for anyone who wants those paths back.
+	return IsHeadTrackingEnforced();
 }
 
 float FDisplayXRDevice::GetWorldToMetersScale() const

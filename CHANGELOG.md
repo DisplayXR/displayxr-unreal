@@ -4,6 +4,11 @@ All notable changes to the DisplayXR Unreal plugin are documented here.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Fixed
+- **The plugin reported itself as a head-tracked camera, so games handed it camera placement.** `FHeadMountedDisplayBase::IsHeadTrackingAllowed()` answers `IsStereoEnabled() || IsHeadTrackingEnforced()`, and our `IsStereoEnabled()` is unconditionally true, so UE was told "head-tracked" whenever the plugin was loaded. `UCameraComponent::IsXRHeadTrackedCamera()` gates on that, and a camera component that takes the branch drops its own view calculation — Lyra's discards its entire camera-mode-stack result, which left the player view stuck at the world origin (character not visible) and stopped control rotation from reaching the view (mouse look dead). `FDisplayXRDevice` now overrides `IXRTrackingSystem::IsHeadTrackingAllowed` to return `IsHeadTrackingEnforced()` — the same statement as `GetCurrentPose` returning false: stereo yes, head-mounted no. Stereo is unaffected: `ULocalPlayer::CalcSceneView` applies the per-eye offsets off `IsStereoscopic3D()`, not head tracking. Side effects are the flat-display defaults coming back — `LimitViewPitch` clamps pitch again, camera-shake pitch limits apply, `bLockToHmd` is ignored, and `IsHeadMountedDisplayEnabled()` returns false so game-side VR branches treat us as a flat display. `vr.HeadTracking.bEnforced 1` restores the head-tracked paths.
+
 ## [0.9.0] - 2026-09-10
 
 ### Fixed

@@ -43,6 +43,29 @@ public:
 	virtual int32 GetXRSystemFlags() const override;
 	virtual bool EnumerateTrackedDevices(TArray<int32>& OutDevices, EXRTrackedDeviceType Type) override;
 	virtual bool GetCurrentPose(int32 DeviceId, FQuat& OutOrientation, FVector& OutPosition) override;
+	/**
+	 * A fixed light-field display is not a head-tracked camera. Same statement as
+	 * GetCurrentPose returning false -- keep the two in step.
+	 *
+	 * FHeadMountedDisplayBase answers this with IsStereoEnabled() || IsHeadTrackingEnforced(),
+	 * and IsStereoEnabled() is unconditionally true for us, so the base class reports
+	 * "head-tracked" whenever the plugin is loaded. Games branch on that to hand camera
+	 * placement to the HMD. UCameraComponent::IsXRHeadTrackedCamera() is the gate, and a
+	 * camera component that takes it drops its own view calculation: Lyra's discards its
+	 * entire camera-mode-stack result (LyraCameraComponent.cpp, "In XR much of the camera
+	 * behavior above is irrelevant"), which left the player view at the world origin and
+	 * stopped control rotation from reaching the view at all.
+	 *
+	 * Our viewer tracking moves the eyes within the rig; it does not place the camera. The
+	 * game keeps owning camera placement and only the per-eye offset comes from
+	 * CalculateStereoViewOffset -- which ULocalPlayer::CalcSceneView applies off
+	 * IsStereoscopic3D(), not off head tracking, so stereo is unaffected by this answer.
+	 *
+	 * Deferring to IsHeadTrackingEnforced() rather than returning a bare false honours
+	 * vr.HeadTracking.bEnforced, the engine's only setter, for anyone who wants the
+	 * head-tracked code paths back.
+	 */
+	virtual bool IsHeadTrackingAllowed() const override;
 	virtual float GetWorldToMetersScale() const override;
 	virtual void ResetOrientationAndPosition(float Yaw) override;
 	virtual void OnBeginPlay(FWorldContext& InWorldContext) override;
