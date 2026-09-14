@@ -29,4 +29,4 @@ Unreal Engine integration with the DisplayXR OpenXR runtime for eye-tracked 3D l
 ## Reference Repositories
 
 - **[dfattal/openxr-3d-display](https://github.com/dfattal/openxr-3d-display)** — The DisplayXR OpenXR runtime. Defines `XR_DXR_display_info`, window binding extensions, display processor interface.
-- **[DisplayXR/displayxr-unity](https://github.com/DisplayXR/displayxr-unity)** — Unity sibling plugin. Shares the Kooima C libraries and rig patterns.
+- **[DisplayXR/displayxr-unity](https://github.com/DisplayXR/displayxr-unity)** — Unity sibling plugin. Shares the rig patterns; both consume `XR_DXR_view_rig` and vendor no view math.

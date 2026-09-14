@@ -1,7 +1,7 @@
 # ADR-003 — UE-native off-axis projection instead of Kooima's `projection_matrix[16]`
 
-**Status:** Accepted
-**Date:** 2026-04
+**Status:** Superseded — the plugin no longer computes an off-axis frustum at all. Since the `XR_DXR_view_rig` migration (displayxr-runtime #396 W7, runtime ADR-024) the runtime returns a render-ready per-eye `XrFovf`, and `DisplayXRStereoMath.h::ProjectionMatrixFromFov` only converts angles into UE's reverse-Z convention. `CalculateOffAxisProjectionMatrix()` was removed in 2026-09. The convention argument below (why not consume Kooima's `projection_matrix[16]`) still holds and is why the fov, not a matrix, crosses the wire.
+**Date:** 2026-04 (superseded 2026-09)
 
 ## Context
 
