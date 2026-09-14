@@ -4,7 +4,7 @@ How Unreal's instanced stereo rendering interacts with this plugin, what works, 
 UE 5.7 engine bug that makes it crash, and the workaround the plugin applies.
 
 Everything below was measured on 2026-09-11 with UE 5.7.4 (D3D12, SM6) on a
-3840x2160 Leia panel using [`displayxr-unreal-test`](https://github.com/DisplayXR/displayxr-unreal-test)
+3840x2160 eye-tracked 3D panel using [`displayxr-unreal-test`](https://github.com/DisplayXR/displayxr-unreal-test)
 launched as a game from the editor binary, plus a control run with UE's own
 `OpenXRHMD` plugin against the same runtime. Run artifacts, crash dumps and the
 harness are referenced at the end.
@@ -175,6 +175,24 @@ Runs live under `C:\dxr-dev\runs\<label>` on the win box (harness
 Dumps were read with `cdb` against export symbols (no editor PDBs installed); the
 release site is `FSceneView::~FSceneView+0x1c6` operating on the member at
 `FSceneView+0x48`, which is `StereoCullingFrustum`'s controller pointer.
+
+## A second engine bug: Slate background blur under ISR on D3D12
+
+Lyra (CommonUI menus) hits a different crash on top of the one above, found by Byungju
+Lee: `Failed to create pipeline state, error 80070057 (E_INVALIDARG)` from
+`PipelineStateCache.cpp`, also with `-nohmd`, D3D12 only (`-d3d11` runs). The D3D12 debug
+layer names it: the screen-pass vertex shader emits the stereo output struct (`EyeIndex`)
+before `SV_Position` when `INSTANCED_STEREO` is compiled in, but the five pixel shaders
+in `SlatePostProcessPixelShader.usf` (`GaussianBlurMain`, `Resample1Main`,
+`Resample2x2Main`, `UpsampleMain`, `OptimizedKawaseUpsampleMain`) declare only
+`TEXCOORD0`, so `SV_Position` lands one register off and the PSO is rejected. Any
+`SBackgroundBlur` / UMG Background Blur widget triggers it; the Third Person template has
+none, Lyra's menus do.
+
+Workarounds until Epic fixes the shaders: `Slate.ForceBackgroundBlurLowQualityOverride 1`
+(blur widgets draw their fallback brush instead of running the blur passes) or
+`Slate.AllowBackgroundBlurWidgets 0` (blur widgets are not rendered at all). Both are
+plain cvars; put them in `DefaultEngine.ini` `[ConsoleVariables]`.
 
 ## Related plugin work (not part of the crash)
 
