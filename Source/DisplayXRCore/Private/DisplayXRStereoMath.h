@@ -9,21 +9,15 @@
 /**
  * Stereo math helpers for DisplayXR.
  *
- * We take raw eye positions from the DisplayXR OpenXR runtime's xrLocateViews
- * and feed them into a UE-native off-axis frustum pipeline. We do NOT consume
- * Kooima's projection_matrix[16] — that is OpenGL-convention and forcing it
- * into UE's pipeline fights UE's view construction / reverse-Z / LH axes.
+ * The plugin computes no view math of its own. The DisplayXR runtime owns it
+ * via XR_DXR_view_rig: we chain a rig descriptor onto xrLocateViews and get
+ * back render-ready XrView{pose, fov} per eye. What remains here is strictly
+ * convention work — OpenXR ↔ UE axis/unit conversion, and turning a
+ * clip-independent XrFovf into UE's reverse-Z projection matrix.
+ *
+ * Do not add convergence-plane / eye-position frustum math back into this
+ * file; the `no-vendored-math` workflow exists to keep it out.
  */
-
-/** Per-frame per-eye output, consumed by the scene view extension. */
-struct FDisplayXRStereoFrame
-{
-	FMatrix LeftProj = FMatrix::Identity;
-	FMatrix RightProj = FMatrix::Identity;
-	FVector LeftOffset = FVector::ZeroVector;   // UE cm, camera-local
-	FVector RightOffset = FVector::ZeroVector;  // UE cm, camera-local
-	bool bValid = false;
-};
 
 // ---------------------------------------------------------------------------
 // OpenXR ↔ UE axis / unit conversion
@@ -64,78 +58,16 @@ static inline XrQuaternionf UEOrientationToOpenXR(const FQuat& Q)
 }
 
 // ---------------------------------------------------------------------------
-// UE-native off-axis math
+// Render-ready fov → UE projection
 // ---------------------------------------------------------------------------
-
-/**
- * UE → screen-local axis permutation.
- *   Input:  UE (X-forward, Y-right, Z-up)
- *   Output: screen-local (x-right, y-up, z-out-of-screen-toward-viewer)
- */
-static inline FVector ToScreenSpace(const FVector& V)
-{
-	return FVector(V.Y, V.Z, -V.X);
-}
-
-/**
- * UE-native asymmetric off-axis projection matrix.
- *
- * @param ViewportHalfSize  Half-extent (UE units) of the convergence plane
- * @param EyeLocation       Eye position in UE-local coords relative to screen
- *                          center. Caller passes X = -ConvergenceDistance, the
- *                          Y/Z from the scaled/factor-adjusted tracked eye.
- *
- * Produces a UE reverse-Z-compatible projection matrix:
- *   M[2][2]=0, M[2][3]=1, M[3][2]=GNearClippingPlane (infinite far plane).
- */
-static inline FMatrix CalculateOffAxisProjectionMatrix(
-	const FVector2D& ViewportHalfSize, const FVector& EyeLocation)
-{
-	extern ENGINE_API float GNearClippingPlane;
-
-	const FVector EyeScreen = ToScreenSpace(EyeLocation);
-
-	const FVector ScreenRight(1.f, 0.f, 0.f);
-	const FVector ScreenUp(0.f, 1.f, 0.f);
-	const FVector ScreenNormal(0.f, 0.f, 1.f);
-
-	const FVector BottomLeft (-ViewportHalfSize.X, -ViewportHalfSize.Y, 0.f);
-	const FVector BottomRight( ViewportHalfSize.X, -ViewportHalfSize.Y, 0.f);
-	const FVector TopLeft    (-ViewportHalfSize.X,  ViewportHalfSize.Y, 0.f);
-
-	const FVector BottomLeftToEye  = BottomLeft  - EyeScreen;
-	const FVector BottomRightToEye = BottomRight - EyeScreen;
-	const FVector TopLeftToEye     = TopLeft     - EyeScreen;
-
-	const float EyeDistance = FVector::DotProduct(BottomLeftToEye, ScreenNormal) * -1.0f;
-	const float InverseEyeDistanceNearPlane = GNearClippingPlane / EyeDistance;
-
-	const float Left   = FVector::DotProduct(ScreenRight, BottomLeftToEye)  * InverseEyeDistanceNearPlane;
-	const float Right  = FVector::DotProduct(ScreenRight, BottomRightToEye) * InverseEyeDistanceNearPlane;
-	const float Bottom = FVector::DotProduct(ScreenUp,    BottomLeftToEye)  * InverseEyeDistanceNearPlane;
-	const float Top    = FVector::DotProduct(ScreenUp,    TopLeftToEye)     * InverseEyeDistanceNearPlane;
-
-	const float M00 = 2.0f * GNearClippingPlane / (Right - Left);
-	const float M11 = 2.0f * GNearClippingPlane / (Top - Bottom);
-	const float M20 = ((Right + Left)   / (Right - Left))   * -1.0f;
-	const float M21 = ((Top   + Bottom) / (Top   - Bottom)) * -1.0f;
-
-	return AdjustProjectionMatrixForRHI(FMatrix{
-		FPlane(M00,  0.0f, 0.0f,               0.0f),
-		FPlane(0.0f, M11,  0.0f,               0.0f),
-		FPlane(M20,  M21,  0.0f,               1.0f),
-		FPlane(0.0f, 0.0f, GNearClippingPlane, 0.0f),
-	});
-}
 
 /**
  * Render-ready XrFovf → UE reverse-Z projection matrix.
  *
  * With XR_DXR_view_rig the runtime owns the view math and hands back an
- * asymmetric off-axis fov per view, so we no longer derive the frustum from a
- * convergence plane + eye position (CalculateOffAxisProjectionMatrix above) —
- * we just convert the angles. The fov is clip-independent by design, so near/far
- * and the reverse-Z convention stay ours.
+ * asymmetric off-axis fov per view; we just convert the angles. The fov is
+ * clip-independent by design, so near/far and the reverse-Z convention stay
+ * ours.
  *
  * OpenXR gives signed half-angles (angleLeft/angleDown are negative), so the
  * tangents are the frustum extents at unit distance; scaling them by the near
@@ -172,30 +104,4 @@ static inline FMatrix ProjectionMatrixFromFov(const XrFovf& Fov)
 		FPlane(M20,  M21,  0.0f,               1.0f),
 		FPlane(0.0f, 0.0f, GNearClippingPlane, 0.0f),
 	});
-}
-
-/**
- * Raw tracked eyes → lookaround/baseline-adjusted per-eye offsets + center.
- * Caller passes eyes already in UE units (handles Scale upstream).
- *
- * All inputs/outputs in UE local coords (X-forward, Y-right, Z-up), UE units.
- */
-static inline void EyesToOffsets(
-	float LookaroundFactor, float BaselineFactor,
-	const FVector& InLeft, const FVector& InRight,
-	FVector& OutLeft, FVector& OutRight, FVector& OutCenter)
-{
-	const float ClampedLookaround = FMath::Max(LookaroundFactor, 0.0f);
-	const float ClampedBaseline   = FMath::Max(BaselineFactor,   0.0f);
-
-	OutLeft  = InLeft;
-	OutRight = InRight;
-
-	OutCenter = (OutLeft + OutRight) * 0.5f;
-	OutCenter.X = 0.0f;
-	OutCenter = FMath::Lerp(FVector::ZeroVector, OutCenter, ClampedLookaround);
-
-	const FVector HalfEyeOffset = (OutRight - OutLeft) * 0.5f;
-	OutLeft  = OutCenter - HalfEyeOffset * ClampedBaseline;
-	OutRight = OutCenter + HalfEyeOffset * ClampedBaseline;
 }

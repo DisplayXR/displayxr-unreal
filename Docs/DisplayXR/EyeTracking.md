@@ -49,25 +49,27 @@ thread handles all runtime interaction via `xrWaitFrame`.
 
 **File**: `DisplayXRSession.cpp`, `Tick()`.
 
-### 3. Display-Centric View Offset Uses eye_world
+### 3. View Offset and Projection Come From the Runtime
 
-For display-centric mode (the default), the camera offset and projection
-matrix both use `eye_display` from the Kooima library, converted to UE
-coordinates via `OpenXRPositionToUE()`.
+For both rig modes the plugin chains an `XrDisplayRigDXR` / `XrCameraRigDXR`
+descriptor onto `xrLocateViews` (`XR_DXR_view_rig`) and consumes the
+render-ready `XrView{pose, fov}` the runtime returns. No view math runs in the
+plugin.
 
-- **Camera offset** (`CalculateStereoViewOffset`): Full `eye_display` XYZ.
-  The camera moves to the eye position — this is correct and matches the
-  Unity/test app implementations which set `view.pose.position = eye_world`.
+- **Camera offset** (`CalculateStereoViewOffset`): `view.pose.position`,
+  converted to UE centimetres via `OpenXRPositionToUE()`. The camera moves to
+  the eye position the runtime computed for the active rig.
 
-- **Projection matrix** (`CalculateOffAxisProjectionMatrix`): Same `eye_display`
-  position, which `ToScreenSpace()` converts to screen-local coords for the
-  asymmetric Kooima frustum.
+- **Projection matrix** (`ProjectionMatrixFromFov`): `view.fov` converted to a
+  UE reverse-Z projection. The fov is clip-independent, so near/far and the
+  reverse-Z convention are the only app-side contributions.
 
-- **Screen half-size**: `screen_meters * m2v * 100` where `m2v = virtual_display_height / screen_height_m`.
-  This matches Kooima's `kScreenW/kScreenH` scaling (m2v only, no perspective_factor —
-  perspective_factor only applies to eye position).
+- **Screen size, convergence, look-around and baseline factors** are inputs to
+  the rig descriptor; the runtime applies them. The plugin never derives a
+  frustum from a convergence plane and an eye position.
 
-**File**: `DisplayXRDevice.cpp`, `ComputeViews()` display-centric branch.
+**File**: `DisplayXRDevice.cpp`, `ComputeViews()`; editor path in
+`DisplayXRPreviewSession.cpp`.
 
 ## Coordinate Conventions
 
@@ -76,7 +78,6 @@ coordinates via `OpenXRPositionToUE()`.
 | OpenXR display-local | Right | Up | Toward viewer | Meters |
 | Kooima (same as OpenXR) | Right | Up | Toward viewer | Virtual units (meters × m2v) |
 | UE world | Forward (into screen) | Right | Up | Centimeters |
-| UE screen-local (`ToScreenSpace`) | Right | Up | Toward viewer | Centimeters |
 
 `OpenXRPositionToUE(V)`: `(-V.z × 100, V.x × 100, V.y × 100)`
 

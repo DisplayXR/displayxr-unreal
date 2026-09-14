@@ -24,7 +24,7 @@ Output goes to `Packages/DisplayXR_<version>/`.
 
 ### Three Modules
 
-1. **DisplayXRCore** (Runtime, `Win64|Mac|Android`, `PostConfigInit`) — OpenXR integration, stereo device, camera components, Kooima C libraries, Blueprint function library.
+1. **DisplayXRCore** (Runtime, `Win64|Mac|Android`, `PostConfigInit`) — OpenXR integration, stereo device, camera components, Blueprint function library. No view math of its own (see §Shared native code).
 2. **DisplayXRMaterials** (Runtime, all platforms, `Default`) — Custom material expression nodes (`StereoIndex`, `StereoSelect`, `SideBySideCoords`, `TopBottomCoords`).
 3. **DisplayXREditor** (Editor, `Win64|Mac`, `PostEngineInit`) — Editor preview session, viewport widget, component proxies.
 
@@ -40,7 +40,7 @@ There is **no** `DISPLAYXR_USE_UNREAL_OPENXR` compile flag. Platform differences
 
 1. Polls the OpenXR session each frame to get eye positions.
 2. Chains an `XR_DXR_view_rig` descriptor onto `xrLocateViews`, so the **runtime** applies the view math and returns render-ready `XrView{pose, fov}` (see §Shared native code).
-3. Builds UE-native reverse-Z off-axis projection matrices via `DisplayXRStereoMath.h::CalculateOffAxisProjectionMatrix`.
+3. Converts each render-ready fov into a UE reverse-Z projection matrix via `DisplayXRStereoMath.h::ProjectionMatrixFromFov` (pure angle conversion; no convergence-plane or eye-position frustum math in the plugin).
 4. UE renders directly into the OpenXR swapchain (zero-copy atlas handoff — see `Docs/DisplayXR/AtlasHandoff.md`).
 
 ### Component Hierarchy
@@ -126,7 +126,7 @@ for the auto-bump spec; this plugin doesn't participate.
 
 ## Sibling repositories
 
-- **[DisplayXR/displayxr-unity](https://github.com/DisplayXR/displayxr-unity)** — Unity plugin. Reference implementation; shares native C Kooima code.
+- **[DisplayXR/displayxr-unity](https://github.com/DisplayXR/displayxr-unity)** — Unity plugin. Reference implementation; like this plugin it consumes `XR_DXR_view_rig` and vendors no view math.
 - **[DisplayXR/displayxr-runtime](https://github.com/DisplayXR/displayxr-runtime)** — DisplayXR OpenXR runtime. (Old URL `dfattal/openxr-3d-display` redirects, but reference the canonical org URL in new docs.)
 - **[DisplayXR/displayxr-mcp](https://github.com/DisplayXR/displayxr-mcp)** — MCP framework. Not consumed by this plugin today; future possibility if Unreal-side agent surface becomes a thing.
 - **[DisplayXR/displayxr-leia-plugin](https://github.com/DisplayXR/displayxr-leia-plugin)** — Leia SR display-processor plug-in for the runtime. Vendor integration is runtime-side; this plugin doesn't talk to the SR SDK directly.
