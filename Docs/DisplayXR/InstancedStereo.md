@@ -17,6 +17,8 @@ harness are referenced at the end.
   *Real Time Capture* enabled. This is an engine bug, not a plugin bug (it reproduces
   with Epic's `OpenXRHMD`). In a Shipping build it looks like a black window and a
   runtime that never receives a frame.
+- Since v0.9.3 the plugin answers the engine's monoscopic culling query with a frustum
+  that contains both eyes (see *Culling under ISR*).
 - Since v0.9.2 the plugin forces `r.SkyLight.RealTimeReflectionCapture=0` when it detects
   instanced stereo, with a one-shot warning. `r.DisplayXR.InstancedStereoWorkarounds 0`
   opts out. Sky lights then use their captured cubemap instead of updating every frame.
@@ -251,6 +253,45 @@ prebuilt shader DDC and will not notice an edited `.ush`. `recompileshaders chan
 reports "No Shader changes found" and `-dpcvars=r.ShaderDevelopmentMode=1` is read too
 late. Only the console command `recompileshaders global` actually rebuilds (the log then
 says "Empty global shader map, recompiling all global shaders").
+## Culling under ISR: the monoscopic view
+
+Single-pass stereo culls both eyes with ONE frustum. `FSceneView::SetupViewFrustum`
+builds it from the device's answers to `CalculateStereoViewOffset(eSSE_MONOSCOPIC)` and
+`GetStereoProjectionMatrix(eSSE_MONOSCOPIC)`, and `GetCullingFrustum()` then returns it
+for frustum culling, light and reflection-capture culling and occlusion in both views.
+
+Until v0.9.3 the device ignored the offset query (the mono apex stayed at the camera) and
+answered the projection with an angle-wise union of the eye fovs. A union of angles about
+one apex does not contain frusta whose apexes are elsewhere; on a display-centric rig the
+eyes sit metres behind the camera, and on any rig they move every frame. Content near
+the edges could be culled for the pair while the secondary eye still needed it.
+
+`ComputeMonoView` now builds the mono view when instanced stereo is compiled in: apex at
+the rearmost eye depth and the eyes' mean lateral position, each side widened so every
+eye's edge ray stays inside from that eye's own near plane on (the exact bound is in the
+source comment). Under multi-pass stereo the mono view keeps its historical definition,
+since there it only feeds world-to-screen projection.
+
+## Other secondary-eye issues in UE 5.7.4 (engine side, not worked around)
+
+Found while chasing a right-eye-only shimmer a partner sees in Lyra under ISR:
+
+- **Lumen front-layer translucency builds the secondary eye's uniform buffer from the
+  primary's matrices.** `LumenFrontLayerTranslucency.cpp:358-387` and
+  `LumenTranslucencyRadianceCache.cpp:358-387` copy `View.CachedViewUniformShaderParameters`
+  and `View.ViewMatrices` (primary) and only swap in `InstancedView->ViewRect` before
+  `CopyIntoInstancedViewParameters(..., 1)`. Eye 1's Lumen reflections on translucent
+  surfaces therefore use eye 0's projection and origin. Test: `r.Lumen.FrontLayerTranslucency 0`.
+- **`ViewRectMinAndSize` is not a per-view member**, so under ISR the secondary eye reads
+  the primary's tile origin. Its base-pass consumers are Single Layer Water's buffer clamp
+  (`MaterialTemplate.ush`) and strand-hair raster (`HairStrands/RenderCurveRaster.usf`);
+  everything projection- or origin-dependent (`ViewToClip`, `ScreenPositionScaleBias`,
+  `TranslatedWorldCameraOrigin`, `ClipToPrevClip`, `ViewRectMin`, ...) is per-view and fine.
+- **Substrate + ISR renders wrong on some GPUs.** On an RTX 3080 laptop the test project
+  with `r.Substrate=True` under ISR draws untextured checker materials, a solid black
+  shadow polygon and no Lumen lighting; recooked with `r.Substrate=False` it is correct.
+  An RTX 4090 renders the same content correctly, so this is GPU/driver dependent. If ISR
+  output looks broken rather than shimmering, try Substrate off first.
 
 ## A second engine bug: Slate background blur under ISR on D3D12
 
