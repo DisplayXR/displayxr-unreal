@@ -287,11 +287,11 @@ Found while chasing a right-eye-only shimmer a partner sees in Lyra under ISR:
   (`MaterialTemplate.ush`) and strand-hair raster (`HairStrands/RenderCurveRaster.usf`);
   everything projection- or origin-dependent (`ViewToClip`, `ScreenPositionScaleBias`,
   `TranslatedWorldCameraOrigin`, `ClipToPrevClip`, `ViewRectMin`, ...) is per-view and fine.
-- **Substrate + ISR renders wrong on some GPUs.** On an RTX 3080 laptop the test project
-  with `r.Substrate=True` under ISR draws untextured checker materials, a solid black
-  shadow polygon and no Lumen lighting; recooked with `r.Substrate=False` it is correct.
-  An RTX 4090 renders the same content correctly, so this is GPU/driver dependent. If ISR
-  output looks broken rather than shimmering, try Substrate off first.
+- **What looked like "Substrate + ISR is broken" was this culling bug.** On the test
+  project's display-centric rig (eyes about 12 m behind the camera) the old mono frustum
+  culled lights and shadow casters for both eyes: untextured-looking checker materials, a
+  solid black shadow polygon, no Lumen lighting. Recooking without Substrate happened to
+  mask it; the mono-view fix renders the same Substrate scene correctly under ISR.
 
 ## A second engine bug: Slate background blur under ISR on D3D12
 
