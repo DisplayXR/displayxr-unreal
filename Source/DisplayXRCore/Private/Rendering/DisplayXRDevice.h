@@ -156,6 +156,7 @@ public:
 
 private:
 	void ComputeViews();
+	void ComputeMonoView(bool bUnionFovValid, const XrFovf& UnionFov);
 
 	FDisplayXRSession* Session = nullptr;
 	TUniquePtr<FDisplayXRCompositor> Compositor;
@@ -165,10 +166,17 @@ private:
 	struct FPerViewData
 	{
 		FMatrix ProjectionMatrix = FMatrix::Identity;
-		FVector Offset = FVector::ZeroVector;
+		FVector Offset = FVector::ZeroVector;   // eye position relative to the camera, UE cm (X fwd, Y right, Z up)
+		XrFovf Fov = {};                        // render-ready fov from the runtime; zero when invalid
+		bool bValid = false;
 	};
 	TArray<FPerViewData> CachedViews;
+	// Monoscopic view the engine asks for as eSSE_MONOSCOPIC. Under single-pass
+	// stereo it is the ONE culling frustum for both eyes, so it must contain every
+	// eye frustum (see ComputeMonoView); under multi-pass it only feeds
+	// world-to-screen projections and stays the plain camera-apex union.
 	FPerViewData CachedCenter;
+	bool bInstancedStereoCompiledIn = false;
 	FDisplayXRViewConfig CachedViewConfig;
 
 	// One-shot reallocation trigger: fires true once when compositor becomes ready
