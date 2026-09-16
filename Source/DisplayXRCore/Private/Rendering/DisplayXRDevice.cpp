@@ -212,12 +212,12 @@ static void DisplayXRRemoveWndProcHook()
 // what the engine gets wrong. Runs once, at device creation, after the RHI is up
 // (GMaxRHIShaderPlatform is valid here) and before any world — so before any sky
 // light component registers. Details and evidence: Docs/DisplayXR/InstancedStereo.md.
-static void ApplyInstancedStereoWorkarounds(const FDisplayXRSession* Session)
+static bool ApplyInstancedStereoWorkarounds(const FDisplayXRSession* Session)
 {
 	const UE::StereoRenderUtils::FStereoShaderAspects Aspects(GMaxRHIShaderPlatform);
 	if (!Aspects.IsInstancedStereoEnabled())
 	{
-		return;
+		return false;
 	}
 
 	UE_LOG(LogDisplayXRDevice, Log,
@@ -243,7 +243,7 @@ static void ApplyInstancedStereoWorkarounds(const FDisplayXRSession* Session)
 		UE_LOG(LogDisplayXRDevice, Warning,
 			TEXT("[%s] r.DisplayXR.InstancedStereoWorkarounds is 0: real-time sky-light capture stays on. UE 5.7 crashes within seconds under instanced stereo when a sky light has Real Time Capture enabled."),
 			WorldCtxTag());
-		return;
+		return true;
 	}
 
 	// UE 5.7.4: ReflectionEnvironmentRealTimeCapture.cpp takes MainView.CreateSnapshot()
@@ -286,6 +286,7 @@ static void ApplyInstancedStereoWorkarounds(const FDisplayXRSession* Session)
 			TEXT("[%s] Instanced stereo: forcing r.Nanite.MultipleSceneViewsInOnePass=0 for this process. UE 5.7's single-pass Nanite path writes the secondary eye's motion vectors using the primary view's viewport, which makes moving Nanite meshes shimmer in the right eye under every temporal effect; Nanite now draws one pass per eye. r.DisplayXR.InstancedStereoWorkarounds 0 disables this. See Docs/DisplayXR/InstancedStereo.md."),
 			WorldCtxTag());
 	}
+	return true;
 }
 
 FDisplayXRDevice::FDisplayXRDevice(const FAutoRegister& AutoRegister, FDisplayXRSession* InSession)
@@ -297,7 +298,7 @@ FDisplayXRDevice::FDisplayXRDevice(const FAutoRegister& AutoRegister, FDisplayXR
 	UE_LOG(LogDisplayXRDevice, Log, TEXT("[%s] DisplayXR Device: Created (UI per eye tile: %s)"),
 		WorldCtxTag(), bUIPerEyeTiles ? TEXT("on") : TEXT("off"));
 
-	ApplyInstancedStereoWorkarounds(InSession);
+	bInstancedStereoCompiledIn = ApplyInstancedStereoWorkarounds(InSession);
 }
 
 bool FDisplayXRDevice::UsesUIPerEyeTiles() const
@@ -538,6 +539,15 @@ void FDisplayXRDevice::CalculateStereoViewOffset(const int32 ViewIndex, FRotator
 	if (ViewIndex >= 0 && ViewIndex < CachedViews.Num())
 	{
 		ViewLocation += ViewRotation.Quaternion().RotateVector(CachedViews[ViewIndex].Offset);
+	}
+	else if (ViewIndex == eSSE_MONOSCOPIC)
+	{
+		// The engine's monoscopic view. Under single-pass stereo,
+		// FSceneView::SetupViewFrustum builds the culling frustum for BOTH eyes
+		// from this offset and GetStereoProjectionMatrix(eSSE_MONOSCOPIC). This
+		// used to be a no-op, leaving the culling apex at the camera while the
+		// eyes sit elsewhere (metres behind it on a display-centric rig).
+		ViewLocation += ViewRotation.Quaternion().RotateVector(CachedCenter.Offset);
 	}
 }
 
@@ -1383,6 +1393,7 @@ void FDisplayXRDevice::ComputeViews()
 		{
 			CachedViews[i].Offset = FVector::ZeroVector;
 			CachedViews[i].ProjectionMatrix = FMatrix::Identity;
+			CachedViews[i].bValid = false;
 		}
 	}
 	else
@@ -1403,6 +1414,7 @@ void FDisplayXRDevice::ComputeViews()
 			{
 				CachedViews[i].Offset = FVector::ZeroVector;
 				CachedViews[i].ProjectionMatrix = FMatrix::Identity;
+				CachedViews[i].bValid = false;
 				continue;
 			}
 
@@ -1414,6 +1426,8 @@ void FDisplayXRDevice::ComputeViews()
 			};
 			CachedViews[i].Offset = OpenXRPositionToUE(EyeLocal);
 			CachedViews[i].ProjectionMatrix = ProjectionMatrixFromFov(ViewFov);
+			CachedViews[i].Fov = ViewFov;
+			CachedViews[i].bValid = true;
 
 			if (!bCenterFovValid)
 			{
@@ -1445,19 +1459,84 @@ void FDisplayXRDevice::ComputeViews()
 		}
 	}
 
-	// Center view: average of all views
-	CachedCenter.Offset = FVector::ZeroVector;
+	ComputeMonoView(bCenterFovValid, CenterFov);
+}
+
+// The monoscopic view UE requests as eSSE_MONOSCOPIC.
+//
+// Multi-pass stereo: only world-to-screen projections consume it (HUD, aim), so
+// keep the historical definition: mean eye position, angle-wise union of the eye
+// fovs.
+//
+// Single-pass (instanced) stereo: FSceneView::SetupViewFrustum turns it into the
+// ONE culling frustum used for both eyes (frustum culling, light and reflection
+// capture culling, occlusion). It must therefore contain every eye frustum. A
+// union of angles about one apex does not: each eye frustum has its own apex,
+// which on a display-centric rig sits metres behind the camera and on any rig
+// moves every frame. Put the mono apex at the rearmost eye depth and the eyes'
+// mean lateral position, then widen each side so every eye's edge ray stays
+// inside from that eye's own near plane on. For the right edge of eye i with
+// apex D relative to the mono apex (D.X >= 0):
+//   y(z) = D.Y + (z - D.X) * tanR_i  <=  z * TanR   for all z >= D.X + near
+//   =>  TanR = max_i( tanR_i + max(0, D.Y - D.X * tanR_i) / (D.X + near) )
+// and symmetrically for left, up and down. Over-inclusive culling costs a few
+// draws; under-inclusive culling drops content the secondary eye still needs.
+// Epic's own HMD path pulls the mono apex back for the same reason
+// (UnrealEngine.cpp, eSSE_MONOSCOPIC branch of CalculateStereoViewOffset).
+void FDisplayXRDevice::ComputeMonoView(bool bUnionFovValid, const XrFovf& UnionFov)
+{
+	const int32 ViewCount = CachedViews.Num();
+
+	FVector Mean = FVector::ZeroVector;
+	double MinForward = TNumericLimits<double>::Max();
+	int32 NumValid = 0;
 	for (int32 i = 0; i < ViewCount; i++)
 	{
-		CachedCenter.Offset += CachedViews[i].Offset;
+		if (!CachedViews[i].bValid) continue;
+		Mean += CachedViews[i].Offset;
+		MinForward = FMath::Min(MinForward, CachedViews[i].Offset.X);
+		NumValid++;
 	}
-	CachedCenter.Offset /= (float)ViewCount;
 
-	// Center projection: the union of the per-view frustums, so the center view
-	// covers everything any eye can see. Built from the same runtime-supplied
-	// fovs as the per-view matrices — there is no app-side frustum math left to
-	// re-derive it from (#396 W7).
-	CachedCenter.ProjectionMatrix = bCenterFovValid
-		? ProjectionMatrixFromFov(CenterFov)
-		: FMatrix::Identity;
+	if (!bUnionFovValid || NumValid == 0)
+	{
+		CachedCenter.Offset = FVector::ZeroVector;
+		CachedCenter.ProjectionMatrix = FMatrix::Identity;
+		return;
+	}
+	Mean /= (double)NumValid;
+
+	if (!bInstancedStereoCompiledIn)
+	{
+		CachedCenter.Offset = Mean;
+		CachedCenter.ProjectionMatrix = ProjectionMatrixFromFov(UnionFov);
+		return;
+	}
+
+	CachedCenter.Offset = FVector(MinForward, Mean.Y, Mean.Z);
+	const double Near = FMath::Max<double>(GNearClippingPlane, 1.0);
+	double TanL =  TNumericLimits<double>::Max();
+	double TanR = -TNumericLimits<double>::Max();
+	double TanU = -TNumericLimits<double>::Max();
+	double TanD =  TNumericLimits<double>::Max();
+	for (int32 i = 0; i < ViewCount; i++)
+	{
+		if (!CachedViews[i].bValid) continue;
+		const FVector D = CachedViews[i].Offset - CachedCenter.Offset; // D.X >= 0 by construction
+		const double Z = D.X + Near;
+		const double tl = FMath::Tan((double)CachedViews[i].Fov.angleLeft);
+		const double tr = FMath::Tan((double)CachedViews[i].Fov.angleRight);
+		const double tu = FMath::Tan((double)CachedViews[i].Fov.angleUp);
+		const double td = FMath::Tan((double)CachedViews[i].Fov.angleDown);
+		TanR = FMath::Max(TanR, tr + FMath::Max(0.0, D.Y - D.X * tr) / Z);
+		TanL = FMath::Min(TanL, tl + FMath::Min(0.0, D.Y - D.X * tl) / Z);
+		TanU = FMath::Max(TanU, tu + FMath::Max(0.0, D.Z - D.X * tu) / Z);
+		TanD = FMath::Min(TanD, td + FMath::Min(0.0, D.Z - D.X * td) / Z);
+	}
+	XrFovf Mono = {};
+	Mono.angleLeft  = (float)FMath::Atan(TanL);
+	Mono.angleRight = (float)FMath::Atan(TanR);
+	Mono.angleUp    = (float)FMath::Atan(TanU);
+	Mono.angleDown  = (float)FMath::Atan(TanD);
+	CachedCenter.ProjectionMatrix = ProjectionMatrixFromFov(Mono);
 }
