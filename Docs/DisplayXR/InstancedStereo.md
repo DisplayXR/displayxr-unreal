@@ -20,6 +20,11 @@ harness are referenced at the end.
 - Since v0.9.2 the plugin forces `r.SkyLight.RealTimeReflectionCapture=0` when it detects
   instanced stereo, with a one-shot warning. `r.DisplayXR.InstancedStereoWorkarounds 0`
   opts out. Sky lights then use their captured cubemap instead of updating every frame.
+- UE 5.7 also writes **wrong motion vectors for the secondary eye** when Nanite draws both
+  eyes in one pass, which makes moving Nanite meshes shimmer in the right eye under TSR,
+  Lumen, SSR and motion blur. The plugin now also forces
+  `r.Nanite.MultipleSceneViewsInOnePass=0` under the same opt-out (see *The Nanite
+  single-pass velocity bug*). Instanced stereo stays on; only Nanite draws one pass per eye.
 
 ## Turning it on
 
@@ -137,7 +142,9 @@ world loads, whenever `FStereoShaderAspects` reports instanced stereo:
 - logs that ISR is compiled in and which multi-viewport mode is active;
 - warns if the runtime's tile layout is not 2x1;
 - sets `r.SkyLight.RealTimeReflectionCapture` to 0 with `ECVF_SetByCode` (outranks
-  scalability and device-profile writes) and logs a warning that names this document.
+  scalability and device-profile writes) and logs a warning that names this document;
+- sets `r.Nanite.MultipleSceneViewsInOnePass` to 0 the same way, for the secondary-eye
+  velocity bug described in *The Nanite single-pass velocity bug*.
 
 Opt out with `r.DisplayXR.InstancedStereoWorkarounds 0` (`ECVF_ReadOnly`, so in
 `DefaultEngine.ini` `[ConsoleVariables]` or `-dpcvars`). The equivalent manual fix is to
@@ -175,6 +182,75 @@ Runs live under `C:\dxr-dev\runs\<label>` on the win box (harness
 Dumps were read with `cdb` against export symbols (no editor PDBs installed); the
 release site is `FSceneView::~FSceneView+0x1c6` operating on the member at
 `FSceneView+0x48`, which is `StereoCullingFrustum`'s controller pointer.
+
+## The Nanite single-pass velocity bug
+
+This is what a right-eye-only shimmer in Lyra turned out to be. Measured on 2026-09-17 with
+UE 5.7.4 (D3D12, SM6) on a 3840x1080 side-by-side atlas, Lyra's `L_Expanse` with no bots,
+using UE's own `DumpGPU`.
+
+**Symptom.** Under ISR, moving Nanite meshes (Lyra's characters, spinning pickups) shimmer
+in the **right eye only** — per-frame noise inside and around the mesh, a flickering halo,
+low-quality reflections. The left eye is clean, and so is static geometry in both eyes. It
+shows up under every temporal effect (TSR, Lumen reflections, SSR, motion blur) because
+they all consume the velocity buffer. Turning ISR off removes it entirely.
+
+**Cause.** With `r.Nanite.MultipleSceneViewsInOnePass=1` (the default) Nanite draws both
+scene views in a single pass. `Nanite::EmitDepthTargets` then runs the depth/velocity
+export once over the whole family rect — the dump shows the pass
+`Emit Scene Depth/Resolve/Velocity` with `ViewRect = (0, 0, 3840, 1080)` and the scope
+`View0 (together with 1 more)`. `NaniteExportGBuffer.usf` resolves the right per-eye
+`FNaniteView` and `ResolvedView` for each pixel, but `CalculateNaniteVelocity`
+(`NaniteVertexDeformation.ush`) reconstructs the pixel's position with the Common.ush
+helpers `SvPositionToWorld()` and `SvPositionToScreenPosition()`, and those read the
+**primary** view's uniform buffer (`View.SVPositionToTranslatedWorld`, `View.ViewRectMin`,
+`View.ViewSizeAndInvSize`, `PrimaryView.PreViewTranslation`). Secondary-eye pixels are
+therefore converted in the primary eye's viewport and get garbage motion vectors.
+
+In the dump, immediately after that pass the right half of `SceneVelocity` carries motion
+vectors several times larger than the left half, with the error growing towards the right
+edge of the screen — the signature of a viewport-origin mistake. The ordinary (non-Nanite)
+`VelocityParallel` pass in the same frame is symmetric between the eyes. Static Nanite
+geometry is unaffected because it has no `PRIMITIVE_SCENE_DATA_FLAG_OUTPUT_VELOCITY` and
+returns early.
+
+**Why the obvious shader fix does not work.** The engine has `ResolvedView` variants of
+both helpers (`SvPositionToResolvedTranslatedWorld`, `SvPositionToResolvedScreenPosition`,
+"used for vertex factory shaders which need to use the resolved view"). Switching
+`CalculateNaniteVelocity` to them makes the artifact *worse*: the right eye's velocity then
+comes out wrong by exactly one screen width. The reason is one line apart in `SceneView.h`:
+
+```cpp
+VIEW_UNIFORM_BUFFER_MEMBER_PER_VIEW_EX(FVector4f, ViewRectMin, ...)   // per view
+VIEW_UNIFORM_BUFFER_MEMBER(FVector4f, ViewSizeAndInvSize)             // NOT per view
+VIEW_UNIFORM_BUFFER_MEMBER(FUintVector4, ViewRectMinAndSize)          // NOT per view
+```
+
+`ViewRectMin` is copied per eye, but `ViewSizeAndInvSize` is shared, so even through
+`ResolvedView` the secondary eye reads the primary view's rect **size**. Under one-pass ISR
+that size spans both eyes, so any NDC built from it is off by a factor of two. Patching the
+two call sites to use `FNaniteView`'s own per-view `ViewRect`/`ViewSizeAndInvSize` (which
+`NaniteShared.cpp` fills from `View.ViewRect`) did not land correctly either in local
+testing. A correct engine-side fix needs `ViewSizeAndInvSize` to become a per-view member,
+or the export pass to stop relying on the primary view; neither is something the plugin
+can do.
+
+**What the plugin does instead.** `r.Nanite.MultipleSceneViewsInOnePass` is a plain
+`ECVF_RenderThreadSafe` cvar, so the plugin forces it to 0 at device creation, next to the
+sky-light workaround, and `r.DisplayXR.InstancedStereoWorkarounds 0` opts out of both.
+Nanite then draws one pass per eye and the shimmer is gone. Instanced stereo itself stays
+enabled, so only Nanite gives up its single-pass saving. The cvar is read through
+`ShouldDrawSceneViewsInOneNanitePass()`, which is gated on `View.bIsMultiViewportEnabled`,
+so forcing it to 0 changes nothing for non-stereo rendering or for projects without Nanite.
+
+Frame cost of the extra Nanite pass has not been measured yet: Lyra's test maps run a game
+phase transition partway through a capture, so the CSV runs were not comparable.
+
+Note when testing engine shader edits against a Launcher-installed engine: it ships a
+prebuilt shader DDC and will not notice an edited `.ush`. `recompileshaders changed`
+reports "No Shader changes found" and `-dpcvars=r.ShaderDevelopmentMode=1` is read too
+late. Only the console command `recompileshaders global` actually rebuilds (the log then
+says "Empty global shader map, recompiling all global shaders").
 
 ## A second engine bug: Slate background blur under ISR on D3D12
 
