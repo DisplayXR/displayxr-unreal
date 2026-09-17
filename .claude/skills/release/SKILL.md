@@ -178,6 +178,27 @@ the cert directly) is kept as a fallback.
 BIN="Packages/DisplayXR_5.7/Binaries/Win64"
 SIGN_REPO="${DXR_SIGN_REPO}"   # local env only; the public repo names no provider
 SIGNED=no
+
+# Fail-closed Authenticode check: prints "valid/total" and succeeds only when
+# total > 0 and every DLL is Valid. Prefer PowerShell 7 (`pwsh`). Windows
+# PowerShell 5.1 launched from git-bash on a box that also has pwsh inherits
+# pwsh's PSModulePath, cannot load Microsoft.PowerShell.Security, and
+# `@(<errored pipeline>).Count` still prints 0 with exit 0 -- which the old
+# "count the non-Valid ones" test read as "all signed" (false SIGNED=yes on the
+# v0.9.3 run, caught only by a manual pwsh re-check). Never swallow stderr here
+# and never count failures: count successes and compare to the total.
+verify_authenticode() {
+  local dir="$1" ps out
+  if command -v pwsh >/dev/null 2>&1; then ps=pwsh
+  elif command -v powershell >/dev/null 2>&1; then ps=powershell
+  else echo "no-powershell"; return 1; fi
+  out=$("$ps" -NoProfile -Command "\$ErrorActionPreference='Stop'; \$s=@(Get-ChildItem '$(cygpath -w "$dir")\*.dll' | Get-AuthenticodeSignature); \"\$((\$s | Where-Object Status -eq 'Valid').Count)/\$(\$s.Count)\"" 2>&1 | tr -d '\r' | tail -1)
+  echo "$out"
+  case "$out" in
+    */*) local v="${out%/*}" t="${out#*/}"; [ "$t" -gt 0 ] 2>/dev/null && [ "$v" = "$t" ] ;;
+    *)   return 1 ;;
+  esac
+}
 if [ -n "$SIGN_REPO" ] && gh workflow view sign-artifact -R "$SIGN_REPO" >/dev/null 2>&1; then
   echo "=== Signing Unreal binaries on the provider runner ($SIGN_REPO) ==="
   D=$(mktemp -d)
@@ -213,13 +234,12 @@ if [ -n "$SIGN_REPO" ] && gh workflow view sign-artifact -R "$SIGN_REPO" >/dev/n
       # portable unzip (git-bash on Windows has no `unzip`) — overwrite DLLs in place with signed ones.
       if command -v unzip >/dev/null; then unzip -qo "$D/out/signed.zip" -d "$BIN"
       else powershell -NoProfile -Command "Expand-Archive -Path '$(cygpath -w "$D/out/signed.zip")' -DestinationPath '$(cygpath -w "$BIN")' -Force"; fi
-      if command -v powershell >/dev/null 2>&1; then
-        BAD=$(powershell -NoProfile -Command "@(Get-ChildItem '$(cygpath -w "$BIN")\*.dll' | Get-AuthenticodeSignature | Where-Object { \$_.Status -ne 'Valid' }).Count" 2>/dev/null | tr -d '\r')
-        if [ "$BAD" = 0 ]; then SIGNED=yes
-        else echo "⚠ $BAD DLL(s) not Authenticode-Valid after unpack — ZIP will be UNSIGNED."; fi
+      if VERIFIED=$(verify_authenticode "$BIN"); then
+        SIGNED=yes; echo "✅ Authenticode: $VERIFIED DLLs Valid."
       else
-        echo "note: no powershell to verify Authenticode — trusting the runner's bundle."
-        SIGNED=yes
+        # The signed bytes may well be in place; we just could not PROVE it.
+        # Report that state as-is: never promote it to yes, never demote it to no.
+        SIGNED=unverified; echo "⚠ Authenticode check did not return all-Valid ($VERIFIED) — release will be reported as SIGNED=unverified."
       fi
     fi
   else
@@ -229,15 +249,19 @@ if [ -n "$SIGN_REPO" ] && gh workflow view sign-artifact -R "$SIGN_REPO" >/dev/n
 elif [ -n "$SIGN_CMD" ] && uname -s | grep -qiE 'mingw|msys|cygwin|windows'; then
   echo "=== Signing Unreal binaries locally via SIGN_CMD (local cert) ==="
   powershell -NoProfile -ExecutionPolicy Bypass -File Scripts\\sign-release.ps1 \
-    -Path "Packages\\DisplayXR_5.7\\Binaries\\Win64" -SignCmd "$SIGN_CMD" && SIGNED=yes
+    -Path "Packages\\DisplayXR_5.7\\Binaries\\Win64" -SignCmd "$SIGN_CMD"
+  if VERIFIED=$(verify_authenticode "$BIN"); then SIGNED=yes; else SIGNED=unverified; echo "⚠ Authenticode check did not return all-Valid ($VERIFIED)."; fi
 else
   echo "⚠  SIGNING SKIPPED — set DXR_SIGN_REPO (provider runner) or SIGN_CMD (local cert); ZIP will be UNSIGNED."
 fi
 ```
-The block above already machine-checks `Get-AuthenticodeSignature` on every
-`Binaries\Win64\*.dll` and only sets `SIGNED=yes` when all report `Valid` — so
-carry `SIGNED` into the final report verbatim rather than re-deriving it, and
-never report a release as signed on the strength of a green runner job alone.
+The block above machine-checks `Get-AuthenticodeSignature` on every
+`Binaries\Win64\*.dll` and sets `SIGNED=yes` only on a positive "all Valid"
+answer; a check that errors, finds no DLLs, or has no PowerShell yields
+`SIGNED=unverified`. Carry `SIGNED` into the final report verbatim rather than
+re-deriving it, never report a release as signed on the strength of a green
+runner job alone, and if it says `unverified`, say so in the report and re-check
+by hand with `pwsh` before telling anyone the package is signed.
 Note: when a UE developer recompiles
 the plugin for a different engine version or for their packaged game, UE
 regenerates those DLLs — those rebuilt binaries are the developer's to
@@ -284,6 +308,8 @@ Packaged locally:
 
 Published to:
   - GitHub Release: https://github.com/DisplayXR/displayxr-unreal/releases/tag/[VERSION]
+
+Signed: [SIGNED]   (yes = every DLL Authenticode-Valid; unverified = could not prove it; no = shipped unsigned)
 
 Consume in a test project:
   1. Set .displayxr-version to [VERSION]
