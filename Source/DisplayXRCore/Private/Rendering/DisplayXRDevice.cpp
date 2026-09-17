@@ -45,7 +45,7 @@ static TAutoConsoleVariable<int32> CVarDisplayXRInstancedStereoWorkarounds(
 	TEXT("r.DisplayXR.InstancedStereoWorkarounds"),
 	1,
 	TEXT("When the project is compiled with instanced stereo (vr.InstancedStereo=1), apply the engine workarounds the plugin knows about.\n")
-	TEXT("1 (default): force r.SkyLight.RealTimeReflectionCapture=0. UE 5.7's real-time sky-light capture takes a bitwise snapshot of the view and re-runs frustum setup on it, which double-releases the instanced-stereo culling frustum and crashes the game within seconds (verified with UE's own OpenXR plugin too). Sky lights fall back to their captured cubemap.\n")
+	TEXT("1 (default): force r.SkyLight.RealTimeReflectionCapture=0 (UE 5.7's real-time sky-light capture takes a bitwise snapshot of the view and re-runs frustum setup on it, which double-releases the instanced-stereo culling frustum and crashes the game within seconds — verified with UE's own OpenXR plugin too; sky lights fall back to their captured cubemap) and r.Nanite.MultipleSceneViewsInOnePass=0 (UE 5.7's single-pass Nanite export writes the secondary eye's motion vectors using the primary view's viewport, so moving Nanite meshes shimmer in the right eye under TSR, Lumen, SSR and motion blur; Nanite draws one pass per eye instead).\n")
 	TEXT("0: leave the engine alone."),
 	ECVF_ReadOnly);
 
@@ -262,6 +262,28 @@ static void ApplyInstancedStereoWorkarounds(const FDisplayXRSession* Session)
 		SkyCapture->Set(0, ECVF_SetByCode);
 		UE_LOG(LogDisplayXRDevice, Warning,
 			TEXT("[%s] Instanced stereo: forcing r.SkyLight.RealTimeReflectionCapture=0 for this process. UE 5.7's real-time sky-light capture double-releases the instanced-stereo culling frustum (bitwise view snapshot + UpdateProjectionMatrix) and crashes the game within seconds; sky lights fall back to their captured cubemap. r.DisplayXR.InstancedStereoWorkarounds 0 disables this. See Docs/DisplayXR/InstancedStereo.md."),
+			WorldCtxTag());
+	}
+
+	// UE 5.7.4: with r.Nanite.MultipleSceneViewsInOnePass=1 (the default) Nanite draws both
+	// eyes in a single pass over the whole family rect, and the depth/velocity export
+	// (NaniteExportGBuffer.usf, "Emit Scene Depth/Resolve/Velocity") reconstructs each
+	// pixel's position with the Common.ush helpers SvPositionToWorld() and
+	// SvPositionToScreenPosition(). Those read the *primary* view's uniform buffer, so
+	// secondary-eye pixels are converted in the primary eye's viewport and get garbage
+	// motion vectors. Everything that consumes velocity — TSR, Lumen reflections, SSR,
+	// motion blur — then shimmers in the right eye on moving Nanite meshes, while static
+	// geometry (which writes no velocity) is clean. Using the ResolvedView helpers instead
+	// does not fix it: ViewSizeAndInvSize is not a per-view uniform buffer member
+	// (SceneView.h:913-914), so the secondary eye still gets the primary's rect size.
+	// Drawing the views in separate Nanite passes avoids the whole path. ISR itself stays
+	// on, so only Nanite pays for the extra pass. See Docs/DisplayXR/InstancedStereo.md.
+	IConsoleVariable* NaniteOnePass = IConsoleManager::Get().FindConsoleVariable(TEXT("r.Nanite.MultipleSceneViewsInOnePass"));
+	if (NaniteOnePass && NaniteOnePass->GetInt() != 0)
+	{
+		NaniteOnePass->Set(0, ECVF_SetByCode);
+		UE_LOG(LogDisplayXRDevice, Warning,
+			TEXT("[%s] Instanced stereo: forcing r.Nanite.MultipleSceneViewsInOnePass=0 for this process. UE 5.7's single-pass Nanite path writes the secondary eye's motion vectors using the primary view's viewport, which makes moving Nanite meshes shimmer in the right eye under every temporal effect; Nanite now draws one pass per eye. r.DisplayXR.InstancedStereoWorkarounds 0 disables this. See Docs/DisplayXR/InstancedStereo.md."),
 			WorldCtxTag());
 	}
 }
