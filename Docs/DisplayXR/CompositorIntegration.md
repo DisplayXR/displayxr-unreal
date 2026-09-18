@@ -2,8 +2,11 @@
 
 ## Current State (Phase 1 — Working)
 
-UE renders an N-view atlas directly to the backbuffer via IStereoRendering:
-- `GetDesiredNumberOfViews(2)` → UE renders 2 views
+UE renders an atlas directly to the backbuffer via IStereoRendering:
+- `GetDesiredNumberOfViews(true)` → **always 2**. The plugin begins its session
+  on `XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO`, which is exactly two views and
+  under which `xrEndFrame` refuses a projection layer with `viewCount > 2`. See
+  *[Views vs tiles](#views-vs-tiles)* below.
 - `AdjustViewRect` → tiles placed per ViewConfig (2×1, scale 0.5×0.5)
 - `GetStereoProjectionMatrix` → Kooima off-axis projection per view
 - `CalculateStereoViewOffset` → per-view eye displacement
@@ -11,6 +14,40 @@ UE renders an N-view atlas directly to the backbuffer via IStereoRendering:
 
 The atlas is visible on screen but NOT interlaced/weaved — the compositor
 is not connected.
+
+## Views vs tiles
+
+Two counts live in `FDisplayXRViewConfig` and they are not the same thing:
+
+| | accessor | source | what it drives |
+|---|---|---|---|
+| **tiles** | `GetTileCount()` (`TileColumns × TileRows`) | the runtime's active rendering mode (`xrEnumerateDisplayRenderingModesDXR`) | atlas sizing, `AdjustViewRect` placement, the IPC copy's source offsets |
+| **views** | `GetSubmittedViewCount()` | clamped to `DisplayXRMaxSubmittedViews` = **2** | `XrCompositionLayerProjection::viewCount`, `CachedViews`, the array swapchain's slices |
+
+**The plugin submits exactly 2 views.** That is the contract of
+`XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO`, the type it begins its session and
+locates views with: the runtime reports 2 views under it and `xrEndFrame`
+returns `XR_ERROR_VALIDATION_FAILURE` for a projection layer with more. (In a
+1-tile 2D mode the plugin submits a single view — the runtime allows that
+because the plugin enables `XR_DXR_display_info` and the active mode is itself
+1-view.)
+
+**A rendering mode with more than two tiles is not an error, and costs no
+capability today.** The plugin's content has only ever been two views
+(`FDisplayXRSession::GetViewData` answers for index 0 and 1 and returns false
+beyond), so on such a mode UE paints **tiles 0 and 1 of the mode's grid** and
+the runtime's *under-submit contract* composites the frame — a short submission
+is clamped to the mode's recipe, never the reverse. No display that ships has a
+mode above two views; the only one that exists is the runtime's `sim_display`
+opt-in Quad. See the runtime's
+[view-configuration model](https://github.com/DisplayXR/displayxr-runtime/blob/main/docs/reference/view-configuration-model.md).
+
+**Genuine N-view rendering is future work.** It is not a matter of raising the
+clamp: the plugin would have to enumerate and begin on
+`XR_VIEW_CONFIGURATION_TYPE_PRIMARY_MULTIVIEW_DXR` (`XR_DXR_display_info` spec
+v19), locate with that type, extend `GetViewData` past index 1 to produce more
+than two eyes of content, and size the IPC array swapchain N slices wide instead
+of 2. Tracked in [`TODO.md`](./TODO.md).
 
 ## What's Needed for Weaved Output
 

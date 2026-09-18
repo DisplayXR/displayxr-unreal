@@ -298,7 +298,13 @@ void FDisplayXRCompositor::CompositorLoop()
 		// — we have to sync it explicitly here each frame so the runtime sees
 		// the current window size, and so that both sides agree on tile dims.
 		FDisplayXRViewConfig VC = Session->GetViewConfig();
-		int32 NV = VC.GetViewCount();
+		// VIEWS, not tiles. We begin on PRIMARY_STEREO, under which xrEndFrame
+		// refuses a projection layer with viewCount > 2
+		// (XR_ERROR_VALIDATION_FAILURE) — see DisplayXRMaxSubmittedViews. The
+		// TILE geometry below (Cols/TW/TH) still comes from the mode, so on a
+		// >2-tile mode we submit tiles 0 and 1 of that mode's grid and the
+		// runtime's under-submit contract composites the frame.
+		const int32 NV = VC.GetSubmittedViewCount();
 		// Window-relative tile dims (both paths) — the SAME helper the copy uses,
 		// so UE's render rect, the copy source, and this imageRect all agree and
 		// the content aspect tracks the window (correct under resize).
@@ -849,7 +855,16 @@ void FDisplayXRCompositor::ReleaseImage_RenderThread(FRHICommandListImmediate& R
 		{
 			FRHITexture* Dst = ArraySwapchainRHI[Idx].GetReference();
 			FDisplayXRViewConfig VC = Session->GetViewConfig();
-			const int32 NV = VC.GetViewCount();
+			// VIEWS, not tiles — i is the DESTINATION SLICE index below, and the
+			// array swapchain is created DisplayXRMaxSubmittedViews slices wide
+			// (CreateSwapchain: arraySize = ArrSize). Driving this loop off the
+			// mode's tile count overran the array on any mode with more than
+			// two tiles (4-tile mode -> DestSliceIndex 2 and 3 on a 2-slice
+			// texture). The tile geometry still sources the copy (Cols/TW/TH),
+			// so we lift tiles 0 and 1 out of UE's atlas. GetSubmittedViewCount()
+			// is clamped to DisplayXRMaxSubmittedViews == ArrSize, so
+			// DestSliceIndex can no longer run off the end.
+			const int32 NV = VC.GetSubmittedViewCount();
 			// Window-relative — MUST match UE's AdjustViewRect render rect and the
 			// projection imageRect (same helper, same window), else the copy reads
 			// a different region than UE drew (black band / shifted tile).
@@ -1021,7 +1036,12 @@ bool FDisplayXRCompositor::CreateSwapchain()
 			SliceW, SliceH, SwapchainWidth, SwapchainHeight);
 	}
 
-	const uint32 ArrSize = bUseCopyPath ? 2u : 1u;
+	// The array swapchain is created ONCE per session but the rendering mode can
+	// change under it (2D <-> 3D), so it is sized for the ceiling on views we
+	// will ever submit rather than the current mode's count. The
+	// ReleaseImage_RT copy loop is bounded by the same constant, which is what
+	// keeps DestSliceIndex inside the array.
+	const uint32 ArrSize = bUseCopyPath ? (uint32)DisplayXRMaxSubmittedViews : 1u;
 	XrSwapchainCreateInfo CI = {XR_TYPE_SWAPCHAIN_CREATE_INFO};
 	CI.usageFlags = XR_SWAPCHAIN_USAGE_COLOR_ATTACHMENT_BIT | XR_SWAPCHAIN_USAGE_SAMPLED_BIT;
 	CI.format = SwapchainFormat;

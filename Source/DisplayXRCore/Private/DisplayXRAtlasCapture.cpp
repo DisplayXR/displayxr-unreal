@@ -189,8 +189,14 @@ namespace DisplayXRAtlasCaptureNS
 		const bool bOk = Session->CaptureAtlas(Prefix, /*bProjectionOnly=*/true);
 		if (bOk)
 		{
+			// TILES, not views: the runtime names the file after the atlas grid
+			// it captured, which is the active mode's tile layout — not the
+			// number of views we submitted (clamped to
+			// DisplayXRMaxSubmittedViews). The two are equal on every shipping
+			// mode; on a >2-tile mode the file is named for the grid and the
+			// tiles past 1 are whatever the runtime composited there.
 			UE_LOG(LogDisplayXRCapture, Log, TEXT("Atlas capture requested -> %s_atlas_%d_%dx%d.png"),
-				*Prefix, View.GetViewCount(), Cols, Rows);
+				*Prefix, View.GetTileCount(), Cols, Rows);
 #if PLATFORM_WINDOWS
 			TriggerFlashOverlay_GameThread();
 #endif

@@ -99,6 +99,14 @@ Render thread:
 
 The zero-copy detail — how the OpenXR swapchain image becomes an `FRHITexture` UE will render into — is in [AtlasHandoff.md](./AtlasHandoff.md).
 
+**View count:** the session is begun on
+`XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO`, so the plugin renders and submits
+**exactly two views**, independent of how many tiles the runtime's active
+rendering mode declares. A mode with more than two tiles is rendered as tiles 0
+and 1 of that mode's grid. The tile-vs-view distinction, and what an N-view
+opt-in would take, are in
+[CompositorIntegration.md](./CompositorIntegration.md#views-vs-tiles).
+
 ## Component interface (game code)
 
 Game code and Blueprint nodes never call `FDisplayXRSession` directly. They go through `FDisplayXRPlatform` (static helpers in `DisplayXRPlatform.h`):

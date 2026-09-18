@@ -898,6 +898,10 @@ void FDisplayXRSession::LocateViews()
 	}
 
 	XrViewLocateInfo LocateInfo = {XR_TYPE_VIEW_LOCATE_INFO};
+	// Must match the type passed to xrBeginSession below. PRIMARY_STEREO reports
+	// exactly 2 views and bounds what we may submit — see
+	// DisplayXRMaxSubmittedViews (DisplayXRSession.h) for why we stay on it and
+	// what moving to PRIMARY_MULTIVIEW_DXR would take.
 	LocateInfo.viewConfigurationType = XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO;
 	LocateInfo.displayTime = (XrTime)PredictedDisplayTime.Load();
 	LocateInfo.space = ViewSpace;
@@ -1457,6 +1461,9 @@ bool FDisplayXRSession::CreateSessionWithGraphics(void* D3DDevice, void* Command
 					if (SC->state == XR_SESSION_STATE_READY)
 					{
 						XrSessionBeginInfo BeginInfo = {XR_TYPE_SESSION_BEGIN_INFO};
+						// Fixed for the session's lifetime, and it is what caps
+						// our submitted view count at 2 — see
+						// DisplayXRMaxSubmittedViews (DisplayXRSession.h).
 						BeginInfo.primaryViewConfigurationType = XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO;
 						XrResult BeginResult = xrBeginSessionFunc(Session, &BeginInfo);
 						if (XR_SUCCEEDED(BeginResult))

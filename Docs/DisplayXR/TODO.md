@@ -16,7 +16,7 @@ Replace the current `SceneCapture2D`-based editor preview with a `FDisplayXRDevi
 #### Weaved preview in the PIE viewport tab ([#38](https://github.com/DisplayXR/displayxr-unreal/issues/38))
 Parity with [`displayxr-unity`](https://github.com/DisplayXR/displayxr-unity) v2.8.0: the weaved preview shows up **inside the PIE viewport tab**, with floating the tab optional. Design and open questions live on issue #38.
 
-- ✅ **M0** — `XR_DXR_display_zones` vendored, probed, enabled (`FDisplayXRSession::HasDisplayZones()`); ABI pin at `displayxr-runtime@b0e5889`.
+- ✅ **M0** — `XR_DXR_display_zones` vendored, probed, enabled (`FDisplayXRSession::HasDisplayZones()`); ABI pin at `displayxr-runtime@b0e5889` (the pin has since advanced — `.displayxr-runtime-abi` is the live value).
 - ✅ **M1** — compositor rebuild across PIE runs (`NotifyPlaySessionStarting` / `NotifyPlaySessionEnded`). Amended in M2: the XrSession itself is also rebound per editor play session — the compositor alone was not enough (the stale session stayed bound to the previous cycle's dead window).
 - ✅ **M2** — texture-mode binding shipped and **weaved 3D confirmed in the PIE tab on hardware**: shared D3D12 texture (worst-case-sized per ADR-010) via `sharedTextureHandle`, invisible click-through proxy HWND (`FDisplayXRPIEPreview`) as the interlace-phase anchor, full-pane zone on `xrLocateViews` + the projection layer, woven blit via `OnBackBufferReadyToPresent` + XRBase `AddXRCopyTexturePass`. Editor-mode render wiring: UE renders the atlas into the viewport's OWN RT (all separate-RT hooks refused — a docked stereo separate-RT viewport flips Slate onto its stereo-composite path and the editor UI stomps the swapchain) and `PostRenderViewFamily_RenderThread` copies atlas→swapchain per frame; the PIE viewport is unset from the window's registered-viewport slot for the duration.
   - Remaining rough edges (post-M4): ~1 s of pre-weave SBS at Play while the session rebinds; 10-bit/HDR editor backbuffer colors need a PQ-aware encode pass for exactness; mixed-DPI multi-monitor layouts untested.
@@ -30,6 +30,20 @@ Parity with [`displayxr-unity`](https://github.com/DisplayXR/displayxr-unity) v2
 - ✅ **Cleanup (M4)** — `FDisplayXRPreviewSession` + SceneCapture path deleted; raw-Win32 mirror window + `r.DisplayXR.EditorNativePIEMirror` deleted (`OverrideCompositorHWND` stays — the proxy rides it); `r.DisplayXR.EditorNativePIE` default-on (0 = no editor preview); Phase-1 instrumentation stripped from `DisplayXRDevice.cpp`; dead `bSuppressCompositor` removed. The SHIFT+F1 note in the issue was stale — registration already defers to `OnPostEngineInit` and the log confirms it fires.
 
 Known hardware traps inherited from the Unity bring-up, all documented on #38: never pass `SWP_FRAMECHANGED` to `SetWindowPos` on the weaver-bound HWND (permanently collapses stereo to mono); debounce interactive resize (swapchain-realloc storms hung the D3D12 device); push physical pixels, never logical points.
+
+### N-view opt-in — `XR_VIEW_CONFIGURATION_TYPE_PRIMARY_MULTIVIEW_DXR`
+
+The plugin renders and submits exactly **two** views, because it begins its session on `XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO` and the runtime now holds that type to its spec meaning (2 views reported; `xrEndFrame` rejects `viewCount > 2` with `XR_ERROR_VALIDATION_FAILURE`). On a rendering mode with more than two tiles the plugin paints tiles 0 and 1 of the mode's grid and the runtime's under-submit contract composites the rest. See [CompositorIntegration.md § Views vs tiles](./CompositorIntegration.md#views-vs-tiles) and the runtime's [view-configuration model](https://github.com/DisplayXR/displayxr-runtime/blob/main/docs/reference/view-configuration-model.md).
+
+**Nothing ships today that needs more** — every shipping display declares 1-view (2D) and 2-view (3D) modes only; the sole >2-view mode in existence is the runtime's opt-in `sim_display` Quad. When a real N-view display appears, raising the `DisplayXRMaxSubmittedViews` clamp is **not** the change. All five of these move together:
+
+1. Probe `xrEnumerateViewConfigurations` for `XR_VIEW_CONFIGURATION_TYPE_PRIMARY_MULTIVIEW_DXR` (advertised only when `XR_DXR_display_info` is enabled — the plugin already enables it) and begin the session with it when present, falling back to `PRIMARY_STEREO`.
+2. Pass the same type to `xrLocateViews` (`DisplayXRSession.cpp`, `LocateInfo.viewConfigurationType`).
+3. Extend `FDisplayXRSession::GetViewData` past index 1 — today it returns `false` for anything above the right eye, so views 2..N would have no content to carry even if they were submitted. `FEyeData` holds a left/right pair and would become an N-wide array.
+4. Size the IPC array swapchain N slices wide instead of `DisplayXRMaxSubmittedViews` (`CreateSwapchain`'s `ArrSize`), keeping the `ReleaseImage_RT` copy loop bounded by whatever that is.
+5. Decide what happens under instanced stereo, which draws exactly two viewports — an N-view mode almost certainly means `vr.InstancedStereo=False`.
+
+Because the view-configuration type is fixed for the session's lifetime, a display that changes into an N-view mode mid-session cannot be followed by an already-begun `PRIMARY_STEREO` session; the runtime tracks suppressing such a mode switch for sessions that cannot express it ([displayxr-runtime#1499](https://github.com/DisplayXR/displayxr-runtime/issues/1499)).
 
 ---
 
