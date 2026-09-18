@@ -12,12 +12,56 @@
 #include "Native/displayxr_extensions.h"
 
 /**
+ * Ceiling on the views this plug-in renders and SUBMITS per frame.
+ *
+ * The plug-in begins its session on
+ * XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO (DisplayXRSession.cpp,
+ * xrBeginSession) and locates views with that same type. Since
+ * displayxr-runtime@c1e4fe00d that type is conformant: it reports exactly 2
+ * views, and xrEndFrame REJECTS a projection layer with viewCount > 2 under it
+ * with XR_ERROR_VALIDATION_FAILURE. Submitting the active mode's tile count
+ * therefore breaks the moment the runtime puts the panel into a mode with more
+ * than two tiles.
+ *
+ * It costs no capability today: our CONTENT has only ever been two views
+ * (FDisplayXRSession::GetViewData returns data for index 0/1 and false beyond),
+ * and the runtime's under-submit contract composites a short submission
+ * correctly — a 2-view submission in an N-tile mode paints tiles 0 and 1 of
+ * that mode's grid. See
+ * displayxr-runtime/docs/reference/view-configuration-model.md.
+ *
+ * FUTURE (the (ii) follow-up, not this change): to render genuine N-view
+ * content the plug-in must enumerate
+ * XR_VIEW_CONFIGURATION_TYPE_PRIMARY_MULTIVIEW_DXR (XR_DXR_display_info spec
+ * v19), begin the session with it, locate with it, extend GetViewData past
+ * index 1, and size the IPC array swapchain N slices wide instead of 2. Raising
+ * this constant alone is NOT sufficient and would reintroduce the rejection.
+ */
+inline constexpr int32 DisplayXRMaxSubmittedViews = 2;
+
+/**
  * N-view atlas tile layout, populated from the DisplayXR runtime's rendering
  * mode info. Drives render target sizing, view rect placement, and view count.
  *
  * Mode 0 (2D): 1x1 tiles @ scale 1x1 -> single full-res view
  * Mode 1 (3D): 2x1 tiles @ scale 0.5x0.5 -> two views in atlas
  * Extensible to any NxM layout.
+ *
+ * TWO DIFFERENT COUNTS LIVE HERE, and conflating them is the bug this struct's
+ * accessors exist to prevent:
+ *
+ *  - GetTileCount() is TILE GEOMETRY — how many cells the runtime's active
+ *    rendering mode divides the atlas into. It drives atlas sizing, per-view
+ *    rect placement (AdjustViewRect), and the copy source offsets. It is
+ *    whatever the mode says, up to N.
+ *  - GetSubmittedViewCount() is the OPENXR VIEW COUNT — how many
+ *    XrCompositionLayerProjectionView entries we hand xrEndFrame, how many
+ *    CachedViews we compute, and how many array slices the IPC swapchain path
+ *    writes. It is clamped to DisplayXRMaxSubmittedViews.
+ *
+ * They are equal on every mode that ships (2D 1x1, 3D 2x1). They diverge on a
+ * >2-tile mode, where we paint tiles 0 and 1 of the mode's grid and let the
+ * runtime's under-submit contract composite the rest.
  */
 struct FDisplayXRViewConfig
 {
@@ -28,7 +72,24 @@ struct FDisplayXRViewConfig
 	int32 DisplayPixelW = 1920;
 	int32 DisplayPixelH = 1080;
 
-	int32 GetViewCount() const { return TileColumns * TileRows; }
+	/** Tiles in the active rendering mode's atlas grid. Geometry, not views. */
+	int32 GetTileCount() const { return TileColumns * TileRows; }
+
+	/**
+	 * Views this plug-in submits to xrEndFrame for this mode: the tile count
+	 * clamped to DisplayXRMaxSubmittedViews.
+	 *
+	 * The lower bound of 1 is deliberate and is NOT the same as
+	 * GetDesiredNumberOfViews' floor of 2: in a 1-tile (2D) mode we submit a
+	 * single view, which the runtime accepts because we enable
+	 * XR_DXR_display_info and the active mode is itself 1-view (the
+	 * extension-scoped relaxation in the runtime's view-configuration model).
+	 */
+	int32 GetSubmittedViewCount() const
+	{
+		return FMath::Clamp(GetTileCount(), 1, DisplayXRMaxSubmittedViews);
+	}
+
 	int32 GetTileW() const { return FMath::RoundToInt(DisplayPixelW * ScaleX); }
 	int32 GetTileH() const { return FMath::RoundToInt(DisplayPixelH * ScaleY); }
 	int32 GetAtlasW() const { return TileColumns * GetTileW(); }

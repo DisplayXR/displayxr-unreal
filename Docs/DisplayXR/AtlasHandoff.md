@@ -1,7 +1,7 @@
 # Atlas Handoff — UE Renders Directly Into the OpenXR Swapchain
 
 This document describes how UE's rendered atlas reaches the DisplayXR runtime's
-OpenXR swapchain. It is a **zero-copy** pipeline: UE renders its N-view atlas
+OpenXR swapchain. It is a **zero-copy** pipeline: UE renders its atlas
 tiles directly into OpenXR swapchain images (wrapped as `FRHITexture`s), and
 the DisplayXR compositor reads them for display composition. No cross-device
 copies, no shared textures, no cross-device fences.
@@ -17,9 +17,14 @@ copies, no shared textures, no cross-device fences.
 
 ## The Problem
 
-UE renders an N-view atlas (e.g., 3840×2160 with 2×1 tiles of 1920×1080 in the
+UE renders a tiled atlas (e.g., 3840×2160 with 2×1 tiles of 1920×1080 in the
 upper half) into a render target. The DisplayXR runtime's compositor reads
 from an **OpenXR swapchain** — a set of D3D12 textures owned by the runtime.
+
+The atlas **grid** is whatever the runtime's active rendering mode declares, but
+the plugin always renders and submits **two views** into it — see
+[CompositorIntegration.md](./CompositorIntegration.md#views-vs-tiles). The IPC
+array-copy path's swapchain is sized to match (`arraySize = 2`).
 
 In the naive approach the two live on separate D3D12 devices, requiring shared
 textures and cross-device sync to ferry pixels between them. The zero-copy

@@ -68,7 +68,7 @@ The plugin's game path already satisfies that:
 
 | Requirement | Plugin |
 |---|---|
-| `GetDesiredNumberOfViews(true) == 2` | 2 for the 2x1 layout the runtime reports for stereo panels |
+| `GetDesiredNumberOfViews(true) == 2` | always 2 — the plugin submits exactly two views under `PRIMARY_STEREO`, whatever tile layout the runtime reports (see [CompositorIntegration.md](./CompositorIntegration.md#views-vs-tiles)) |
 | view 0 primary, view 1 secondary | inherited `GetViewPassForIndex` default |
 | horizontally adjacent rects at `Y = 0` in one 2D target | `AdjustViewRect` tiles `Col * TileW, 0` |
 | one 2D texture, not an array | wrapped swapchain image or UE's own atlas target |
@@ -76,10 +76,16 @@ The plugin's game path already satisfies that:
 Both atlas paths behave the same (`r.DisplayXR.UIPerEyeTiles` 1 and 0). Every
 `FSceneViewExtension` callback the plugin relies on still fires for both eyes under ISR.
 
-Not supported under ISR: any layout with more than two views or more than one tile row
-(a runtime reporting a 2x2 or 1x2 layout). ISR would draw only the first two views and
-force the second onto `Y = 0`. The plugin logs a warning naming the layout; set
-`vr.InstancedStereo=False` for such displays.
+Not supported under ISR: a **single-column, multi-row** layout (a runtime reporting 1x2,
+top/bottom). The plugin submits exactly two views, and in that layout they stack
+vertically while ISR forces the second onto `Y = 0`. The plugin logs a warning naming the
+layout; set `vr.InstancedStereo=False` for such displays.
+
+A layout with more than two tiles is *not* a problem for ISR as long as it has two or more
+**columns**: the plugin renders views 0 and 1 into tiles 0 and 1 of the grid, which are
+horizontally adjacent at `Y = 0` — exactly ISR's shape. (Before the view-count clamp the
+plugin made the render loop as wide as the tile count, which is what made a 2x2 layout
+unrenderable here.) See [CompositorIntegration.md](./CompositorIntegration.md#views-vs-tiles).
 
 Because the Unity sibling's single-pass-instanced path is a two-slice texture array
 (UE's *mobile* multi-view equivalent), nothing from that implementation ports over.

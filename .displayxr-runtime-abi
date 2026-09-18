@@ -18,14 +18,24 @@
 # matrix: this plugin is a downstream consumer of the wire protocol, released on
 # its own cadence. This file is the only coupling between the two repos.
 
-# runtime#803 (display-zones spec v3: per-zone cosmetic feather).
+# runtime#1486 / #80 (display_info spec v19: the N-view view-configuration type).
 #
-# Adopted for XR_DXR_display_zones — the sole region paradigm since ADR-031 and
-# the canvas source for the runtime's weave-to-texture editor-preview path
-# (issue #38). Diff vs the previous v2.0.0 pin on the five headers already
-# vendored: comments and SPEC_VERSION values only, no struct or ABI change.
-# SPEC_VERSION numbers jump (view_rig 1 -> 3, win32_window_binding 1 -> 8,
-# display_info 1 -> 16, atlas_capture 1 -> 3, cocoa 1 -> 6) because runtime#738
-# restored the pre-rename XR_EXT_* numbering; this is exactly why extension
-# support is gated on the NAME and never on SPEC_VERSION.
-b0e58898fb0e0d46622866c964e965ffa10ee489
+# Adopted because the runtime made XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO —
+# the type this plugin begins its session with — conformant: it now reports
+# exactly 2 views and xrEndFrame REJECTS a projection layer with viewCount > 2
+# under it (XR_ERROR_VALIDATION_FAILURE). The plugin's submitted view count is
+# clamped to 2 to match (DisplayXRMaxSubmittedViews, DisplayXRSession.h); the
+# N-view opt-in this header's new enum enables is future work, see
+# Docs/DisplayXR/TODO.md.
+#
+# Diff vs the previous b0e5889 pin, over the seven abi-guard headers: only
+# XR_DXR_display_info.h and XR_DXR_view_rig.h change, and both are safe —
+#  - display_info 16 -> 19, PURELY ADDITIVE: the
+#    XR_VIEW_CONFIGURATION_TYPE_PRIMARY_MULTIVIEW_DXR value (v19),
+#    XrDisplayDesktopInfoDXR (v18) and XrEventDataDisplayModeRequestDeniedDXR
+#    (v17). No existing struct changed size, layout or field order, and the
+#    plugin uses none of the new members yet.
+#  - view_rig: one prose comment reworded. SPEC_VERSION unchanged at 3.
+# The other five (atlas_capture, win32/cocoa window binding, display_zones,
+# local_3d_zone) are byte-identical to the previous pin.
+c1e4fe00da0f189122eca14e61e9faaa88e4b38e

@@ -225,16 +225,22 @@ static bool ApplyInstancedStereoWorkarounds(const FDisplayXRSession* Session)
 		WorldCtxTag(), Aspects.IsInstancedMultiViewportEnabled() ? TEXT("on") : TEXT("off"));
 
 	// ISR draws exactly two eyes, side by side, both at Y = 0 (FSceneRenderer::
-	// SetStereoViewport hard-codes MinY = 0 and pairs view N with view N+1). Any
-	// other tile layout the runtime reports renders black tiles under ISR.
+	// SetStereoViewport hard-codes MinY = 0 and pairs view N with view N+1).
+	//
+	// We now always render exactly two views (DisplayXRMaxSubmittedViews), so a
+	// tile count above 2 is no longer a problem by itself: AdjustViewRect places
+	// view 0 at column 0 and view 1 at column 1 of the mode's grid, which for
+	// any layout with >= 2 COLUMNS is two side-by-side tiles at Y = 0 — exactly
+	// what ISR draws. The one layout that still breaks it is a single-column,
+	// multi-row (top/bottom) mode, where view 1 sits at Y = TileH.
 	if (Session)
 	{
 		const FDisplayXRViewConfig VC = Session->GetViewConfig();
-		if (VC.TileRows > 1 || VC.GetViewCount() > 2)
+		if (VC.TileColumns < 2 && VC.GetTileCount() >= 2)
 		{
 			UE_LOG(LogDisplayXRDevice, Warning,
-				TEXT("[%s] This display reports a %dx%d tile layout (%d views); instanced stereo only renders two side-by-side views at Y=0. Set vr.InstancedStereo=False for this display."),
-				WorldCtxTag(), VC.TileColumns, VC.TileRows, VC.GetViewCount());
+				TEXT("[%s] This display reports a %dx%d tile layout (%d tiles) — the two views we render stack vertically; instanced stereo only renders two side-by-side views at Y=0. Set vr.InstancedStereo=False for this display."),
+				WorldCtxTag(), VC.TileColumns, VC.TileRows, VC.GetTileCount());
 		}
 	}
 
@@ -557,9 +563,21 @@ int32 FDisplayXRDevice::GetDesiredNumberOfViews(bool bStereoRequested) const
 	{
 		return 1;
 	}
-	const int32 Count = CachedViewConfig.GetViewCount();
-	// UE requires at least 2 views when stereo is enabled
-	return FMath::Max(Count, 2);
+	// VIEWS, not tiles — this is how many UE scene views we ask the engine to
+	// render, and it must equal what the compositor submits to xrEndFrame. We
+	// begin the session on PRIMARY_STEREO, which is exactly 2 views and refuses
+	// more (see DisplayXRMaxSubmittedViews in DisplayXRSession.h).
+	//
+	// This used to be FMath::Max(CachedViewConfig.GetViewCount(), 2) — the
+	// active mode's TILE count — which is what made the render loop N-wide and
+	// would submit viewCount=4 in a 4-tile mode. The tile geometry is still
+	// honoured by AdjustViewRect, so on such a mode UE paints tiles 0 and 1 of
+	// that mode's grid and the runtime's under-submit contract composites it.
+	//
+	// UE also requires at least 2 views when stereo is enabled, so the 2D
+	// (1-tile) mode keeps rendering 2 UE views; the compositor still submits a
+	// single view there (GetSubmittedViewCount), exactly as before this change.
+	return DisplayXRMaxSubmittedViews;
 }
 
 TSharedPtr<IStereoRendering, ESPMode::ThreadSafe> FDisplayXRDevice::GetStereoRenderingDevice()
@@ -1325,7 +1343,10 @@ void FDisplayXRDevice::ComputeViews()
 {
 	const FDisplayXRDisplayInfo DI = Session->GetDisplayInfo();
 	const FDisplayXRTunables T = Session->GetTunables();
-	const int32 ViewCount = FMath::Max(CachedViewConfig.GetViewCount(), 2);
+	// VIEWS, not tiles — one CachedViews entry per UE scene view, so this must
+	// agree with GetDesiredNumberOfViews above (AdjustViewRect /
+	// GetStereoProjectionMatrix index into this array by UE's view index).
+	const int32 ViewCount = DisplayXRMaxSubmittedViews;
 
 	// Read raw eye positions from session (OpenXR display-local, meters)
 	FVector LeftEyeRaw, RightEyeRaw;
