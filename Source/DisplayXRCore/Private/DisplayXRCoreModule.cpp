@@ -4,6 +4,7 @@
 #include "DisplayXRCoreModule.h"
 #include "DisplayXRAtlasCapture.h"
 #include "DisplayXRSession.h"
+#include "DisplayXRHandTracking.h"
 #include "DisplayXRPlatform.h"
 #include "Rendering/DisplayXRDevice.h"
 #include "SceneViewExtension.h"
@@ -246,6 +247,11 @@ void FDisplayXRCoreModule::StartupModule()
 		UE_LOG(LogDisplayXRCore, Log, TEXT("DisplayXR: Session initialized"));
 	}
 
+	// IHandTracker modular feature (XR_EXT_hand_tracking). Registered
+	// unconditionally so UE's hand consumers can find it from the start; it
+	// answers "not valid" until the session has live hand trackers.
+	HandTracker = MakeShared<FDisplayXRHandTracking>(Session.Get());
+
 	// Register with UE's HMD module discovery
 	IHeadMountedDisplayModule::StartupModule();
 
@@ -310,6 +316,9 @@ void FDisplayXRCoreModule::ShutdownModule()
 	}
 	DevInputProcessor.Reset();
 
+	// Unregister the hand tracker BEFORE the session goes away (raw pointer).
+	HandTracker.Reset();
+
 	if (Session.IsValid())
 	{
 		Session->Shutdown();
@@ -350,6 +359,15 @@ FDisplayXRSession* FDisplayXRCoreModule::GetSession()
 	if (ModuleInstance && ModuleInstance->Session.IsValid())
 	{
 		return ModuleInstance->Session.Get();
+	}
+	return nullptr;
+}
+
+FDisplayXRHandTracking* FDisplayXRCoreModule::GetHandTracker()
+{
+	if (ModuleInstance && ModuleInstance->HandTracker.IsValid())
+	{
+		return ModuleInstance->HandTracker.Get();
 	}
 	return nullptr;
 }

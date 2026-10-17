@@ -5,6 +5,8 @@
 #include "DisplayXRStereoMath.h"
 #include "DisplayXRRigManager.h"
 #include "DisplayXRPlatform.h"
+#include "DisplayXRHandTracking.h"
+#include "Misc/App.h"          // FApp::GetInstanceId (GetHandTrackingState)
 #include "StereoRenderUtils.h"
 #include "Widgets/SViewport.h"
 #include "UnrealEngine.h"
@@ -371,6 +373,41 @@ bool FDisplayXRDevice::IsHeadTrackingAllowed() const
 float FDisplayXRDevice::GetWorldToMetersScale() const
 {
 	return 100.0f;
+}
+
+FTransform FDisplayXRDevice::GetTrackingToWorldTransform() const
+{
+	return FTransform(PlayerViewRotation_GameThread.Quaternion(), PlayerViewLocation_GameThread);
+}
+
+void FDisplayXRDevice::GetHandTrackingState(UObject* WorldContext, const EXRSpaceType XRSpaceType,
+	const EControllerHand Hand, FXRHandTrackingState& HandTrackingState)
+{
+	// Mirrors FOpenXRHMD::GetHandTrackingState, against our own IHandTracker.
+	HandTrackingState.bValid = false;
+	HandTrackingState.DeviceName = GetSystemName();
+	HandTrackingState.ApplicationInstanceID = FApp::GetInstanceId();
+	HandTrackingState.XRSpaceType = XRSpaceType;
+	HandTrackingState.Hand = Hand;
+	HandTrackingState.TrackingStatus = ETrackingStatus::NotTracked;
+
+	if (Hand != EControllerHand::Left && Hand != EControllerHand::Right)
+	{
+		return;
+	}
+	FDisplayXRHandTracking* HandTracker = FDisplayXRCoreModule::GetHandTracker();
+	if (!HandTracker || !HandTracker->IsHandTrackingStateValid())
+	{
+		return;
+	}
+	bool bTracked = false;
+	HandTrackingState.bValid = HandTracker->GetAllKeypointStatesInSpace(Hand, XRSpaceType,
+		HandTrackingState.HandKeyLocations, HandTrackingState.HandKeyRotations,
+		HandTrackingState.HandKeyRadii, bTracked);
+	if (HandTrackingState.bValid)
+	{
+		HandTrackingState.TrackingStatus = bTracked ? ETrackingStatus::Tracked : ETrackingStatus::NotTracked;
+	}
 }
 
 void FDisplayXRDevice::ResetOrientationAndPosition(float Yaw)
@@ -1279,7 +1316,9 @@ void FDisplayXRDevice::SetupView(FSceneViewFamily& InViewFamily, FSceneView& InV
 
 void FDisplayXRDevice::SetupViewPoint(APlayerController* Player, FMinimalViewInfo& InViewInfo)
 {
+	// The rig: see GetTrackingToWorldTransform.
 	PlayerViewLocation_GameThread = InViewInfo.Location;
+	PlayerViewRotation_GameThread = InViewInfo.Rotation;
 
 	// Don't modify InViewInfo — let UE handle camera rotation naturally.
 	// The per-view offset is applied in CalculateStereoViewOffset.
