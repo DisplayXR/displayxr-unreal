@@ -26,12 +26,17 @@ Only the `XRBase` UE plugin is required (`DisplayXR.uplugin`). The plugin **does
 FDisplayXRCoreModule          (IHeadMountedDisplayModule)
   ├── Owns FDisplayXRSession  (unified OpenXR runtime wrapper)
   │     ├── XrInstance, XrSession, XrSpace handles
-  │     ├── Per-frame Tick(): xrPollEvent, xrLocateViews, stores eyes
+  │     ├── Per-frame Tick(): xrLocateViews (+ raw rig channel), stores eyes;
+  │     │                     xrLocateHandJointsEXT x2, stores display-plane joints
+  │     ├── Owns the left/right XrHandTrackerEXT (XR_EXT_hand_tracking)
   │     ├── Double-buffered FDisplayXRTunables + FDisplayXRViewConfig
   │     └── Owns FDisplayXRCompositor (on Windows/D3D12 path)
   │           ├── Dedicated FRunnableThread (xrWaitFrame/Begin/End loop)
   │           ├── OpenXR swapchain wrapped as TArray<FTextureRHIRef>
   │           └── Per-frame BeginFrameReady ↔ EndFrameReady events
+  │
+  ├── Owns FDisplayXRHandTracking  (IHandTracker modular feature, "DisplayXR":
+  │                                  session joints → rig space → world, see HandTracking.md)
   │
   └── CreateTrackingSystem() → FDisplayXRDevice   (UE's view of the HMD)
          : FHeadMountedDisplayBase     — IXRTrackingSystem / IHeadMountedDisplay
