@@ -97,6 +97,56 @@ struct FDisplayXRViewConfig
 };
 
 /**
+ * One located hand (XR_EXT_hand_tracking), as cached by the session each
+ * frame.
+ *
+ * Joints are in DISPLAY-PLANE space: OpenXR metres, origin at the physical
+ * display centre, +X right, +Y up, +Z toward the viewer — the LOCAL-space
+ * joint rebased by inv(XrViewDisplayRawDXR::displayPlanePose), exactly what
+ * the runtime's cube_handle_d3d11_win --hands reference does (runtime #1370).
+ * Without the raw rig channel (no XR_DXR_view_rig) the plane is unknown and
+ * the LOCAL pose is kept as-is. No UE conversion happens here:
+ * FDisplayXRHandTracking applies the active rig's mapping and the axis/unit
+ * change.
+ */
+struct FDisplayXRHandSample
+{
+	struct FJoint
+	{
+		XrPosef Pose = {{0.0f, 0.0f, 0.0f, 1.0f}, {0.0f, 0.0f, 0.0f}};
+		float Radius = 0.0f;                 // metres
+		XrSpaceLocationFlags Flags = 0;      // XR_SPACE_LOCATION_*_VALID/TRACKED_BIT
+	};
+	FJoint Joints[XR_HAND_JOINT_COUNT_EXT];
+
+	/** XrHandJointLocationsEXT::isActive for the latest locate. */
+	bool bActive = false;
+
+	/** True once this hand has ever been located active. The joints are then
+	 *  the LAST GOOD set even while bActive is false, so consumers can hold the
+	 *  previous pose instead of popping to the origin (Epic's model). */
+	bool bEverActive = false;
+
+	/** Bumped on every locate pass; consumers refresh derived caches on change. */
+	uint64 Generation = 0;
+};
+
+/**
+ * The runtime's raw rig channel (XrViewDisplayRawDXR chained on
+ * XrViewState::next), cached per locate: where the physical display plane
+ * sits in the locate (LOCAL) space and the physical canvas size the rig math
+ * ran on. Both feed the hand-joint mapping.
+ */
+struct FDisplayXRRigRaw
+{
+	XrPosef DisplayPlanePose = {{0.0f, 0.0f, 0.0f, 1.0f}, {0.0f, 0.0f, 0.0f}};
+	float CanvasWidthMeters = 0.0f;
+	float CanvasHeightMeters = 0.0f;
+	bool bIsTracking = false;
+	bool bValid = false;
+};
+
+/**
  * Cross-platform direct OpenXR session manager.
  *
  * Loads the DisplayXR OpenXR runtime directly (via LoadLibraryW on Windows,
@@ -210,6 +260,28 @@ public:
 	 */
 	void ParkForRebind() { bParkedForRebind.Store(true); }
 
+	// --- Hand tracking (XR_EXT_hand_tracking) ---
+
+	/** True when the instance enabled XR_EXT_hand_tracking, the system reports
+	 *  supportsHandTracking and both XrHandTrackerEXT handles exist for the
+	 *  live session. The one gate FDisplayXRHandTracking needs. */
+	bool HasHandTracking() const { return bHandTrackersCreated; }
+
+	/** The two halves of the gate above, for diagnostics. */
+	bool HasHandTrackingExtension() const { return bHasHandTracking; }
+	bool SystemSupportsHandTracking() const { return bSystemSupportsHandTracking; }
+
+	/** Latest located hand snapshot (0 = left, 1 = right). Thread-safe
+	 *  (double-buffered); joints are display-plane-relative, see the struct. */
+	void GetHandSample(int32 HandIndex, FDisplayXRHandSample& Out) const;
+
+	/** Generation of the latest snapshot (cheap "anything new?" probe before
+	 *  copying a sample). Both hands share one generation. */
+	uint64 GetHandSampleGeneration() const { return HandsBuffer[HandsReadIndex.Load()].Hands[0].Generation; }
+
+	/** Latest raw rig channel (display plane pose in LOCAL, canvas size). */
+	FDisplayXRRigRaw GetRigRaw() const;
+
 	// --- Accessors for compositor integration ---
 
 	XrSession GetXrSession() const { return Session; }
@@ -276,6 +348,16 @@ private:
 	void QueryRenderingModes();
 	void UpdateViewConfigFromDisplayMode(bool bMode3D);
 	void LocateViews();
+	/** Per-frame, right after LocateViews (same thread, same display time):
+	 *  xrLocateHandJointsEXT for both hands in ViewSpace, rebased into
+	 *  display-plane space and double-buffered. */
+	void LocateHandJoints();
+	/** Create the left/right XrHandTrackerEXT for the live session; no-op
+	 *  unless the extension is enabled and the system supports it. */
+	bool CreateHandTrackers();
+	/** Destroy the trackers. Must run BEFORE xrDestroySession (they are
+	 *  session children) and resets the published samples to inactive. */
+	void DestroyHandTrackers();
 
 	// --- OpenXR state ---
 	bool bActive = false;
@@ -358,4 +440,29 @@ private:
 	};
 	FEyeData EyeDataBuffer[2];
 	TAtomic<int32> EyeDataReadIndex{0};
+
+	// --- XR_EXT_hand_tracking state ---
+	// Probed before xrCreateInstance; cleared by the core-only retry.
+	bool bHasHandTracking = false;
+	// XrSystemHandTrackingPropertiesEXT::supportsHandTracking — the runtime
+	// answers true only when a hand-tracking input provider claimed the roles.
+	bool bSystemSupportsHandTracking = false;
+	bool bHandTrackersCreated = false;
+	XrHandTrackerEXT HandTrackers[2] = {XR_NULL_HANDLE, XR_NULL_HANDLE}; // 0 = left, 1 = right
+	PFN_xrCreateHandTrackerEXT xrCreateHandTrackerFunc = nullptr;
+	PFN_xrDestroyHandTrackerEXT xrDestroyHandTrackerFunc = nullptr;
+	PFN_xrLocateHandJointsEXT xrLocateHandJointsFunc = nullptr;
+	uint64 HandGeneration = 0;
+	// Both hands are located in one pass, so one double-buffered snapshot
+	// (written by LocateHandJoints on the game thread, read anywhere).
+	struct FHandsSnapshot
+	{
+		FDisplayXRHandSample Hands[2];
+	};
+	FHandsSnapshot HandsBuffer[2];
+	TAtomic<int32> HandsReadIndex{0};
+
+	// Raw rig channel from the latest successful xrLocateViews.
+	FDisplayXRRigRaw RigRawBuffer[2];
+	TAtomic<int32> RigRawReadIndex{0};
 };

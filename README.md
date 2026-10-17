@@ -83,6 +83,7 @@ In-depth docs live in [Docs/DisplayXR/](Docs/DisplayXR/):
 - [EditorPreview](Docs/DisplayXR/EditorPreview.md) — current `SceneCapture2D`-based preview
 - [EditorPreviewNative](Docs/DisplayXR/EditorPreviewNative.md) — in-flight plan for native `FDisplayXRDevice` → PIE preview
 - [EyeTracking](Docs/DisplayXR/EyeTracking.md) — `xrLocateViews` → Kooima → per-view projection pipeline
+- [HandTracking](Docs/DisplayXR/HandTracking.md) — Ultraleap / `XR_EXT_hand_tracking` joints as UE's `IHandTracker`; spaces, rig mapping, validation steps
 - [MacSetup](Docs/DisplayXR/MacSetup.md) — macOS-specific setup quirks
 - [CompositorIntegration](Docs/DisplayXR/CompositorIntegration.md) — prior compositor design (historical)
 - [ADRs](Docs/DisplayXR/adr/) — decision records for load-bearing architectural choices

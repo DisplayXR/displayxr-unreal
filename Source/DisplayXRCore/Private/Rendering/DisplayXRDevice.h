@@ -67,6 +67,24 @@ public:
 	 */
 	virtual bool IsHeadTrackingAllowed() const override;
 	virtual float GetWorldToMetersScale() const override;
+	/**
+	 * Tracking space -> world for this plug-in is the RIG: the camera the local
+	 * player renders from (its view point, before the per-eye offset). That is
+	 * the convention the eyes already follow — XrView.pose comes back rig-local
+	 * because LocateViews submits an identity rig pose, and
+	 * CalculateStereoViewOffset composes it onto the view rotation/location —
+	 * so hand joints and anything else in "tracking space" compose the same way.
+	 * FXRTrackingSystemBase's version derives it from the camera's attach
+	 * parent (the HMD-on-a-pawn model), which is not this plug-in's model.
+	 * Refreshed by SetupViewPoint each frame; game thread.
+	 */
+	virtual FTransform GetTrackingToWorldTransform() const override;
+	/** XR_EXT_hand_tracking joints through the IHandTracker this module
+	 *  registers (FDisplayXRHandTracking) — what Blueprint's
+	 *  GetHandTrackingState and the XRVisualization helpers consume. Honours
+	 *  XRSpaceType (world vs rig-local). */
+	virtual void GetHandTrackingState(UObject* WorldContext, const EXRSpaceType XRSpaceType,
+		const EControllerHand Hand, FXRHandTrackingState& HandTrackingState) override;
 	virtual void ResetOrientationAndPosition(float Yaw) override;
 	virtual void OnBeginPlay(FWorldContext& InWorldContext) override;
 
@@ -161,6 +179,7 @@ private:
 	FDisplayXRSession* Session = nullptr;
 	TUniquePtr<FDisplayXRCompositor> Compositor;
 	FVector PlayerViewLocation_GameThread = FVector::ZeroVector;
+	FRotator PlayerViewRotation_GameThread = FRotator::ZeroRotator;
 
 	// Per-view cached data (computed in SetupViewFamily, consumed by IStereoRendering)
 	struct FPerViewData

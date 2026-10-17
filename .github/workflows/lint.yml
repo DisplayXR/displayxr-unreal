@@ -37,6 +37,19 @@ jobs:
           python3 -m pip install --quiet pyyaml
           python3 -c "import yaml, glob; [yaml.safe_load(open(f)) for f in glob.glob('.github/workflows/*.yml')]"
 
+  pose-math-test:
+    # The OpenXR <-> UE pose conversion the hand-tracking path relies on lives
+    # in a UE-free header so it can be checked without an Unreal install.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Build and run Scripts/tests/pose_math_test.cpp
+        run: |
+          g++ -std=c++17 -Wall -Wextra -Werror \
+            -I Source/DisplayXRCore/Private/Native \
+            Scripts/tests/pose_math_test.cpp -o /tmp/pose_math_test
+          /tmp/pose_math_test
+
   abi-guard:
     # The DisplayXR OpenXR extension headers under
     # Source/DisplayXRCore/Private/Native/openxr/ are vendored VERBATIM from
