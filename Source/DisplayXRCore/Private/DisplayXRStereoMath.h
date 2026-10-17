@@ -5,6 +5,7 @@
 
 #include "CoreMinimal.h"
 #include <openxr/openxr.h>
+#include "Native/dxr_pose_math.h"
 
 /**
  * Stereo math helpers for DisplayXR.
@@ -21,40 +22,41 @@
 
 // ---------------------------------------------------------------------------
 // OpenXR ↔ UE axis / unit conversion
+//
+// Thin FVector / FQuat wrappers over Native/dxr_pose_math.h, which holds the
+// UE-free math (so Scripts/tests/pose_math_test.cpp can pin it with a bare
+// compiler). The quaternion mapping matches Epic's OpenXRCore ToFQuat /
+// ToXrQuat, sign on w included — the basis change is a reflection, so the
+// conjugate (same components, +w) rotates the wrong way round.
 // ---------------------------------------------------------------------------
 
 /** OpenXR (m, X right / Y up / Z toward viewer) → UE (cm, X forward / Y right / Z up). */
-static inline FVector OpenXRPositionToUE(const XrVector3f& V)
+static inline FVector OpenXRPositionToUE(const XrVector3f& V, float MetersToUnits = 100.0f)
 {
-	return FVector(
-		-V.z * 100.0f, // OpenXR +Z (toward viewer) → UE -X (backward)
-		 V.x * 100.0f, // OpenXR +X (right)         → UE +Y (right)
-		 V.y * 100.0f  // OpenXR +Y (up)            → UE +Z (up)
-	);
+	const dxr_pose::Vec3 P = dxr_pose::OpenXRPositionToUE(V, MetersToUnits);
+	return FVector(P.x, P.y, P.z);
 }
 
 static inline FQuat OpenXROrientationToUE(const XrQuaternionf& Q)
 {
-	return FQuat(-Q.z, Q.x, Q.y, Q.w);
+	const dxr_pose::Quat R = dxr_pose::OpenXROrientationToUE(Q);
+	return FQuat(R.x, R.y, R.z, R.w);
 }
 
-static inline XrVector3f UEPositionToOpenXR(const FVector& V)
+/** Full pose: OpenXR metres → UE units (default 100 per metre). */
+static inline FTransform OpenXRPoseToUE(const XrPosef& P, float MetersToUnits = 100.0f)
 {
-	XrVector3f Out;
-	Out.x = static_cast<float>( V.Y * 0.01);
-	Out.y = static_cast<float>( V.Z * 0.01);
-	Out.z = static_cast<float>(-V.X * 0.01);
-	return Out;
+	return FTransform(OpenXROrientationToUE(P.orientation), OpenXRPositionToUE(P.position, MetersToUnits));
+}
+
+static inline XrVector3f UEPositionToOpenXR(const FVector& V, float MetersToUnits = 100.0f)
+{
+	return dxr_pose::UEPositionToOpenXR(dxr_pose::Vec3{V.X, V.Y, V.Z}, MetersToUnits);
 }
 
 static inline XrQuaternionf UEOrientationToOpenXR(const FQuat& Q)
 {
-	XrQuaternionf Out;
-	Out.x = static_cast<float>( Q.Y);
-	Out.y = static_cast<float>( Q.Z);
-	Out.z = static_cast<float>(-Q.X);
-	Out.w = static_cast<float>( Q.W);
-	return Out;
+	return dxr_pose::UEOrientationToOpenXR(dxr_pose::Quat{Q.X, Q.Y, Q.Z, Q.W});
 }
 
 // ---------------------------------------------------------------------------
