@@ -12,6 +12,7 @@
 #endif
 
 #include "DisplayXRPlatform.h"
+#include "Native/dxr_pose_math.h"
 #include "Dom/JsonObject.h"
 #include "Serialization/JsonReader.h"
 #include "Serialization/JsonSerializer.h"
@@ -121,6 +122,9 @@ void FDisplayXRSession::Shutdown()
 	// dereferences a freed handle inside the runtime → EXCEPTION_ACCESS_VIOLATION
 	// on close (DisplayXRClient frame, DisplayXRSession.cpp:123). Space → session
 	// → instance is the correct teardown order.
+	// Hand trackers are session children too: they go first.
+	DestroyHandTrackers();
+
 	if (ViewSpace != XR_NULL_HANDLE)
 	{
 		PFN_xrDestroySpace xrDestroySpaceFunc = nullptr;
@@ -604,6 +608,24 @@ bool FDisplayXRSession::CreateInstance()
 			bHasViewRig ? TEXT("nothing") : TEXT(XR_DXR_VIEW_RIG_EXTENSION_NAME));
 	}
 
+	// XR_EXT_hand_tracking: the standard Khronos extension the runtime serves
+	// from its hand-tracking input providers (runtime ADR-034, #825 Tier 2 —
+	// e.g. Ultraleap). Same rules as the DXR extensions above: probe first and
+	// only then request. Whether the SYSTEM actually has a hand-tracking source
+	// behind it is a separate question, answered per system by
+	// XrSystemHandTrackingPropertiesEXT in QueryDisplayInfo — a runtime always
+	// advertises the extension, but reports supportsHandTracking only when a
+	// provider claimed the hand-tracking roles.
+	bHasHandTracking = IsInstanceExtensionSupported(XR_EXT_HAND_TRACKING_EXTENSION_NAME);
+	if (bHasHandTracking)
+	{
+		Extensions.Add(XR_EXT_HAND_TRACKING_EXTENSION_NAME);
+	}
+	UE_LOG(LogDisplayXRSession, Log, TEXT("DisplayXR Session: %s: %s"),
+		TEXT(XR_EXT_HAND_TRACKING_EXTENSION_NAME),
+		bHasHandTracking ? TEXT("AVAILABLE (IHandTracker will be served)")
+		                 : TEXT("ABSENT — no hand tracking"));
+
 	XrInstanceCreateInfo CreateInfo = {XR_TYPE_INSTANCE_CREATE_INFO};
 	FCStringAnsi::Strncpy(CreateInfo.applicationInfo.applicationName, "DisplayXR Unreal Plugin", XR_MAX_APPLICATION_NAME_SIZE);
 	CreateInfo.applicationInfo.applicationVersion = 1;
@@ -632,6 +654,7 @@ bool FDisplayXRSession::CreateInstance()
 		Extensions.SetNum(CoreExtensionCount);
 		bHasViewRig = false;
 		bHasDisplayZones = false;
+		bHasHandTracking = false;
 		CreateInfo.enabledExtensionCount = (uint32_t)Extensions.Num();
 		CreateInfo.enabledExtensionNames = Extensions.GetData();
 
@@ -681,9 +704,30 @@ void FDisplayXRSession::QueryDisplayInfo()
 	XrSystemProperties SystemProps = {XR_TYPE_SYSTEM_PROPERTIES};
 	XrDisplayInfoDXR DisplayInfoExt = {};
 	DisplayInfoExt.type = (XrStructureType)XR_TYPE_DISPLAY_INFO_DXR;
-	SystemProps.next = &DisplayInfoExt;
+	// XR_EXT_hand_tracking system support rides the same query, chained in
+	// front of the display info (only when the extension was enabled — an
+	// unknown struct type in the chain is a validation failure).
+	XrSystemHandTrackingPropertiesEXT HandProps = {XR_TYPE_SYSTEM_HAND_TRACKING_PROPERTIES_EXT};
+	if (bHasHandTracking)
+	{
+		HandProps.next = &DisplayInfoExt;
+		SystemProps.next = &HandProps;
+	}
+	else
+	{
+		SystemProps.next = &DisplayInfoExt;
+	}
 
 	XrResult Result = xrGetSystemPropertiesFunc(Instance, SystemId, &SystemProps);
+	bSystemSupportsHandTracking = bHasHandTracking && XR_SUCCEEDED(Result)
+		&& HandProps.supportsHandTracking == XR_TRUE;
+	if (bHasHandTracking)
+	{
+		UE_LOG(LogDisplayXRSession, Log,
+			TEXT("DisplayXR Session: XrSystemHandTrackingPropertiesEXT.supportsHandTracking = %d%s"),
+			(int)HandProps.supportsHandTracking,
+			bSystemSupportsHandTracking ? TEXT("") : TEXT(" (no hand-tracking input provider registered or present — joints will not be served)"));
+	}
 	if (XR_SUCCEEDED(Result))
 	{
 		DisplayInfo.DisplayWidthMeters = DisplayInfoExt.displaySizeMeters.width;
@@ -838,6 +882,8 @@ bool FDisplayXRSession::CreateSession()
 	// Query rendering modes to get tile layout and view dimensions
 	QueryRenderingModes();
 
+	CreateHandTrackers();
+
 	UE_LOG(LogDisplayXRSession, Log, TEXT("DisplayXR Session: Session created"));
 	return true;
 }
@@ -870,6 +916,7 @@ void FDisplayXRSession::Tick()
 			GLog->Flush();
 		}
 		LocateViews();
+		LocateHandJoints();
 		if (bFirstLocate)
 		{
 			UE_LOG(LogDisplayXRSession, Log, TEXT("DisplayXR Session: First LocateViews returned"));
@@ -1018,6 +1065,16 @@ void FDisplayXRSession::LocateViews()
 	}
 
 	XrViewState ViewState = {XR_TYPE_VIEW_STATE};
+	// Raw rig channel (XR_DXR_view_rig): the runtime fills in where the
+	// PHYSICAL display plane sits in the locate space and the canvas size the
+	// rig math ran on. The hand-joint path needs both — joints are located in
+	// LOCAL and rebased onto that plane (runtime #1370). Output-only; chained
+	// on the view STATE, not the locate info.
+	XrViewDisplayRawDXR RigRawOut = {(XrStructureType)XR_TYPE_VIEW_DISPLAY_RAW_DXR};
+	if (bHasViewRig)
+	{
+		ViewState.next = &RigRawOut;
+	}
 	XrView Views[8];
 	for (int i = 0; i < 8; i++) Views[i] = {XR_TYPE_VIEW};
 	uint32_t ViewCount = 0;
@@ -1094,6 +1151,27 @@ void FDisplayXRSession::LocateViews()
 				Views[0].fov.angleUp, Views[0].fov.angleDown);
 		}
 		GLog->Flush();
+	}
+
+	// Store the raw rig channel. eyeCountOutput > 0 is the "runtime filled it"
+	// signal (the cube reference uses the same test); a zeroed struct means
+	// the runtime did not recognise the chain.
+	{
+		const int32 WriteIdx = 1 - RigRawReadIndex.Load();
+		FDisplayXRRigRaw& RR = RigRawBuffer[WriteIdx];
+		RR.bValid = bHasViewRig && RigRawOut.eyeCountOutput > 0;
+		if (RR.bValid)
+		{
+			RR.DisplayPlanePose = RigRawOut.displayPlanePose;
+			RR.CanvasWidthMeters = RigRawOut.canvasSizeMeters.width;
+			RR.CanvasHeightMeters = RigRawOut.canvasSizeMeters.height;
+			RR.bIsTracking = RigRawOut.isTracking == XR_TRUE;
+		}
+		else
+		{
+			RR = FDisplayXRRigRaw();
+		}
+		RigRawReadIndex.Store(WriteIdx);
 	}
 
 	// Store eye positions (in OpenXR display-local space, meters)
@@ -1277,6 +1355,9 @@ bool FDisplayXRSession::CreateSessionWithGraphics(void* D3DDevice, void* Command
 			bSessionRunning.Store(false);
 		}
 
+		// Hand trackers are children of the session being torn down.
+		DestroyHandTrackers();
+
 		if (ViewSpace != XR_NULL_HANDLE)
 		{
 			PFN_xrDestroySpace xrDestroySpaceFunc = nullptr;
@@ -1413,6 +1494,8 @@ bool FDisplayXRSession::CreateSessionWithGraphics(void* D3DDevice, void* Command
 		(PFN_xrVoidFunction*)&xrCaptureAtlasFunc);
 
 	QueryRenderingModes();
+
+	CreateHandTrackers();
 
 	UE_LOG(LogDisplayXRSession, Log, TEXT("DisplayXR Session: Session created with graphics binding"));
 
@@ -1630,4 +1713,195 @@ void FDisplayXRSession::GetSceneTransform(FVector& OutPosition, FQuat& OutOrient
 	OutPosition = ST.Position;
 	OutOrientation = ST.Orientation;
 	bOutEnabled = ST.bEnabled;
+}
+
+// =============================================================================
+// XR_EXT_hand_tracking
+// =============================================================================
+
+bool FDisplayXRSession::CreateHandTrackers()
+{
+	if (bHandTrackersCreated)
+	{
+		return true;
+	}
+	if (!bHasHandTracking || !bSystemSupportsHandTracking || Session == XR_NULL_HANDLE)
+	{
+		return false;
+	}
+
+	if (!xrCreateHandTrackerFunc || !xrDestroyHandTrackerFunc || !xrLocateHandJointsFunc)
+	{
+		xrGetInstanceProcAddrFunc(Instance, "xrCreateHandTrackerEXT",
+			(PFN_xrVoidFunction*)&xrCreateHandTrackerFunc);
+		xrGetInstanceProcAddrFunc(Instance, "xrDestroyHandTrackerEXT",
+			(PFN_xrVoidFunction*)&xrDestroyHandTrackerFunc);
+		xrGetInstanceProcAddrFunc(Instance, "xrLocateHandJointsEXT",
+			(PFN_xrVoidFunction*)&xrLocateHandJointsFunc);
+		if (!xrCreateHandTrackerFunc || !xrDestroyHandTrackerFunc || !xrLocateHandJointsFunc)
+		{
+			UE_LOG(LogDisplayXRSession, Warning,
+				TEXT("DisplayXR Session: %s enabled but its entry points did not resolve — no hand tracking"),
+				TEXT(XR_EXT_HAND_TRACKING_EXTENSION_NAME));
+			return false;
+		}
+	}
+
+	for (int32 Hand = 0; Hand < 2; ++Hand)
+	{
+		XrHandTrackerCreateInfoEXT CreateInfo = {XR_TYPE_HAND_TRACKER_CREATE_INFO_EXT};
+		CreateInfo.hand = Hand == 0 ? XR_HAND_LEFT_EXT : XR_HAND_RIGHT_EXT;
+		CreateInfo.handJointSet = XR_HAND_JOINT_SET_DEFAULT_EXT;
+		const XrResult Result = xrCreateHandTrackerFunc(Session, &CreateInfo, &HandTrackers[Hand]);
+		if (XR_FAILED(Result))
+		{
+			UE_LOG(LogDisplayXRSession, Warning,
+				TEXT("DisplayXR Session: xrCreateHandTrackerEXT(%s) failed (%d) — no hand tracking"),
+				Hand == 0 ? TEXT("left") : TEXT("right"), (int)Result);
+			HandTrackers[Hand] = XR_NULL_HANDLE;
+			DestroyHandTrackers();
+			return false;
+		}
+	}
+
+	bHandTrackersCreated = true;
+	UE_LOG(LogDisplayXRSession, Log,
+		TEXT("DisplayXR Session: hand trackers created (left + right, default joint set, %d joints each)"),
+		(int)XR_HAND_JOINT_COUNT_EXT);
+	return true;
+}
+
+void FDisplayXRSession::DestroyHandTrackers()
+{
+	for (int32 Hand = 0; Hand < 2; ++Hand)
+	{
+		if (HandTrackers[Hand] != XR_NULL_HANDLE && xrDestroyHandTrackerFunc)
+		{
+			xrDestroyHandTrackerFunc(HandTrackers[Hand]);
+		}
+		HandTrackers[Hand] = XR_NULL_HANDLE;
+	}
+	if (bHandTrackersCreated)
+	{
+		UE_LOG(LogDisplayXRSession, Log, TEXT("DisplayXR Session: hand trackers destroyed"));
+	}
+	bHandTrackersCreated = false;
+
+	// Publish an inactive, never-tracked snapshot so consumers stop reporting
+	// the last joints of a session that no longer exists.
+	const int32 WriteIdx = 1 - HandsReadIndex.Load();
+	HandsBuffer[WriteIdx] = FHandsSnapshot();
+	HandsBuffer[WriteIdx].Hands[0].Generation = ++HandGeneration;
+	HandsBuffer[WriteIdx].Hands[1].Generation = HandGeneration;
+	HandsReadIndex.Store(WriteIdx);
+}
+
+void FDisplayXRSession::LocateHandJoints()
+{
+	if (!bHandTrackersCreated || !xrLocateHandJointsFunc || ViewSpace == XR_NULL_HANDLE)
+	{
+		return;
+	}
+	// Same parking rule as LocateViews: a zombie window binding returns garbage.
+	if (bParkedForRebind.Load())
+	{
+		return;
+	}
+	// No frame yet: xrWaitFrame has not published a display time, and a
+	// locate at t=0 is XR_ERROR_TIME_INVALID.
+	const XrTime DisplayTime = (XrTime)PredictedDisplayTime.Load();
+	if (DisplayTime == 0)
+	{
+		return;
+	}
+
+	// Rebase from LOCAL into display-plane space (see FDisplayXRHandSample).
+	// Without the raw channel the plane is unknown and identity is the best
+	// available guess — the same fallback the cube reference takes.
+	const FDisplayXRRigRaw Raw = GetRigRaw();
+	const XrPosef PlaneInverse = dxr_pose::PoseInverse(
+		Raw.bValid ? Raw.DisplayPlanePose : dxr_pose::PoseIdentity());
+
+	const int32 ReadIdx = HandsReadIndex.Load();
+	const int32 WriteIdx = 1 - ReadIdx;
+	const FHandsSnapshot& Prev = HandsBuffer[ReadIdx];
+	FHandsSnapshot& Next = HandsBuffer[WriteIdx];
+	++HandGeneration;
+
+	for (int32 Hand = 0; Hand < 2; ++Hand)
+	{
+		FDisplayXRHandSample& S = Next.Hands[Hand];
+		// Carry the last good joints forward; only bActive says whether this
+		// frame refreshed them.
+		S = Prev.Hands[Hand];
+		S.Generation = HandGeneration;
+		S.bActive = false;
+
+		XrHandJointsLocateInfoEXT LocateInfo = {XR_TYPE_HAND_JOINTS_LOCATE_INFO_EXT};
+		LocateInfo.baseSpace = ViewSpace;
+		LocateInfo.time = DisplayTime;
+
+		XrHandJointLocationEXT JointLocations[XR_HAND_JOINT_COUNT_EXT];
+		XrHandJointLocationsEXT Locations = {XR_TYPE_HAND_JOINT_LOCATIONS_EXT};
+		Locations.jointCount = XR_HAND_JOINT_COUNT_EXT;
+		Locations.jointLocations = JointLocations;
+
+		const XrResult Result = xrLocateHandJointsFunc(HandTrackers[Hand], &LocateInfo, &Locations);
+		if (XR_FAILED(Result))
+		{
+			static int32 FailCount = 0;
+			if (++FailCount <= 3 || FailCount % 300 == 0)
+			{
+				UE_LOG(LogDisplayXRSession, Warning,
+					TEXT("DisplayXR Session: xrLocateHandJointsEXT(%s) failed #%d (%d)"),
+					Hand == 0 ? TEXT("left") : TEXT("right"), FailCount, (int)Result);
+			}
+			continue;
+		}
+		if (Locations.isActive != XR_TRUE)
+		{
+			continue;
+		}
+
+		S.bActive = true;
+		S.bEverActive = true;
+		for (int32 J = 0; J < XR_HAND_JOINT_COUNT_EXT; ++J)
+		{
+			S.Joints[J].Pose = dxr_pose::PoseMul(PlaneInverse, JointLocations[J].pose);
+			S.Joints[J].Radius = JointLocations[J].radius;
+			S.Joints[J].Flags = JointLocations[J].locationFlags;
+		}
+	}
+	HandsReadIndex.Store(WriteIdx);
+
+	// Throttled progress line (first three, then every ~5 s at 60 fps).
+	static int32 LocateCount = 0;
+	++LocateCount;
+	if (LocateCount <= 3 || LocateCount % 300 == 0)
+	{
+		const XrPosef& LW = Next.Hands[0].Joints[XR_HAND_JOINT_WRIST_EXT].Pose;
+		const XrPosef& RW = Next.Hands[1].Joints[XR_HAND_JOINT_WRIST_EXT].Pose;
+		UE_LOG(LogDisplayXRSession, Log,
+			TEXT("HandJoints #%d: plane=%d L(active=%d wrist %.3f,%.3f,%.3f) R(active=%d wrist %.3f,%.3f,%.3f) [display-plane m]"),
+			LocateCount, Raw.bValid ? 1 : 0,
+			Next.Hands[0].bActive ? 1 : 0, LW.position.x, LW.position.y, LW.position.z,
+			Next.Hands[1].bActive ? 1 : 0, RW.position.x, RW.position.y, RW.position.z);
+	}
+}
+
+void FDisplayXRSession::GetHandSample(int32 HandIndex, FDisplayXRHandSample& Out) const
+{
+	if (HandIndex < 0 || HandIndex > 1)
+	{
+		Out = FDisplayXRHandSample();
+		return;
+	}
+	const int32 ReadIdx = HandsReadIndex.Load();
+	Out = HandsBuffer[ReadIdx].Hands[HandIndex];
+}
+
+FDisplayXRRigRaw FDisplayXRSession::GetRigRaw() const
+{
+	const int32 ReadIdx = RigRawReadIndex.Load();
+	return RigRawBuffer[ReadIdx];
 }
