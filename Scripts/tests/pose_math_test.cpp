@@ -3,12 +3,12 @@
 //
 // Standalone check of Source/DisplayXRCore/Private/Native/dxr_pose_math.h —
 // the OpenXR <-> UE conversion and the XrPosef helpers the hand-tracking path
-// relies on. Needs no Unreal install; build and run with a bare compiler:
+// relies on. Needs no Unreal install; build and run with a bare compiler
+// (one line; a trailing backslash in a // comment is itself a GCC warning):
 //
-//   clang++ -std=c++17 -I Source/DisplayXRCore/Private/Native \
-//       Scripts/tests/pose_math_test.cpp -o /tmp/pose_math_test && /tmp/pose_math_test
+//   clang++ -std=c++17 -I Source/DisplayXRCore/Private/Native Scripts/tests/pose_math_test.cpp -o /tmp/pose_math_test && /tmp/pose_math_test
 //
-// The lint workflow runs exactly this on every PR.
+// The lint workflow runs exactly this (g++ -Wall -Wextra -Werror) on every PR.
 
 #include "dxr_pose_math.h"
 
