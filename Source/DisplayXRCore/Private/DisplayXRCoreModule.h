@@ -10,6 +10,7 @@
 class FAutoConsoleCommand;
 class FDisplayXRSession;
 class FDisplayXRDevInputProcessor;
+class FDisplayXRHandTracking;
 
 /**
  * DisplayXR core module. Registers as an HMD module so UE picks our custom
@@ -32,6 +33,11 @@ public:
 
 	/** Get the session (for FDisplayXRPlatform routing). */
 	DISPLAYXRCORE_API static FDisplayXRSession* GetSession();
+
+	/** The IHandTracker implementation (XR_EXT_hand_tracking → UE hand
+	 *  keypoints), registered as a modular feature for the module's lifetime.
+	 *  Null only before StartupModule / after ShutdownModule. */
+	DISPLAYXRCORE_API static FDisplayXRHandTracking* GetHandTracker();
 
 	/**
 	 * Tell the active DisplayXR stereo device that a play session is starting,
@@ -84,6 +90,8 @@ private:
 	void RegisterDevInputProcessor();
 
 	TSharedPtr<FDisplayXRSession> Session;
+	// Destroyed before Session: it holds a raw pointer to it.
+	TSharedPtr<FDisplayXRHandTracking> HandTracker;
 	TSharedPtr<FDisplayXRDevInputProcessor> DevInputProcessor;
 	TUniquePtr<FAutoConsoleCommand> AtlasCaptureCmd;
 	FDelegateHandle PostEngineInitHandle;
