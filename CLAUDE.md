@@ -24,7 +24,7 @@ Output goes to `Packages/DisplayXR_<version>/`.
 
 ### Three Modules
 
-1. **DisplayXRCore** (Runtime, `Win64|Mac|Android`, `PostConfigInit`) — OpenXR integration, stereo device, camera components, Blueprint function library. No view math of its own (see §Shared native code).
+1. **DisplayXRCore** (Runtime, `Win64|Mac|Android`, `PostConfigInit`) — OpenXR integration, stereo device, camera components, Blueprint function library, hand tracking (`FDisplayXRHandTracking`, UE's `IHandTracker` over `XR_EXT_hand_tracking` — see `Docs/DisplayXR/HandTracking.md`). No view math of its own (see §Shared native code).
 2. **DisplayXRMaterials** (Runtime, all platforms, `Default`) — Custom material expression nodes (`StereoIndex`, `StereoSelect`, `SideBySideCoords`, `TopBottomCoords`).
 3. **DisplayXREditor** (Editor, `Win64|Mac`, `PostEngineInit`) — In-tab weaved PIE preview (`FDisplayXRPIEPreview`, Windows only), component proxies.
 

@@ -4,6 +4,15 @@ All notable changes to the DisplayXR Unreal plugin are documented here.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+- **Hand tracking (Ultraleap / Leap Motion and any other source the runtime serves) through standard OpenXR `XR_EXT_hand_tracking`, exposed as Unreal's `IHandTracker` modular feature (device type `"DisplayXR"`).** The session probes and enables the extension, reads `XrSystemHandTrackingPropertiesEXT.supportsHandTracking`, creates left/right `XrHandTrackerEXT` for every session it owns and locates all 26 joints per hand each frame on the game thread, right after `xrLocateViews` at the same predicted display time. `FDisplayXRDevice::GetHandTrackingState` now fills `FXRHandTrackingState`, so Blueprint's **Get Hand Tracking State** and the XRVisualization nodes work without any plugin-specific node. Joints are rebased onto the physical display plane with the raw rig channel (`XrViewDisplayRawDXR`, now chained on the view locate) exactly as the runtime's `cube_handle_d3d11_win --hands` reference does, then follow the same rig mapping as the eyes (display rig: `virtualDisplayHeight / canvasHeight`; camera rig: `-nominalZ`) and the camera the local player renders from (`GetTrackingToWorldTransform`, new) — so camera motion carries the hands and eye-tracked parallax never does. Docs: `Docs/DisplayXR/HandTracking.md`. Motion-controller input (hand bones as `IMotionController` sources, pinch actions, Ultraleap Tier 1, gamepad) is a tracked follow-up, not in this change.
+- `Scripts/tests/pose_math_test.cpp` + a `pose-math-test` lint job: the OpenXR <-> UE pose conversion and the `XrPosef` helpers now live in a UE-free header (`Source/DisplayXRCore/Private/Native/dxr_pose_math.h`) and are checked with a bare compiler on every PR.
+
+### Fixed
+- `OpenXROrientationToUE` / `UEOrientationToOpenXR` (`DisplayXRStereoMath.h`) mapped quaternions as `(-z, x, y, +w)`, the conjugate of the correct `(-z, x, y, -w)` (Epic's `ToFQuat`): the basis change is a reflection, so the old mapping rotated the wrong way round. Nothing consumed either helper before this release (views only use positions), so no shipped behaviour changes; hand-joint orientations are the first consumer.
+
 ## [0.9.4] - 2026-09-19
 
 ### Fixed
