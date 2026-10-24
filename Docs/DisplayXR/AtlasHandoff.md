@@ -229,10 +229,27 @@ Compositor timeouts while UE is still rendering race the state machine. 500
 ms is comfortably above any realistic UE frame cost but low enough that a
 truly stalled render thread doesn't hang the compositor.
 
+### UNORM swapchain (washed out on a format-honest runtime)
+
+Until the colour fix below the plug-in picked `B8G8R8A8_UNORM` (87) in-process
+and `R8G8B8A8_UNORM` (28) on the IPC path. UE's post-processor writes
+**encoded** (display-referred) bytes, and since runtime v2.21.1 the D3D12
+compositor is format-honest (runtime ADR-044): a UNORM swapchain is read as
+**linear** and encoded again on the way to the panel, which looks washed out.
+The plug-in now requests `B8G8R8A8_UNORM_SRGB` (91) in-process and
+`R8G8B8A8_UNORM_SRGB` (29) on the IPC path, with
+`XR_SWAPCHAIN_USAGE_MUTABLE_FORMAT_BIT`. The runtime allocates the image
+TYPELESS, and the plug-in keeps wrapping it with the non-sRGB `PF_B8G8R8A8` /
+`PF_R8G8B8A8` (no `TexCreate_SRGB`), so UE renders through plain UNORM views
+and its encoded bytes land unconverted, declared as encoded. This is the same
+arrangement as UE's own `OpenXRHMD`. The UNORM sibling remains only as a
+fallback for a runtime that does not enumerate the `_SRGB` format, with a
+warning.
+
 ### Format mismatch R10G10B10A2 ↔ B8G8R8A8
 
 UE's default HDR render target is R10G10B10A2 (DXGI 24, `PF_A2B10G10R10`);
-swapchains the DisplayXR runtime advertises are B8G8R8A8 (DXGI 87). The
+the swapchain the plug-in requests is B8G8R8A8 (DXGI 91, `_SRGB`; see above). The
 zero-copy path forces B8G8R8A8 end-to-end via
 `AllocateRenderTargetTextures(PF_B8G8R8A8, …)` and
 `GetActualColorSwapchainFormat() == PF_B8G8R8A8`. Omitting either one
@@ -295,7 +312,7 @@ instead (see the DisplayXR architecture doc).
 Build with `build.bat`, run with `run-game.bat`. Expected log signals:
 
 - `Compositor: RuntimeQueue created on UE device (<ptr>)`
-- `Compositor: Swapchain 3840x2160 fmt=87 (3 images)`
+- `Compositor: Swapchain 3840x2160 fmt=91 (3 images)` (`fmt=29` on the IPC array path)
 - `Compositor: Wrapped 3 swapchain images as RHI`
 - `Compositor: Initialized (single-device, zero-copy mode; swapchain deferred)`
 - `Compositor: Ready`

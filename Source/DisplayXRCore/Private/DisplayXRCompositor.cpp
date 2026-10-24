@@ -1035,15 +1035,38 @@ bool FDisplayXRCompositor::CreateSwapchain()
 	TArray<int64_t> Fmts; Fmts.SetNum(FC);
 	xrEnumerateSwapchainFormatsFunc(S, FC, &FC, Fmts.GetData());
 
-	// In-process single-tiled prefers BGRA(87); the IPC array path uses RGBA(28)
-	// (proven coherent cross-process) so the private-RT→slice copy is straight.
-	if (bUseCopyPath) {
-		SwapchainFormat = 28;
-		for (auto F : Fmts) { if (F == 28) { SwapchainFormat = 28; break; } }
-	} else {
-		SwapchainFormat = Fmts[0];
-		for (auto F : Fmts) { if (F == 87) { SwapchainFormat = F; break; } if (F == 28) SwapchainFormat = F; }
+	// Colour: request the _SRGB format (runtime colour contract, ADR-044). UE's
+	// post-processor writes ENCODED (display-referred) bytes, and a
+	// format-honest runtime (>= v2.21.1 on D3D12) reads a UNORM swapchain as
+	// LINEAR and sRGB-encodes it again on the way to the panel: double encode,
+	// washed out. An _SRGB swapchain declares the bytes encoded. The runtime
+	// creates the image TYPELESS (#1503) and we keep wrapping it with the
+	// non-sRGB PF (no TexCreate_SRGB), so UE's views are plain UNORM and its
+	// encoded bytes land unconverted -- the same arrangement UE's own OpenXRHMD
+	// uses (sRGB swapchain + XR_SWAPCHAIN_USAGE_MUTABLE_FORMAT_BIT). The IPC
+	// slice copy stays a raw CopyTexture within the R8G8B8A8 typeless family.
+	//
+	// In-process single-tiled: BGRA, wrapped PF_B8G8R8A8 -> B8G8R8A8_UNORM_SRGB
+	// (91). IPC array path: RGBA (proven coherent cross-process), wrapped
+	// PF_R8G8B8A8 -> R8G8B8A8_UNORM_SRGB (29). The UNORM siblings (87 / 28) are
+	// a fallback for a runtime that does not enumerate the _SRGB format.
+	const int64 WantSRGB = bUseCopyPath ? 29 : 91;
+	const int64 WantUNORM = bUseCopyPath ? 28 : 87;
+	SwapchainFormat = 0;
+	for (auto F : Fmts) { if (F == WantSRGB) { SwapchainFormat = F; break; } }
+	if (!SwapchainFormat) {
+		for (auto F : Fmts) { if (F == WantUNORM) { SwapchainFormat = F; break; } }
+		if (!SwapchainFormat && !bUseCopyPath) {
+			// Historical last resort of the in-process path (format list order).
+			SwapchainFormat = Fmts[0];
+			for (auto F : Fmts) { if (F == 28) { SwapchainFormat = F; break; } }
+		}
+		if (!SwapchainFormat) SwapchainFormat = WantUNORM;
+		UE_LOG(LogDisplayXRCompositor, Warning,
+			TEXT("Compositor: runtime does not offer DXGI format %lld (_SRGB); using %lld -- a format-honest runtime will show this washed out (ADR-044)"),
+			(long long)WantSRGB, (long long)SwapchainFormat);
 	}
+	const bool bSRGBSwapchain = (SwapchainFormat == 29 || SwapchainFormat == 91);
 
 	// IPC: each array slice is PER-VIEW sized so content fills it (matches Unity).
 	// The private RT UE renders into stays display-sized (SwapchainWidth/Height).
@@ -1065,6 +1088,9 @@ bool FDisplayXRCompositor::CreateSwapchain()
 	const uint32 ArrSize = bUseCopyPath ? (uint32)DisplayXRMaxSubmittedViews : 1u;
 	XrSwapchainCreateInfo CI = {XR_TYPE_SWAPCHAIN_CREATE_INFO};
 	CI.usageFlags = XR_SWAPCHAIN_USAGE_COLOR_ATTACHMENT_BIT | XR_SWAPCHAIN_USAGE_SAMPLED_BIT;
+	// UE renders through UNORM views of the _SRGB image (see the colour note
+	// above), which OpenXR requires the app to declare.
+	if (bSRGBSwapchain) CI.usageFlags |= XR_SWAPCHAIN_USAGE_MUTABLE_FORMAT_BIT;
 	CI.format = SwapchainFormat;
 	CI.sampleCount = 1; CI.width = CreateW; CI.height = CreateH;
 	CI.faceCount = 1; CI.arraySize = ArrSize; CI.mipCount = 1;
