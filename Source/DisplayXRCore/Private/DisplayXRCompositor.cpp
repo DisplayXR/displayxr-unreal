@@ -690,8 +690,17 @@ bool FDisplayXRCompositor::WrapSwapchainImagesAsRHI()
 		TArray<FTextureRHIRef>& OutPrivate = SwapchainImagesRHI;
 		TArray<FTextureRHIRef>& OutArray   = ArraySwapchainRHI;
 		TArray<FSwapchainImage> InImages = SwapchainImages;
+		// The D3D11 service creates IPC colour images fully TYPED (not
+		// TYPELESS; MUTABLE_FORMAT is ignored there), so an _SRGB image (29)
+		// must be wrapped with TexCreate_SRGB: a UNORM view of an _SRGB-typed
+		// resource is invalid. The array is only ever a CopyTexture
+		// destination, and a copy moves bytes without conversion, so the
+		// encoded bytes still land unchanged.
+		const ETextureCreateFlags ArrayFlags =
+			ETextureCreateFlags::RenderTargetable | ETextureCreateFlags::ShaderResource |
+			(SwapchainFormat == 29 ? ETextureCreateFlags::SRGB : ETextureCreateFlags::None);
 		ENQUEUE_RENDER_COMMAND(WrapDisplayXRArraySwapchain)(
-			[&OutPrivate, &OutArray, InImages, DynamicRHI, W, H](FRHICommandListImmediate& RHICmdList)
+			[&OutPrivate, &OutArray, InImages, DynamicRHI, W, H, ArrayFlags](FRHICommandListImmediate& RHICmdList)
 			{
 				for (const FSwapchainImage& Img : InImages)
 				{
@@ -704,9 +713,7 @@ bool FDisplayXRCompositor::WrapSwapchainImagesAsRHI()
 
 					ID3D12Resource* Res = static_cast<ID3D12Resource*>(Img.D3D12Resource);
 					OutArray.Add(DynamicRHI->RHICreateTexture2DArrayFromResource(
-						PF_R8G8B8A8,
-						ETextureCreateFlags::RenderTargetable | ETextureCreateFlags::ShaderResource,
-						FClearValueBinding::Transparent, Res));
+						PF_R8G8B8A8, ArrayFlags, FClearValueBinding::Transparent, Res));
 				}
 			});
 		FlushRenderingCommands();
@@ -1043,8 +1050,12 @@ bool FDisplayXRCompositor::CreateSwapchain()
 	// creates the image TYPELESS (#1503) and we keep wrapping it with the
 	// non-sRGB PF (no TexCreate_SRGB), so UE's views are plain UNORM and its
 	// encoded bytes land unconverted -- the same arrangement UE's own OpenXRHMD
-	// uses (sRGB swapchain + XR_SWAPCHAIN_USAGE_MUTABLE_FORMAT_BIT). The IPC
-	// slice copy stays a raw CopyTexture within the R8G8B8A8 typeless family.
+	// uses (sRGB swapchain + XR_SWAPCHAIN_USAGE_MUTABLE_FORMAT_BIT). In-process
+	// this relies on the runtime allocating TYPELESS images (#1503, runtime
+	// >= v2.17.0, which this plug-in already requires). The IPC images are
+	// TYPED by the service, so that array is wrapped _SRGB instead (see
+	// WrapSwapchainImagesAsRHI); the slice copy stays a raw CopyTexture within
+	// the R8G8B8A8 family either way.
 	//
 	// In-process single-tiled: BGRA, wrapped PF_B8G8R8A8 -> B8G8R8A8_UNORM_SRGB
 	// (91). IPC array path: RGBA (proven coherent cross-process), wrapped

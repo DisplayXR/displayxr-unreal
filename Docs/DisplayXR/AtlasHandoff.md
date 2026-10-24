@@ -238,11 +238,15 @@ compositor is format-honest (runtime ADR-044): a UNORM swapchain is read as
 **linear** and encoded again on the way to the panel, which looks washed out.
 The plug-in now requests `B8G8R8A8_UNORM_SRGB` (91) in-process and
 `R8G8B8A8_UNORM_SRGB` (29) on the IPC path, with
-`XR_SWAPCHAIN_USAGE_MUTABLE_FORMAT_BIT`. The runtime allocates the image
-TYPELESS, and the plug-in keeps wrapping it with the non-sRGB `PF_B8G8R8A8` /
-`PF_R8G8B8A8` (no `TexCreate_SRGB`), so UE renders through plain UNORM views
-and its encoded bytes land unconverted, declared as encoded. This is the same
-arrangement as UE's own `OpenXRHMD`. The UNORM sibling remains only as a
+`XR_SWAPCHAIN_USAGE_MUTABLE_FORMAT_BIT`.
+- In-process, the runtime allocates the image TYPELESS (runtime #1503,
+  v2.17.0+, which the plug-in already requires). The plug-in keeps wrapping
+  it with the non-sRGB `PF_B8G8R8A8` (no `TexCreate_SRGB`), so UE renders
+  through plain UNORM views and its encoded bytes land unconverted, declared
+  as encoded. This is the same arrangement as UE's own `OpenXRHMD`.
+- On the IPC path the D3D11 service creates the image fully TYPED
+  (`_SRGB`), so the array is wrapped with `TexCreate_SRGB`. It is only ever
+  a `CopyTexture` destination, and a copy moves bytes without conversion. The UNORM sibling remains only as a
 fallback for a runtime that does not enumerate the `_SRGB` format, with a
 warning.
 
@@ -331,6 +335,8 @@ Expected **absent**:
 - `Shared texture` (no shared textures)
 - `Own D3D12 device` (no second compositor device)
 - `xrAcquireSwapchainImage failed -37` (no swapchain-image leaks)
+- `UE is running the D3D11 RHI, not D3D12` (UE fell back from D3D12; see the warning and README *Requirements* for the project-side fix)
+- `does not offer DXGI format` (the runtime lacks the `_SRGB` format; colour will be washed out)
 - `DEVICE_REMOVED`, `EXCEPTION_ACCESS_VIOLATION`, GPU crash reports
 
 Visual:
