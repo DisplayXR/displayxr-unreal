@@ -37,6 +37,7 @@ One unified session loads the DisplayXR OpenXR runtime directly on every platfor
 - Unreal Engine 5.7 (the plugin declares `"EngineVersion": "5.7.0"`; older engines will refuse to load it without a rebuild)
 - DisplayXR OpenXR runtime installed (see [displayxr-runtime](https://github.com/DisplayXR/displayxr-runtime))
 - Windows, macOS, or Android target
+- Windows: UE must run the **D3D12** RHI. On an adapter that only reaches SM5 (for example some Intel UHD iGPUs), UE falls back to D3D11 unless the project also cooks SM5 shaders for D3D12; the plug-in then refuses with a warning and no DisplayXR session starts. Keep `+D3D12TargetedShaderFormats=PCD3D_SM5` under `[/Script/WindowsTargetPlatform.WindowsTargetSettings]` in `Config/DefaultEngine.ini` (it is UE's default) to support such adapters.
 - Visual Studio (Windows) or Xcode (macOS) matching your UE version
 
 ## Installing the Plugin
