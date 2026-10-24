@@ -447,6 +447,27 @@ bool FDisplayXRCompositor::Initialize(void* InParentHWND, void* InD3DDevice, voi
 	UEDevice = InD3DDevice;
 	UECommandQueue = InCommandQueue;
 	if (!UEDevice || !InParentHWND || !Session) return false;
+
+#if PLATFORM_WINDOWS
+	// The Windows path is D3D12-only (D3D12 graphics binding, ID3D12Resource
+	// swapchain images, a D3D12 RuntimeQueue). UE does not always run D3D12 when
+	// the project asks for it: when the adapter cannot run any D3D12 shader format
+	// the project cooked (e.g. an Intel UHD iGPU that tops out at SM5, against a
+	// project that cooks only PCD3D_SM6 for D3D12), UE falls back to the D3D11 RHI
+	// and RHIGetNativeDevice() returns an ID3D11Device*. Treating that as an
+	// ID3D12Device dispatches the wrong vtable slot -- slot 8 is
+	// ID3D11Device::CreateUnorderedAccessView, not CreateCommandQueue -- which is
+	// the E_INVALIDARG "RuntimeQueue creation failed (0x80070057)" of #63. Refuse
+	// cleanly instead of calling into an interface we do not have.
+	if (!IsRHID3D12())
+	{
+		UE_LOG(LogDisplayXRCompositor, Warning,
+			TEXT("Compositor: UE is running the %s RHI, not D3D12 -- no DisplayXR session (DisplayXR on Windows needs D3D12; if UE fell back because the adapter lacks SM6, cook PCD3D_SM5 for D3D12 too: +D3D12TargetedShaderFormats=PCD3D_SM5)"),
+			GDynamicRHI ? GDynamicRHI->GetName() : TEXT("unknown"));
+		GLog->Flush();
+		return false;
+	}
+#endif
 	if (!ResolveXrFunctions()) return false;
 
 	// Create a dedicated runtime queue on UE's device.

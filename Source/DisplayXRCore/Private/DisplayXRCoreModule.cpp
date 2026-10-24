@@ -415,7 +415,9 @@ bool FDisplayXRCoreModule::GetOrCreateWovenSurface(uint32 W, uint32 H,
 	}
 	M.ReleaseWovenSurface();
 
-	ID3D12Device* Dev = GDynamicRHI ? static_cast<ID3D12Device*>(GDynamicRHI->RHIGetNativeDevice()) : nullptr;
+	// D3D12 only: under UE's D3D11 fallback the native device is an
+	// ID3D11Device and must not be cast (#63).
+	ID3D12Device* Dev = IsRHID3D12() ? static_cast<ID3D12Device*>(GDynamicRHI->RHIGetNativeDevice()) : nullptr;
 	if (!Dev)
 	{
 		return false;

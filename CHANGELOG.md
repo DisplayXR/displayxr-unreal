@@ -4,6 +4,11 @@ All notable changes to the DisplayXR Unreal plugin are documented here.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Fixed
+- **`RuntimeQueue creation failed (0x80070057)` on an Intel UHD adapter was UE running D3D11, not a queue the driver rejects (#63).** When the adapter cannot run any D3D12 shader format the project cooked (an SM5-only iGPU against a project that cooks only `PCD3D_SM6` for D3D12), UE falls back to the D3D11 RHI and `RHIGetNativeDevice()` returns an `ID3D11Device*`. The compositor cast it to `ID3D12Device` and called `CreateCommandQueue`, which lands on vtable slot 8 of the D3D11 interface (`CreateUnorderedAccessView`) and returns `E_INVALIDARG`. The compositor and the editor's woven-surface cache now check `IsRHID3D12()` first and refuse with one warning naming the RHI and the fix (cook `PCD3D_SM5` for D3D12 too, `+D3D12TargetedShaderFormats=PCD3D_SM5`), instead of calling into an interface the device does not have. With `PCD3D_SM5` cooked for D3D12, UE stays on D3D12 on such an adapter and the session comes up.
+
 ## [0.9.4] - 2026-09-19
 
 ### Fixed
