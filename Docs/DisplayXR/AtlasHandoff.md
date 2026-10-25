@@ -84,6 +84,62 @@ device, not UE's main queue. UE's RHI state tracking does not tolerate
 foreign submissions on its own queue; giving the runtime its own queue
 keeps them isolated while still sharing the device.
 
+## Release fence (publish only)
+
+**Hazard.** UE renders the atlas on its main queue. The runtime reads it from
+work it submits on `RuntimeQueue` at `xrEndFrame`, or, under the D3D11 hub
+(runtime ADR-059), from a **different device**. `xrReleaseSwapchainImage` is a
+CPU call on UE's render thread, typically made before UE's RHI has submitted
+the frame, and the runtime's D3D12 release is CPU-side state only. Nothing
+orders the reader after UE's write; on one device it works by timing.
+
+**What the plug-in does (#62).** It *publishes* a fence and does not wait on it.
+`FDisplayXRCompositor::SignalReleaseFence_RenderThread` runs from
+`ReleaseImage_RenderThread` after the last UE write to the image (the scene
+render or per-eye UI blend, plus on the IPC path the slice copy) and its
+`Present` transition, and before `xrReleaseSwapchainImage`:
+
+1. `RHICmdList.EnqueueLambda` -> `ID3D12DynamicRHI::RHISignalManualFence(fence, ++value)`.
+   This is UE's own RHI API. The D3D12 RHI closes its open command list and
+   adds the signal to its payload, so its submitter issues `Signal` on UE's
+   graphics queue after everything recorded before it. It records no commands
+   and moves none of UE's own fences, which is why it is the one exception to
+   "never submit foreign work on UE's queue".
+2. The value is published on `RuntimeQueue` (below).
+
+**Who enforces the ordering.** The runtime, where it consumes the image:
+runtime issue DisplayXR/displayxr-runtime#2362 has the hub's ingest context
+GPU-wait the published fence. Until a runtime does that, the fence orders
+nothing and costs no frame time. The plug-in deliberately does **not**
+`RuntimeQueue->Wait` on it. Tried in #62, a plug-in-side wait fed the
+in-process compositor's CPU idle-wait in `xrEndFrame`, which serialised
+`xrEndFrame(N)` behind UE's GPU frame N. That measured about 25 % fewer
+presents, and one of two runs hit DEVICE_HUNG on the split's output device.
+
+**Liveness.** A Signal that is enqueued but never submitted would hang a
+runtime waiting on it. `FDisplayXRCompositor::Shutdown` flushes the render/RHI
+threads (`FlushRenderingCommands`) before it stops the compositor thread and
+destroys the swapchain.
+
+**Handoff contract (experimental, same-adapter only).** The fence is created on
+UE's device with `D3D12_FENCE_FLAG_SHARED` (not `SHARED_CROSS_ADAPTER`, so it
+serves a reader on the same adapter only). It is published as D3D12 private
+data on the queue the plug-in passes in `XrGraphicsBindingD3D12KHR::queue`
+(the `RuntimeQueue`). The queue is the one object the runtime already holds,
+so the contract needs no new OpenXR struct:
+
+| GUID | payload | set |
+|---|---|---|
+| `{0caebe5f-b789-4338-b291-859f0f09a631}` | `IUnknown*` of the `ID3D12Fence`, stored with `SetPrivateDataInterface` (read it back with `GetPrivateData`, size `sizeof(IUnknown*)`; the returned pointer is AddRef'd) | once, before `xrCreateSession` |
+| `{8fa02ae8-9d02-431e-ab93-bccd79b601f7}` | `uint64`: the value signalled for the image being released; `0` = nothing signalled yet | before every `xrReleaseSwapchainImage`, on the releasing thread |
+
+A runtime reads the value inside `xrReleaseSwapchainImage` and GPU-waits on
+`(fence, value)` on the context that reads the image. On the hub that is, for
+example, `CreateSharedHandle` + `ID3D11Device5::OpenSharedFence` +
+`ID3D11DeviceContext4::Wait`, with the handle opened once. A runtime that does
+not query the private data is unaffected. `DXR_UE_RELEASE_FENCE=0` stops the
+plug-in signalling and publishing (diagnostic, not a setting).
+
 ### Key Design Decisions
 
 | Decision | Rationale |
@@ -316,6 +372,8 @@ instead (see the DisplayXR architecture doc).
 Build with `build.bat`, run with `run-game.bat`. Expected log signals:
 
 - `Compositor: RuntimeQueue created on UE device (<ptr>)`
+- `Compositor: release fence <ptr> (shared) published on RuntimeQueue`
+- `Compositor: release fence publishing (first value 1; UE queue signals, no plug-in wait)` (once, at the first release)
 - `Compositor: Swapchain 3840x2160 fmt=91 (3 images)` (`fmt=29` on the IPC array path)
 - `Compositor: Wrapped 3 swapchain images as RHI`
 - `Compositor: Initialized (single-device, zero-copy mode; swapchain deferred)`
@@ -331,7 +389,7 @@ Build with `build.bat`, run with `run-game.bat`. Expected log signals:
 Expected **absent**:
 
 - `CopyAtlas` (no GPU copies)
-- `fence signaled val=…` (no cross-device fence)
+- `fence signaled val=…` (no CPU fence wait)
 - `Shared texture` (no shared textures)
 - `Own D3D12 device` (no second compositor device)
 - `xrAcquireSwapchainImage failed -37` (no swapchain-image leaks)

@@ -24,6 +24,36 @@ DEFINE_LOG_CATEGORY_STATIC(LogDisplayXRCompositor, Log, All);
 #define XR_TYPE_SWAPCHAIN_IMAGE_D3D12_KHR ((XrStructureType)1000028001)
 struct XrSwapchainImageD3D12KHR { XrStructureType type; void* next; void* texture; };
 
+#if PLATFORM_WINDOWS
+// Release-fence handoff (#62), published on the ID3D12CommandQueue the plug-in
+// hands to xrCreateSession (XrGraphicsBindingD3D12KHR::queue) as D3D12 private
+// data. The queue is the one object the runtime already holds, so no new
+// OpenXR struct is needed. Contract (Docs/DisplayXR/AtlasHandoff.md):
+//   DXR_UE_RELEASE_FENCE_GUID        -> IUnknown*: the ID3D12Fence (UE's device,
+//                                       D3D12_FENCE_FLAG_SHARED), set once at
+//                                       compositor init, before xrCreateSession.
+//   DXR_UE_RELEASE_FENCE_VALUE_GUID  -> uint64: the value signalled from UE's
+//                                       queue for the image being released, set
+//                                       BEFORE each xrReleaseSwapchainImage on
+//                                       the releasing thread (0 = nothing
+//                                       signalled yet).
+// GPU-waiting on (fence, value) orders a reader after UE's last write to the
+// released image. PUBLISH ONLY: the plug-in does not wait on it anywhere; the
+// enforcing side is the runtime (displayxr-runtime#2362: the hub's ingest
+// context GPU-waits the published fence). Until a runtime does, nothing is
+// ordered by it and it costs no frame time.
+// EXPERIMENTAL: no runtime reads this yet. The fence is
+// D3D12_FENCE_FLAG_SHARED, not SHARED_CROSS_ADAPTER, so it serves a reader
+// on the SAME adapter only (DIRECT ingress); a cross-adapter reader needs a
+// different fence and is out of scope.
+// {0caebe5f-b789-4338-b291-859f0f09a631}
+static const GUID DXR_UE_RELEASE_FENCE_GUID =
+	{0x0caebe5f, 0xb789, 0x4338, {0xb2, 0x91, 0x85, 0x9f, 0x0f, 0x09, 0xa6, 0x31}};
+// {8fa02ae8-9d02-431e-ab93-bccd79b601f7}
+static const GUID DXR_UE_RELEASE_FENCE_VALUE_GUID =
+	{0x8fa02ae8, 0x9d02, 0x431e, {0xab, 0x93, 0xbc, 0xcd, 0x79, 0xb6, 0x01, 0xf7}};
+#endif
+
 // =============================================================================
 // Child window
 // =============================================================================
@@ -474,6 +504,7 @@ bool FDisplayXRCompositor::Initialize(void* InParentHWND, void* InD3DDevice, voi
 	// DO NOT pass UE's main queue — the runtime may submit its own work which
 	// would corrupt UE's RHI command-list tracking.
 	if (!CreateRuntimeQueue()) return false;
+	if (!CreateReleaseFence()) return false;
 
 	// IPC vs in-process: over IPC the single-tiled shared texture is non-coherent
 	// cross-process from UE's process, so we take the arraySize=2 copy path.
@@ -557,6 +588,15 @@ bool FDisplayXRCompositor::Initialize(void* InParentHWND, void* InD3DDevice, voi
 
 void FDisplayXRCompositor::Shutdown()
 {
+	// Release fence liveness (#62): a frame's Signal may still be sitting in
+	// UE's RHI queue. A runtime that GPU-waits the published fence
+	// (displayxr-runtime#2362) would wait on it forever if it were never
+	// submitted. Drain the render/RHI threads so every enqueued Signal reaches
+	// the GPU before we stop the thread and destroy the swapchain.
+	if (IsInGameThread() && GIsRHIInitialized)
+	{
+		FlushRenderingCommands();
+	}
 	StopCompositorThread();
 	SwapchainImagesRHI.Empty();
 	ArraySwapchainRHI.Empty();
@@ -565,6 +605,8 @@ void FDisplayXRCompositor::Shutdown()
 	DestroyChildWindow();
 #if PLATFORM_WINDOWS
 	if (RuntimeQueue) { static_cast<ID3D12CommandQueue*>(RuntimeQueue)->Release(); RuntimeQueue = nullptr; }
+	if (ReleaseFence) { static_cast<ID3D12Fence*>(ReleaseFence)->Release(); ReleaseFence = nullptr; }
+	ReleaseFenceValue = 0;
 #endif
 	if (BeginFrameReadyEvent) { FPlatformProcess::ReturnSynchEventToPool(BeginFrameReadyEvent); BeginFrameReadyEvent = nullptr; }
 	if (EndFrameReadyEvent) { FPlatformProcess::ReturnSynchEventToPool(EndFrameReadyEvent); EndFrameReadyEvent = nullptr; }
@@ -661,6 +703,108 @@ bool FDisplayXRCompositor::CreateRuntimeQueue()
 	return true;
 #else
 	return false;
+#endif
+}
+
+// =============================================================================
+// Release fence (#62)
+// =============================================================================
+bool FDisplayXRCompositor::CreateReleaseFence()
+{
+#if PLATFORM_WINDOWS
+	ID3D12Device* UEDev = static_cast<ID3D12Device*>(UEDevice);
+	ID3D12CommandQueue* RQ = static_cast<ID3D12CommandQueue*>(RuntimeQueue);
+	if (!UEDev || !RQ) return false;
+
+	// SHARED so a runtime on another device (the D3D11 hub, ADR-059) can
+	// CreateSharedHandle + OpenSharedFence it and wait GPU-side.
+	ID3D12Fence* Fence = nullptr;
+	HRESULT hr = UEDev->CreateFence(0, D3D12_FENCE_FLAG_SHARED, IID_PPV_ARGS(&Fence));
+	if (FAILED(hr) || !Fence)
+	{
+		UE_LOG(LogDisplayXRCompositor, Error, TEXT("Compositor: release fence creation failed (0x%08x)"), (unsigned)hr);
+		return false;
+	}
+	ReleaseFence = Fence;
+	ReleaseFenceValue = 0;
+
+	const uint64 Zero = 0;
+	RQ->SetPrivateDataInterface(DXR_UE_RELEASE_FENCE_GUID, Fence);
+	RQ->SetPrivateData(DXR_UE_RELEASE_FENCE_VALUE_GUID, sizeof(Zero), &Zero);
+
+	UE_LOG(LogDisplayXRCompositor, Log, TEXT("Compositor: release fence %p (shared) published on RuntimeQueue"), ReleaseFence);
+	return true;
+#else
+	return false;
+#endif
+}
+
+void FDisplayXRCompositor::SignalReleaseFence_RenderThread(FRHICommandListImmediate& RHICmdList)
+{
+#if PLATFORM_WINDOWS
+	ID3D12Fence* Fence = static_cast<ID3D12Fence*>(ReleaseFence);
+	ID3D12CommandQueue* RQ = static_cast<ID3D12CommandQueue*>(RuntimeQueue);
+	if (!Fence || !RQ) return;
+
+	// Diagnostic kill switch (DXR_UE_RELEASE_FENCE=0): stop signalling and
+	// publishing; the published value then stays where it was. Not a setting.
+	static const bool bDisabled = FPlatformMisc::GetEnvironmentVariable(TEXT("DXR_UE_RELEASE_FENCE")).Equals(TEXT("0"));
+	if (bDisabled)
+	{
+		static bool bWarned = false;
+		if (!bWarned)
+		{
+			bWarned = true;
+			UE_LOG(LogDisplayXRCompositor, Warning, TEXT("Compositor: release fence publishing DISABLED by DXR_UE_RELEASE_FENCE=0 (diagnostic)"));
+		}
+		RHICmdList.SubmitCommandsHint();
+		return;
+	}
+
+	const uint64 Value = ++ReleaseFenceValue;
+
+	// Why a Signal on UE's queue is allowed when foreign work is not: the rule
+	// (AtlasHandoff.md) exists because raw ExecuteCommandLists on UE's queue
+	// corrupts the RHI's own fence values / descriptor-heap / open-list
+	// tracking. This is not that. RHISignalManualFence is the D3D12 RHI's own
+	// API: on the RHI thread it closes the context's open command list and adds
+	// (Fence, Value) to the payload's signal phase, so the RHI's submitter
+	// issues the Signal itself, after every command list recorded before this
+	// point (the scene render, the UI blend, the IPC slice copy and the
+	// Present transition) on the queue that executed them. No commands are
+	// recorded and none of UE's own fences move. It is the one write a reader
+	// on another queue or device needs to order itself after UE's frame.
+	//
+	// EnqueueLambda because FD3D12CommandContext is only valid on the executing
+	// (bottom-of-pipe) list. The fence is AddRef'd across the hop so a teardown
+	// racing the RHI thread cannot free it under the lambda.
+	Fence->AddRef();
+	RHICmdList.EnqueueLambda(TEXT("DisplayXRReleaseFence"),
+		[Fence, Value](FRHICommandListImmediate& ExecutingCmdList)
+		{
+			GetID3D12DynamicRHI()->RHISignalManualFence(ExecutingCmdList, Fence, Value);
+			Fence->Release();
+		});
+	RHICmdList.SubmitCommandsHint();
+
+	// No RuntimeQueue->Wait here, on purpose. A plug-in-side wait feeds the
+	// in-process compositor's CPU idle-wait in xrEndFrame (layer_commit), so
+	// xrEndFrame(N) would return only after UE's GPU frame N: it measured
+	// ~25 % fewer presents and coincided with a DEVICE_HUNG on the split's
+	// output device (#62). The runtime waits where it consumes the image
+	// instead (displayxr-runtime#2362).
+	//
+	// Publish the value (contract above). Set before xrReleaseSwapchainImage,
+	// on the same thread, so the runtime reads it inside that call.
+	RQ->SetPrivateData(DXR_UE_RELEASE_FENCE_VALUE_GUID, sizeof(Value), &Value);
+
+	static bool bLogged = false;
+	if (!bLogged)
+	{
+		bLogged = true;
+		UE_LOG(LogDisplayXRCompositor, Log, TEXT("Compositor: release fence publishing (first value %llu; UE queue signals, no plug-in wait)"),
+			(unsigned long long)Value);
+	}
 #endif
 }
 
@@ -913,18 +1057,21 @@ void FDisplayXRCompositor::ReleaseImage_RenderThread(FRHICommandListImmediate& R
 				RHICmdList.CopyTexture(SwapchainTexture, Dst, CopyInfo);
 			}
 			RHICmdList.Transition(FRHITransitionInfo(Dst, ERHIAccess::CopyDest, ERHIAccess::Present));
-			// Flush so the copy is queued before xrReleaseSwapchainImage; rely on
-			// the runtime's swapchain-release GPU sync rather than a full CPU stall
-			// (BlockUntilGPUIdle halved the framerate). If the service ever reads a
-			// torn/incomplete slice, reinstate a *targeted* fence wait here.
-			RHICmdList.SubmitCommandsHint();
+			// The copy is recorded on UE's own list, so it executes on UE's main
+			// queue after the render that produced its source. The release
+			// fence is signalled after the copy, so a reader that waits on it
+			// is ordered after the copy too (no CPU stall here:
+			// BlockUntilGPUIdle halved the framerate).
+			SignalReleaseFence_RenderThread(RHICmdList);
 		}
 	}
 	else if (SwapchainTexture)
 	{
-		// In-process: UE rendered directly into the swapchain image (zero-copy).
+		// In-process: UE rendered directly into the swapchain image (zero-copy),
+		// or blitted the per-eye-UI atlas into it. Either way the last write is
+		// on UE's main queue; the release fence is signalled after it.
 		RHICmdList.Transition(FRHITransitionInfo(SwapchainTexture, ERHIAccess::Unknown, ERHIAccess::Present));
-		RHICmdList.SubmitCommandsHint();
+		SignalReleaseFence_RenderThread(RHICmdList);
 	}
 
 	XrSwapchainImageReleaseInfo RI = {XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO};

@@ -117,6 +117,12 @@ private:
 	void DestroySwapchain();
 	bool WrapSwapchainImagesAsRHI();
 	bool CreateRuntimeQueue();
+	bool CreateReleaseFence();
+	/** Render thread, after the last UE write to the image being released:
+	 *  signal ReleaseFence from UE's queue (through UE's RHI) and publish the
+	 *  value on RuntimeQueue (#62). Publish only: nothing in the plug-in waits
+	 *  on it; the runtime does (displayxr-runtime#2362). */
+	void SignalReleaseFence_RenderThread(FRHICommandListImmediate& RHICmdList);
 	bool ResolveXrFunctions();
 	bool StartCompositorThread();
 	void StopCompositorThread();
@@ -139,6 +145,17 @@ private:
 	void* UEDevice = nullptr;
 	void* UECommandQueue = nullptr;    // UE's main queue (not given to runtime)
 	void* RuntimeQueue = nullptr;      // ID3D12CommandQueue* on UEDevice, for xrCreateSession
+
+	// Release fence (#62): marks the point on UE's main queue (which rendered
+	// the atlas, and on the IPC path also ran the slice copy) after which the
+	// released image is complete, for a runtime reader to GPU-wait on
+	// (displayxr-runtime#2362). Publish only. ID3D12Fence* on UEDevice,
+	// created D3D12_FENCE_FLAG_SHARED (owned). Signalled from UE's queue with
+	// ++ReleaseFenceValue at every xrReleaseSwapchainImage that follows UE work;
+	// also attached to RuntimeQueue as private data (see AtlasHandoff.md,
+	// "Release fence") so the runtime can GPU-wait on it from its own device.
+	void* ReleaseFence = nullptr;
+	uint64 ReleaseFenceValue = 0;      // render thread only
 
 	// OpenXR swapchain
 	XrSwapchain Swapchain = XR_NULL_HANDLE;
