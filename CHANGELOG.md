@@ -4,7 +4,7 @@ All notable changes to the DisplayXR Unreal plugin are documented here.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [0.10.0] - 2026-11-02
 
 ### Added
 - **The plug-in publishes a release fence for the runtime to wait on (#62).** At every `xrReleaseSwapchainImage` that follows UE work it signals a fence from UE's main queue through UE's own RHI (`RHISignalManualFence`, enqueued after the last write and the `Present` transition). It publishes the fence (`D3D12_FENCE_FLAG_SHARED`, same-adapter) and the value as D3D12 private data on the queue handed to `xrCreateSession`. **Publish only:** the plug-in does not wait on it. The runtime is the enforcing side (DisplayXR/displayxr-runtime#2362: the hub's ingest context GPU-waits the published fence), so this costs no frame time until a runtime consumes it; DisplayXR runtime main does so on its hub route (DisplayXR/displayxr-runtime#2364). Experimental; the contract is in `Docs/DisplayXR/AtlasHandoff.md`, *Release fence*. `DXR_UE_RELEASE_FENCE=0` stops publishing (diagnostic).
