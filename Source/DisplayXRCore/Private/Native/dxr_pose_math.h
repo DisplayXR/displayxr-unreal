@@ -84,6 +84,62 @@ inline XrPosef PoseInFrame(const XrPosef& frame, const XrPosef& pose)
 }
 
 // ---------------------------------------------------------------------------
+// Hand joints and the view rig.
+// ---------------------------------------------------------------------------
+
+/** The XR_DXR_view_rig spec version that accepts the rig descriptor on
+ *  XrHandJointsLocateInfoEXT::next and returns the joints in the RIG frame,
+ *  i.e. the transform the views get (runtime #2189, released in v2.47.1).
+ *  An older runtime ignores the chained rig and returns base-space joints
+ *  with no error, so this is gated on the advertised extensionVersion, not on
+ *  the extension name (the runtime spec says so explicitly). The name-only
+ *  rule for the views does not apply here: that rule exists because runtime
+ *  v2.0.0 advertised 1 while carrying the spec-3 structs, and nothing below 4
+ *  carries rig-scoped joints. */
+constexpr uint32_t ViewRigHandJointsSpecVersion = 4;
+
+inline bool RuntimeLocatesRigScopedHandJoints(uint32_t viewRigExtensionVersion)
+{
+	return viewRigExtensionVersion >= ViewRigHandJointsSpecVersion;
+}
+
+/** What the plugin still applies to a located joint (in metres, OpenXR axes)
+ *  before the OpenXR -> UE conversion: p_rig = scale * (p + (0, 0, offsetZ)). */
+struct HandRigMapping
+{
+	float scale;
+	float offsetZ;
+};
+
+/**
+ * The plugin-side mapping for a located hand joint.
+ *
+ *  - jointsInRigFrame: the runtime already applied the rig (spec 4). Nothing
+ *    is left to do: identity. This is the only path that is right for a
+ *    canvas that is not centred on the display (a window, an editor
+ *    viewport): the rig frame is centred on the CANVAS, which the runtime
+ *    resolved and the plugin does not know.
+ *  - otherwise (runtime older than spec 4): the joint is display-plane
+ *    relative and the plugin re-derives the eyes' mapping. Display rig:
+ *    m2v = vdh / canvasHeight. Camera rig: the session submits
+ *    metersToVirtual = 1, so only the nominal-viewer shift. Correct only for a
+ *    canvas centred on the display.
+ */
+inline HandRigMapping HandRigMappingFor(bool jointsInRigFrame, bool cameraCentric, float virtualDisplayHeight,
+                                        float canvasHeight, float nominalZ)
+{
+	if (jointsInRigFrame)
+	{
+		return HandRigMapping{1.0f, 0.0f};
+	}
+	if (cameraCentric)
+	{
+		return HandRigMapping{1.0f, -nominalZ};
+	}
+	return HandRigMapping{canvasHeight > 0.0f ? virtualDisplayHeight / canvasHeight : 1.0f, 0.0f};
+}
+
+// ---------------------------------------------------------------------------
 // OpenXR <-> UE axis / unit conversion on raw floats. `scale` is the
 // metres -> UE-units factor (100 for the engine default WorldToMeters).
 // ---------------------------------------------------------------------------

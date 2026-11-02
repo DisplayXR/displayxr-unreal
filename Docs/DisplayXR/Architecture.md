@@ -27,7 +27,7 @@ FDisplayXRCoreModule          (IHeadMountedDisplayModule)
   ├── Owns FDisplayXRSession  (unified OpenXR runtime wrapper)
   │     ├── XrInstance, XrSession, XrSpace handles
   │     ├── Per-frame Tick(): xrLocateViews (+ raw rig channel), stores eyes;
-  │     │                     xrLocateHandJointsEXT x2, stores display-plane joints
+  │     │                     xrLocateHandJointsEXT x2 (rig chained, spec 4), stores rig-frame joints
   │     ├── Owns the left/right XrHandTrackerEXT (XR_EXT_hand_tracking)
   │     ├── Double-buffered FDisplayXRTunables + FDisplayXRViewConfig
   │     └── Owns FDisplayXRCompositor (on Windows/D3D12 path)

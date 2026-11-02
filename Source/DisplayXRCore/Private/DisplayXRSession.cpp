@@ -494,18 +494,23 @@ void FDisplayXRSession::UnloadOpenXRLoader()
 
 bool FDisplayXRSession::IsInstanceExtensionSupported(const char* Name) const
 {
+	return GetInstanceExtensionVersion(Name) != 0;
+}
+
+uint32 FDisplayXRSession::GetInstanceExtensionVersion(const char* Name) const
+{
 	PFN_xrEnumerateInstanceExtensionProperties EnumFunc = nullptr;
 	xrGetInstanceProcAddrFunc(XR_NULL_HANDLE, "xrEnumerateInstanceExtensionProperties",
 		(PFN_xrVoidFunction*)&EnumFunc);
 	if (!EnumFunc)
 	{
-		return false;
+		return 0;
 	}
 
 	uint32_t Count = 0;
 	if (!XR_SUCCEEDED(EnumFunc(nullptr, 0, &Count, nullptr)) || Count == 0)
 	{
-		return false;
+		return 0;
 	}
 
 	TArray<XrExtensionProperties> Props;
@@ -516,17 +521,19 @@ bool FDisplayXRSession::IsInstanceExtensionSupported(const char* Name) const
 	}
 	if (!XR_SUCCEEDED(EnumFunc(nullptr, Count, &Count, Props.GetData())))
 	{
-		return false;
+		return 0;
 	}
 
 	for (uint32_t i = 0; i < Count; ++i)
 	{
 		if (FCStringAnsi::Strcmp(Props[(int32)i].extensionName, Name) == 0)
 		{
-			return true;
+			// An advertised extension is at least version 1; never report a
+			// present extension as absent.
+			return FMath::Max<uint32>(Props[(int32)i].extensionVersion, 1u);
 		}
 	}
-	return false;
+	return 0;
 }
 
 bool FDisplayXRSession::CreateInstance()
@@ -561,15 +568,24 @@ bool FDisplayXRSession::CreateInstance()
 	// SPEC_VERSION: the released runtime v2.0.0 advertises version 1 (numbering
 	// restarted at the XR_EXT_*->XR_DXR_* rename) while carrying the full
 	// spec-3 struct set, so a `>= 2` gate would reject a perfectly capable runtime.
-	bHasViewRig = IsInstanceExtensionSupported(XR_DXR_VIEW_RIG_EXTENSION_NAME);
+	ViewRigExtensionVersion = GetInstanceExtensionVersion(XR_DXR_VIEW_RIG_EXTENSION_NAME);
+	bHasViewRig = ViewRigExtensionVersion != 0;
 	if (bHasViewRig)
 	{
 		Extensions.Add(XR_DXR_VIEW_RIG_EXTENSION_NAME);
 	}
-	UE_LOG(LogDisplayXRSession, Log, TEXT("DisplayXR Session: %s: %s"),
+	UE_LOG(LogDisplayXRSession, Log, TEXT("DisplayXR Session: %s: %s (spec %u)"),
 		TEXT(XR_DXR_VIEW_RIG_EXTENSION_NAME),
 		bHasViewRig ? TEXT("AVAILABLE (runtime owns the view math)")
-		            : TEXT("ABSENT — stereo disabled, raw views passed through"));
+		            : TEXT("ABSENT — stereo disabled, raw views passed through"),
+		ViewRigExtensionVersion);
+	// The one place the spec version IS the gate: rig-frame hand joints
+	// (spec 4, runtime #2189). An older runtime ignores the descriptor on the
+	// joint locate and answers in base space without an error.
+	UE_LOG(LogDisplayXRSession, Log, TEXT("DisplayXR Session: rig-scoped hand joints: %s"),
+		bHasViewRig && dxr_pose::RuntimeLocatesRigScopedHandJoints(ViewRigExtensionVersion)
+			? TEXT("YES (the rig is chained on xrLocateHandJointsEXT)")
+			: TEXT("NO (runtime older than XR_DXR_view_rig spec 4 — hands are right only on a canvas centred on the display)"));
 
 	// XR_DXR_display_zones (ADR-031, ADR-027): the sole region paradigm, and the
 	// canvas source for the weave-to-texture editor preview (#38). Probed and
@@ -653,6 +669,7 @@ bool FDisplayXRSession::CreateInstance()
 
 		Extensions.SetNum(CoreExtensionCount);
 		bHasViewRig = false;
+		ViewRigExtensionVersion = 0;
 		bHasDisplayZones = false;
 		bHasHandTracking = false;
 		CreateInfo.enabledExtensionCount = (uint32_t)Extensions.Num();
@@ -1151,6 +1168,28 @@ void FDisplayXRSession::LocateViews()
 				Views[0].fov.angleUp, Views[0].fov.angleDown);
 		}
 		GLog->Flush();
+	}
+
+	// Keep the rig this successful locate chained, for the hand-joint locate
+	// that follows on this thread (LocateHandJoints, XR_DXR_view_rig spec 4):
+	// the joints must come back in exactly the frame these views are in. The
+	// zone is not part of it — the runtime takes the canvas (zone included)
+	// from this view locate.
+	LastLocatedRig = ELocatedRig::None;
+	if (bHasViewRig)
+	{
+		if (T.bCameraCentric)
+		{
+			LastCameraRig = CameraRig;
+			LastCameraRig.next = nullptr;
+			LastLocatedRig = ELocatedRig::Camera;
+		}
+		else
+		{
+			LastDisplayRig = DisplayRig;
+			LastDisplayRig.next = nullptr;
+			LastLocatedRig = ELocatedRig::Display;
+		}
 	}
 
 	// Store the raw rig channel. eyeCountOutput > 0 is the "runtime filled it"
@@ -1815,12 +1854,41 @@ void FDisplayXRSession::LocateHandJoints()
 		return;
 	}
 
-	// Rebase from LOCAL into display-plane space (see FDisplayXRHandSample).
-	// Without the raw channel the plane is unknown and identity is the best
-	// available guess — the same fallback the cube reference takes.
+	// Preferred (runtime XR_DXR_view_rig spec >= 4, #2189): chain the rig the
+	// view locate just used and get the joints back in the RIG frame — the
+	// frame the views are in, canvas centre and scale included. Nothing is
+	// left for the plugin to derive.
+	//
+	// Why the old rebase below is wrong on an off-centre canvas: once a view
+	// locate chains a rig, the runtime reports displayPlanePose as the rig pose
+	// (identity here), and a display-plane-relative (RIG_LOCAL) hand source
+	// lands in LOCAL on the rig's image of the PHYSICAL display centre, which
+	// sits -m2v * canvasCentre from the rig origin, while the hand itself stays
+	// in physical metres. inv(displayPlanePose) o joint then keeps that
+	// m2v-scaled offset (about 0.5 m for a window 3.5 cm off centre at m2v 15),
+	// and the hands land off-screen.
+	const void* RigChain = nullptr;
+	if (bHasViewRig && dxr_pose::RuntimeLocatesRigScopedHandJoints(ViewRigExtensionVersion))
+	{
+		if (LastLocatedRig == ELocatedRig::Display)
+		{
+			RigChain = &LastDisplayRig;
+		}
+		else if (LastLocatedRig == ELocatedRig::Camera)
+		{
+			RigChain = &LastCameraRig;
+		}
+	}
+	const bool bRigFrame = RigChain != nullptr;
+
+	// Fallback (older runtime, or no successful view locate yet): rebase from
+	// LOCAL into display-plane space (see FDisplayXRHandSample). Right only for
+	// a canvas centred on the display. Without the raw channel the plane is
+	// unknown and identity is the best available guess — the same fallback the
+	// cube reference takes.
 	const FDisplayXRRigRaw Raw = GetRigRaw();
 	const XrPosef PlaneInverse = dxr_pose::PoseInverse(
-		Raw.bValid ? Raw.DisplayPlanePose : dxr_pose::PoseIdentity());
+		(!bRigFrame && Raw.bValid) ? Raw.DisplayPlanePose : dxr_pose::PoseIdentity());
 
 	const int32 ReadIdx = HandsReadIndex.Load();
 	const int32 WriteIdx = 1 - ReadIdx;
@@ -1838,6 +1906,9 @@ void FDisplayXRSession::LocateHandJoints()
 		S.bActive = false;
 
 		XrHandJointsLocateInfoEXT LocateInfo = {XR_TYPE_HAND_JOINTS_LOCATE_INFO_EXT};
+		// Same base space as the view locate: the runtime takes the rig pose in
+		// the joint locate's base space.
+		LocateInfo.next = RigChain;
 		LocateInfo.baseSpace = ViewSpace;
 		LocateInfo.time = DisplayTime;
 
@@ -1865,6 +1936,7 @@ void FDisplayXRSession::LocateHandJoints()
 
 		S.bActive = true;
 		S.bEverActive = true;
+		S.bRigFrame = bRigFrame;
 		for (int32 J = 0; J < XR_HAND_JOINT_COUNT_EXT; ++J)
 		{
 			S.Joints[J].Pose = dxr_pose::PoseMul(PlaneInverse, JointLocations[J].pose);
@@ -1882,10 +1954,12 @@ void FDisplayXRSession::LocateHandJoints()
 		const XrPosef& LW = Next.Hands[0].Joints[XR_HAND_JOINT_WRIST_EXT].Pose;
 		const XrPosef& RW = Next.Hands[1].Joints[XR_HAND_JOINT_WRIST_EXT].Pose;
 		UE_LOG(LogDisplayXRSession, Log,
-			TEXT("HandJoints #%d: plane=%d L(active=%d wrist %.3f,%.3f,%.3f) R(active=%d wrist %.3f,%.3f,%.3f) [display-plane m]"),
-			LocateCount, Raw.bValid ? 1 : 0,
+			TEXT("HandJoints #%d: frame=%s L(active=%d wrist %.3f,%.3f,%.3f) R(active=%d wrist %.3f,%.3f,%.3f) [%s]"),
+			LocateCount,
+			bRigFrame ? TEXT("rig") : (Raw.bValid ? TEXT("plane") : TEXT("local")),
 			Next.Hands[0].bActive ? 1 : 0, LW.position.x, LW.position.y, LW.position.z,
-			Next.Hands[1].bActive ? 1 : 0, RW.position.x, RW.position.y, RW.position.z);
+			Next.Hands[1].bActive ? 1 : 0, RW.position.x, RW.position.y, RW.position.z,
+			bRigFrame ? TEXT("rig-local m, canvas-centred") : TEXT("display-plane m"));
 	}
 }
 
