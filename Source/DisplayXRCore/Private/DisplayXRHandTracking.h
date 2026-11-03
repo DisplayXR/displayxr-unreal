@@ -19,20 +19,29 @@
  * FDisplayXRDevice::GetHandTrackingState, which calls back in here, and the
  * XRVisualization helpers consume that state.
  *
- * Spaces. The session caches joints in DISPLAY-PLANE space (OpenXR metres,
- * origin at the physical display centre, +Z toward the viewer). This class
- * maps them into UE tracking space — the plug-in's rig space, i.e. the camera
- * the local player renders from, with the SAME convention the eyes use:
+ * Spaces. This class maps the session's cached joints into UE tracking space —
+ * the plug-in's rig space, i.e. the camera the local player renders from.
  *
- *  - display rig (UDisplayXRDisplay): the camera IS the virtual display plane,
- *    so a joint is scaled by m2v = virtualDisplayHeight / canvasHeight (the
- *    scale the runtime applied to the eyes) and the plane sits at the origin.
- *    PerspectiveFactor / IpdFactor / ParallaxFactor are eye-only tunables and
- *    do not touch the hands.
- *  - camera rig (UDisplayXRCamera): the camera sits at the nominal viewer
- *    position (0, 0, nominalZ) in display space with metersToVirtual = 1 (what
- *    the session passes), so a joint is simply offset by -nominalZ along the
- *    display normal, unscaled.
+ *  - Runtime with XR_DXR_view_rig spec >= 4 (#2189): the session chains the
+ *    view locate's rig on xrLocateHandJointsEXT and the runtime returns the
+ *    joints in the rig frame, exactly the frame the views are in. That frame
+ *    is centred on the CANVAS (the window / editor viewport the views frame),
+ *    not on the display, and is scaled like the eyes (display rig:
+ *    perspectiveFactor * virtualDisplayHeight / canvasHeight; camera rig:
+ *    metersToVirtual about the nominal viewer plane). Only axes/units are
+ *    left to apply here. This is the path that is right for an off-centre
+ *    canvas.
+ *  - Older runtime (fallback): joints are in DISPLAY-PLANE space (OpenXR
+ *    metres, origin at the physical display centre, +Z toward the viewer) and
+ *    the eyes' convention is re-derived here: display rig scales by
+ *    m2v = virtualDisplayHeight / canvasHeight; camera rig offsets by
+ *    -nominalZ, unscaled (the session passes metersToVirtual = 1). This
+ *    ignores where the canvas sits on the display, so hands are right only on
+ *    a canvas centred on it.
+ *
+ * Either way IpdFactor / ParallaxFactor are eye-pair tunables and do not touch
+ * the hands. The mapping choice is dxr_pose::HandRigMappingFor
+ * (Native/dxr_pose_math.h, checked by Scripts/tests/pose_math_test.cpp).
  *
  * Tracking -> world is the camera transform FDisplayXRDevice publishes via
  * GetTrackingToWorldTransform(), applied at query time like Epic's

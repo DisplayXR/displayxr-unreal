@@ -159,6 +159,69 @@ int main()
 			"LOCAL joint rebased into a yawed display-plane space");
 	}
 
+	// 7. Off-centre canvas (displayxr-unreal hand-tracking report: hands
+	//    off-screen unless the canvas is centred on the display).
+	//
+	//    A runtime model, written out here from the runtime spec and source so
+	//    the failure is reproducible without one: a display rig at the
+	//    identity pose, vdh 2.0 m, on a 2582x1496 window whose centre is 3.5 cm
+	//    right of the centre of a 0.194 m tall 3840x2160 panel. A physical hand
+	//    L is display-plane relative (a RIG_LOCAL hand source).
+	//     - Spec 4 (rig chained on the joint locate) returns the rig-frame
+	//       joint the views agree with: m2v * (L - canvasCentre).
+	//     - Without it, once the VIEW locate chains a rig, displayPlanePose is
+	//       the rig pose (identity) and the joint lands in LOCAL at P o L, P =
+	//       the rig's image of the physical display centre = -m2v *
+	//       canvasCentre: the offset is in rig units, the hand in metres.
+	{
+		const float canvasH = 0.194f * 1496.0f / 2160.0f;
+		const float vdh = 2.0f;
+		const float m2v = vdh / canvasH; // ~14.9
+		const XrVector3f centre{0.035f, 0.0f, 0.0f};
+		const XrPosef hand{{0, 0, 0, 1}, {-0.03f, 0.05f, 0.25f}};
+
+		const XrVector3f truth{m2v * (hand.position.x - centre.x), m2v * (hand.position.y - centre.y),
+		                       m2v * (hand.position.z - centre.z)};
+
+		// Old path: inv(displayPlanePose) o (P o L), then the plugin's own m2v.
+		const XrPosef displayPlanePose = PoseIdentity();
+		const XrPosef rigPlane{{0, 0, 0, 1}, {-m2v * centre.x, -m2v * centre.y, -m2v * centre.z}};
+		const XrPosef inPlane = PoseInFrame(displayPlanePose, PoseMul(rigPlane, hand));
+		Check(Near(inPlane.position.x, -0.55, 0.02),
+			"model reproduces the report: display-plane wrist x ~ -0.55 m for a window 3.5 cm right of centre");
+		const HandRigMapping legacy = HandRigMappingFor(false, false, vdh, canvasH, 0.6f);
+		const double legacyX = legacy.scale * inPlane.position.x;
+		Check(std::fabs(legacyX - truth.x) > 5.0,
+			"negative control: the display-plane rebase is metres off in rig units on an off-centre canvas");
+
+		// New path: the runtime's rig-frame joint, and nothing left to map.
+		const HandRigMapping rig = HandRigMappingFor(true, false, vdh, canvasH, 0.6f);
+		Check(Near(rig.scale, 1.0) && Near(rig.offsetZ, 0.0), "rig-frame joints: identity mapping (display rig)");
+		Check(Near(rig.scale * truth.x, truth.x) && Near(rig.scale * truth.y, truth.y),
+			"rig-frame joints land where the views are");
+		const HandRigMapping rigCam = HandRigMappingFor(true, true, vdh, canvasH, 0.6f);
+		Check(Near(rigCam.scale, 1.0) && Near(rigCam.offsetZ, 0.0), "rig-frame joints: identity mapping (camera rig)");
+
+		// Centred canvas: the old path agreed with the truth, which is why the
+		// fullscreen run looked fine.
+		const XrPosef inPlaneCentred = PoseInFrame(displayPlanePose, hand);
+		Check(Near(legacy.scale * inPlaneCentred.position.x, m2v * hand.position.x, 1e-4),
+			"centred canvas: the display-plane fallback matches the rig frame");
+
+		// Fallback mappings unchanged for an older runtime.
+		Check(Near(legacy.scale, m2v, 1e-4) && Near(legacy.offsetZ, 0.0), "fallback display rig: m2v = vdh / canvasH");
+		const HandRigMapping legacyCam = HandRigMappingFor(false, true, vdh, canvasH, 0.6f);
+		Check(Near(legacyCam.scale, 1.0) && Near(legacyCam.offsetZ, -0.6), "fallback camera rig: -nominalZ, unscaled");
+	}
+
+	// 8. The spec-version gate for rig-scoped joints. Runtime v2.0.0 advertised
+	//    1 while carrying spec 3, and no runtime below 4 maps joints.
+	Check(!RuntimeLocatesRigScopedHandJoints(0), "absent view_rig: no rig-scoped joints");
+	Check(!RuntimeLocatesRigScopedHandJoints(1), "view_rig spec 1: no rig-scoped joints");
+	Check(!RuntimeLocatesRigScopedHandJoints(3), "view_rig spec 3: no rig-scoped joints");
+	Check(RuntimeLocatesRigScopedHandJoints(4), "view_rig spec 4: rig-scoped joints");
+	Check(RuntimeLocatesRigScopedHandJoints(5), "view_rig spec 5: rig-scoped joints");
+
 	if (g_failures == 0)
 	{
 		std::printf("pose_math_test: all checks passed\n");

@@ -78,32 +78,29 @@ void FDisplayXRHandTracking::RefreshCache() const
 	Session->GetHandSample(1, Samples[1]);
 	CachedGeneration = Samples[0].Generation;
 
-	// --- Rig mapping: display-plane metres -> rig-local metres (see header) ---
+	// --- Rig mapping: what is left to apply after the locate (see header) ---
+	// A runtime with rig-scoped joints (XR_DXR_view_rig spec 4) already returned
+	// them in the rig frame: identity. Otherwise they are display-plane metres
+	// and the eyes' mapping is re-derived here (right only for a canvas centred
+	// on the display). Both hands come from one locate pass, so they share a
+	// frame; a hand that was never located has no joints to map.
 	const FDisplayXRTunables T = Session->GetTunables();
 	const FDisplayXRDisplayInfo DI = Session->GetDisplayInfo();
 	const FDisplayXRRigRaw Raw = Session->GetRigRaw();
 
-	float Scale = 1.0f;
-	XrVector3f Offset = {0.0f, 0.0f, 0.0f};
-	if (T.bCameraCentric)
-	{
-		// Camera rig: eye_local = m2v * (eye - (0, 0, nominalZ)); the session
-		// passes metersToVirtual = 1, so m2v == 1 here too.
-		const float NominalZ = DI.bIsValid ? (float)DI.NominalViewerPosition.Z : 0.5f;
-		Offset.z = -NominalZ;
-	}
-	else
-	{
-		// Display rig: the eyes were scaled by m2v = vdh / canvas height. Same
-		// fallbacks as the rig descriptor the session submits (LocateViews).
-		const float Vdh = T.VirtualDisplayHeight > 0.0f
-			? T.VirtualDisplayHeight
-			: (DI.DisplayHeightMeters > 0.0f ? DI.DisplayHeightMeters : 0.194f);
-		const float CanvasH = (Raw.bValid && Raw.CanvasHeightMeters > 0.0f)
-			? Raw.CanvasHeightMeters
-			: (DI.DisplayHeightMeters > 0.0f ? DI.DisplayHeightMeters : Vdh);
-		Scale = CanvasH > 0.0f ? Vdh / CanvasH : 1.0f;
-	}
+	const bool bRigFrame = Samples[0].bActive ? Samples[0].bRigFrame : Samples[1].bRigFrame;
+	// Same fallbacks as the rig descriptor the session submits (LocateViews).
+	const float Vdh = T.VirtualDisplayHeight > 0.0f
+		? T.VirtualDisplayHeight
+		: (DI.DisplayHeightMeters > 0.0f ? DI.DisplayHeightMeters : 0.194f);
+	const float CanvasH = (Raw.bValid && Raw.CanvasHeightMeters > 0.0f)
+		? Raw.CanvasHeightMeters
+		: (DI.DisplayHeightMeters > 0.0f ? DI.DisplayHeightMeters : Vdh);
+	const float NominalZ = DI.bIsValid ? (float)DI.NominalViewerPosition.Z : 0.5f;
+	const dxr_pose::HandRigMapping Mapping =
+		dxr_pose::HandRigMappingFor(bRigFrame, T.bCameraCentric, Vdh, CanvasH, NominalZ);
+	const float Scale = Mapping.scale;
+	const XrVector3f Offset = {0.0f, 0.0f, Mapping.offsetZ};
 
 	// UE units per metre: the device reports 100 (DisplayXRDevice.cpp,
 	// GetWorldToMetersScale); fall back to the same when it is not the active
@@ -145,8 +142,9 @@ void FDisplayXRHandTracking::RefreshCache() const
 	if (++LogCount <= 3 || LogCount % 600 == 0)
 	{
 		UE_LOG(LogDisplayXRHands, Verbose,
-			TEXT("HandCache #%d: rig=%s scale=%.3f offsetZ=%.3f L(tracked=%d) R(tracked=%d)"),
-			LogCount, T.bCameraCentric ? TEXT("camera") : TEXT("display"), Scale, Offset.z,
+			TEXT("HandCache #%d: rig=%s frame=%s scale=%.3f offsetZ=%.3f L(tracked=%d) R(tracked=%d)"),
+			LogCount, T.bCameraCentric ? TEXT("camera") : TEXT("display"),
+			bRigFrame ? TEXT("rig (runtime-mapped)") : TEXT("display-plane (plugin-mapped)"), Scale, Offset.z,
 			Hands[0].bTracked ? 1 : 0, Hands[1].bTracked ? 1 : 0);
 	}
 }

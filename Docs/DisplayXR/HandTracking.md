@@ -34,12 +34,14 @@ xrWaitFrame                       Session->Tick()
   -> SetPredictedDisplayTime()           + XrViewDisplayRawDXR on XrViewState::next
                                             -> displayPlanePose, canvasSizeMeters
                                      -> LocateHandJoints()  xrLocateHandJointsEXT x2 (LOCAL, same displayTime)
-                                            -> joint_plane = inv(displayPlanePose) o joint_local
-                                            -> FDisplayXRHandSample (double-buffered)
+                                            runtime view_rig spec >= 4: the view locate's rig chained
+                                              on XrHandJointsLocateInfoEXT::next -> joints in the RIG frame
+                                            older runtime: joint_plane = inv(displayPlanePose) o joint_local
+                                            -> FDisplayXRHandSample (double-buffered, bRigFrame)
 
                                   Any UE hand consumer, same thread
                                     -> FDisplayXRHandTracking::RefreshCache()   (on generation change)
-                                         display-plane metres -> rig-local UE units (rig mapping below)
+                                         rig frame: axes/units only; display plane: rig mapping below
                                     -> * GetTrackingToWorldTransform()          (the camera = the rig)
 ```
 
@@ -63,29 +65,51 @@ xrWaitFrame                       Session->Tick()
 
 ## Spaces and the rig mapping
 
-The joint poses the runtime returns are in the locate (LOCAL) space. Nothing in
-the plugin assumes where LOCAL's origin is physically; instead the runtime's raw
-rig channel (`XrViewDisplayRawDXR`, chained on `XrViewState::next` of the view
-locate) says where the **physical display plane** sits in that space, and every
-joint is rebased onto it:
+The hands have to land in the frame the **views** are in. The plugin chains a
+`XrDisplayRigDXR` / `XrCameraRigDXR` on every view locate, so the views are in
+the rig frame: centred on the **canvas** (the window, or the editor viewport
+the zone-scoped locate frames), scaled like the eyes, at the rig pose (identity,
+so rig-local).
+
+**Runtime with `XR_DXR_view_rig` spec >= 4 (runtime #2189, v2.47.1+): rig-frame
+joints.** The session chains the same rig descriptor the view locate just used on
+`XrHandJointsLocateInfoEXT::next`, and the runtime returns every joint in that
+rig frame, with the transform its views get (display rig: minus the canvas
+centre, x `perspectiveFactor * virtualDisplayHeight / canvasHeight`; camera rig:
+x `metersToVirtual` about the nominal viewer plane; radii scaled alike). The
+plugin applies nothing but axes/units. This is the only path that is right when
+the canvas is not centred on the display: the canvas is the runtime's, and the
+plugin does not know where it sits. Gated on the advertised `extensionVersion`
+(not the name): an older runtime ignores the chained rig and answers in base
+space without an error. Views are always located before joints in a frame, as
+the spec requires (the runtime takes the canvas from the latest view locate).
+
+**Older runtime (fallback): display-plane joints.** Joints are located in LOCAL
+and rebased onto the plane the raw rig channel (`XrViewDisplayRawDXR`) reports:
 
 ```
 joint_plane = inv(displayPlanePose) o joint_local
 ```
 
-This is exactly what the runtime's reference app (`cube_handle_d3d11_win
---hands`, runtime #1370) does, and it is the hardware-validated convention. The
-result is "display-plane space": OpenXR metres, origin at the panel centre, +X
-right, +Y up, **+Z toward the viewer**. A hand 30 cm in front of the panel
-centre is at `(0, 0, 0.3)`.
+then the eyes' convention is re-derived:
 
-From there the hands follow the **same mapping the eyes already take**, so a
-physical hand lands where the tracked eyes say it should relative to the scene:
+| Rig | Camera means | Joint in rig space (metres) |
+|---|---|---|
+| `UDisplayXRDisplay` (display-centric) | the virtual display plane | `m2v * joint_plane`, `m2v = virtualDisplayHeight / canvasHeight` |
+| `UDisplayXRCamera` (camera-centric) | the nominal viewer | `joint_plane - (0, 0, nominalZ)` (the session passes `metersToVirtual = 1`) |
 
-| Rig | Camera means | Joint in rig space (metres) | Why |
-|---|---|---|---|
-| `UDisplayXRDisplay` (display-centric) | the virtual display plane | `m2v * joint_plane`, `m2v = virtualDisplayHeight / canvasHeight` | the runtime scaled the eyes by the same m2v (`XrDisplayRigDXR`); `PerspectiveFactor`, `IpdFactor`, `ParallaxFactor` are eye-only tunables and do not touch the hands |
-| `UDisplayXRCamera` (camera-centric) | the nominal viewer | `joint_plane - (0, 0, nominalZ)` | the camera rig places the camera at the nominal viewer with `metersToVirtual = 1` (`dxr_view_math.c` camera3d: `eye_local = m2v * (eye - (0,0,nominalZ))`) |
+This ignores where the canvas sits on the display, so it is right only for a
+canvas centred on it (a fullscreen game). On a runtime that maps
+display-plane-relative hand sources onto a chained rig's plane (v2.56.0+, which
+also has spec 4, so this fallback never runs there) it would be badly wrong: once
+a view locate chains a rig, `displayPlanePose` is the rig pose and such a joint
+lands at the rig's image of the physical display centre, `-m2v * canvasCentre`,
+an offset in rig units under a hand in metres. A window 3.5 cm off centre at
+m2v ~15 put the hands about 0.5 m off-screen that way. The fallback mapping
+lives in `dxr_pose::HandRigMappingFor`; `Scripts/tests/pose_math_test.cpp`
+models that case.
+
+`IpdFactor` and `ParallaxFactor` are eye-pair tunables and never touch the hands.
 
 Then OpenXR -> UE axes/units (`DisplayXRStereoMath.h`, Epic-equivalent
 `ToFTransform`: position `(-z, x, y) * 100`, orientation `(-z, x, y, -w)`), and
@@ -111,18 +135,22 @@ Log category `LogDisplayXRSession`:
 DisplayXR Session: XR_EXT_hand_tracking: AVAILABLE (IHandTracker will be served)
 DisplayXR Session: XrSystemHandTrackingPropertiesEXT.supportsHandTracking = 1
 DisplayXR Session: hand trackers created (left + right, default joint set, 26 joints each)
-HandJoints #1: plane=1 L(active=1 wrist 0.120,-0.080,0.310) R(active=0 wrist ...) [display-plane m]
+DisplayXR Session: rig-scoped hand joints: YES (the rig is chained on xrLocateHandJointsEXT)
+HandJoints #1: frame=rig L(active=1 wrist 1.237,-0.825,3.196) R(active=0 wrist ...) [rig-local m, canvas-centred]
 ```
 
 `supportsHandTracking = 0` with the trailing "(no hand-tracking input provider
 registered or present ...)" means the runtime has no joint source: check
 `displayxr-cli selftest` / `input list` on the box, the Ultraleap service, and
-the USB connection. `plane=0` in the `HandJoints` line means the raw rig channel
-was not filled (no `XR_DXR_view_rig`): joints are then kept in LOCAL as-is.
+the USB connection. `frame=` in the `HandJoints` line says which frame the
+joints are in: `rig` (runtime-mapped, spec 4), `plane` (display-plane fallback)
+or `local` (no raw rig channel, no `XR_DXR_view_rig`: joints kept in LOCAL
+as-is). `rig-scoped hand joints: NO` means the runtime is older than
+`XR_DXR_view_rig` spec 4; hands are then right only on a centred canvas.
 
-Category `LogDisplayXRHands` (Verbose) prints the rig mapping actually applied
-(`rig=display scale=1.000 offsetZ=0.000` / `rig=camera scale=1.000
-offsetZ=-0.600`).
+Category `LogDisplayXRHands` (Verbose) prints the mapping actually applied
+(`frame=rig (runtime-mapped) scale=1.000 offsetZ=0.000`, or on the fallback
+`rig=display ... scale=14.9` / `rig=camera ... offsetZ=-0.600`).
 
 ## Validation (Windows box with an Ultraleap attached)
 

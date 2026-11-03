@@ -4,6 +4,11 @@ All notable changes to the DisplayXR Unreal plugin are documented here.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Fixed
+- **Hands landed off-screen unless the canvas was centred on the display.** In a window or in the editor viewport, the display-plane wrist came out about `m2v x` the canvas offset away, with the opposite sign: +0.42 to +0.64 m for a PIE viewport 3.5 cm left of the display centre, and -0.42 to -0.56 m for a window 3.5 cm right of it, against -0.03 m fullscreen. The session located joints in LOCAL and rebased them with `inv(XrViewDisplayRawDXR::displayPlanePose)`. Once a view locate chains a rig, the runtime reports `displayPlanePose` as the rig pose, and it places a display-plane-relative hand source at the rig's image of the physical display centre (`-m2v * canvasCentre`): an offset in rig units under a hand in metres. The plug-in also never accounted for the canvas centre itself. The session now chains the view locate's rig on `xrLocateHandJointsEXT` (runtime `XR_DXR_view_rig` spec 4, DisplayXR/displayxr-runtime#2189, v2.47.1+), so the runtime returns the joints in the rig frame the views are in (canvas-centred, scaled like the eyes, radii too), and `FDisplayXRHandTracking` applies only axes and units. Gated on the advertised `extensionVersion >= 4`. An older runtime keeps the display-plane rebase, which is right only for a centred canvas. `Scripts/tests/pose_math_test.cpp` covers the off-centre case and the gate. The `HandJoints` log line now prints `frame=rig|plane|local`.
+
 ## [0.10.0] - 2026-11-02
 
 ### Added

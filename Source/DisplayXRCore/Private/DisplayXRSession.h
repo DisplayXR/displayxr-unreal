@@ -100,14 +100,19 @@ struct FDisplayXRViewConfig
  * One located hand (XR_EXT_hand_tracking), as cached by the session each
  * frame.
  *
- * Joints are in DISPLAY-PLANE space: OpenXR metres, origin at the physical
- * display centre, +X right, +Y up, +Z toward the viewer — the LOCAL-space
- * joint rebased by inv(XrViewDisplayRawDXR::displayPlanePose), exactly what
- * the runtime's cube_handle_d3d11_win --hands reference does (runtime #1370).
- * Without the raw rig channel (no XR_DXR_view_rig) the plane is unknown and
- * the LOCAL pose is kept as-is. No UE conversion happens here:
- * FDisplayXRHandTracking applies the active rig's mapping and the axis/unit
- * change.
+ * Two frames, told apart by bRigFrame:
+ *  - bRigFrame (runtime XR_DXR_view_rig spec >= 4, #2189): the session chained
+ *    the view locate's rig on xrLocateHandJointsEXT and the runtime returned
+ *    the joints in the RIG frame — the views' frame: origin at the rig pose
+ *    (identity, so rig-local), canvas-centred, scaled like the eyes, radii
+ *    scaled too. Nothing left to map but axes/units.
+ *  - otherwise (older runtime): DISPLAY-PLANE space — OpenXR metres, origin at
+ *    the physical display centre, +X right, +Y up, +Z toward the viewer: the
+ *    LOCAL joint rebased by inv(XrViewDisplayRawDXR::displayPlanePose)
+ *    (runtime #1370). Right only for a canvas centred on the display. Without
+ *    the raw rig channel the LOCAL pose is kept as-is.
+ * No UE conversion happens here: FDisplayXRHandTracking applies what is left
+ * of the rig mapping (dxr_pose::HandRigMappingFor) and the axis/unit change.
  */
 struct FDisplayXRHandSample
 {
@@ -126,6 +131,10 @@ struct FDisplayXRHandSample
 	 *  the LAST GOOD set even while bActive is false, so consumers can hold the
 	 *  previous pose instead of popping to the origin (Epic's model). */
 	bool bEverActive = false;
+
+	/** True when Joints are already in the rig frame (see above). Travels with
+	 *  the held joints, so a last-good set keeps the frame it was located in. */
+	bool bRigFrame = false;
 
 	/** Bumped on every locate pass; consumers refresh derived caches on change. */
 	uint64 Generation = 0;
@@ -341,6 +350,8 @@ private:
 	/** Enumerate instance extensions and test for one by name. Must be called
 	 *  before xrCreateInstance — requesting an unsupported extension fails it. */
 	bool IsInstanceExtensionSupported(const char* Name) const;
+	/** Same enumeration, returning the advertised extensionVersion (0 = absent). */
+	uint32 GetInstanceExtensionVersion(const char* Name) const;
 	/** Bare (graphics-less) session — Mac/Linux only; Windows uses
 	 *  CreateSessionWithGraphics exclusively. */
 	bool CreateSession();
@@ -377,6 +388,15 @@ private:
 	bool bExitRequested = false;
 	// XR_DXR_view_rig availability, probed before xrCreateInstance.
 	bool bHasViewRig = false;
+	// Its advertised extensionVersion (0 = absent). Gates ONLY the rig-scoped
+	// hand-joint locate (spec 4); the views gate on the name.
+	uint32 ViewRigExtensionVersion = 0;
+	// The rig the latest successful xrLocateViews chained (game thread only:
+	// LocateViews writes it, LocateHandJoints chains a copy right after).
+	enum class ELocatedRig : uint8 { None, Display, Camera };
+	ELocatedRig LastLocatedRig = ELocatedRig::None;
+	XrDisplayRigDXR LastDisplayRig = {XR_TYPE_DISPLAY_RIG_DXR};
+	XrCameraRigDXR LastCameraRig = {XR_TYPE_CAMERA_RIG_DXR};
 	// XR_DXR_display_zones availability, probed before xrCreateInstance.
 	bool bHasDisplayZones = false;
 	// Worst-case atlas dims across all enumerated rendering modes (INV-4.2),
