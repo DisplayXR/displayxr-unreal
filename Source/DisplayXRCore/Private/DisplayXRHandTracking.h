@@ -7,7 +7,10 @@
 #include "IHandTracker.h"
 #include "HeadMountedDisplayTypes.h"
 #include "InputCoreTypes.h"
+#include "Engine/EngineBaseTypes.h"  // ELevelTick (debug-view tick delegate)
 #include "DisplayXRSession.h"
+
+class UWorld;
 
 /**
  * Unreal's IHandTracker modular feature, served from the session's
@@ -52,6 +55,11 @@
  *
  * Game thread only (the engine's own hand consumers are). The session's
  * buffers are thread-safe, the derived cache here is not.
+ *
+ * Debug view: `DisplayXR.Hands.Debug 1` draws every joint of both hands as a
+ * sphere at its radius, from the world's post-actor tick, at SDPG_Foreground.
+ * Foreground matters: SDPG_World debug lines are depth-tested against scene
+ * depth, and under TAA/TSR the second view loses them (#70, cause open). Compiled out where debug drawing is (UE_ENABLE_DEBUG_DRAWING = 0).
  */
 class FDisplayXRHandTracking : public IHandTracker
 {
@@ -95,6 +103,12 @@ private:
 	void RefreshCache() const;
 	static int32 HandIndex(EControllerHand Hand);
 	static FTransform TrackingToWorld();
+
+#if UE_ENABLE_DEBUG_DRAWING
+	/** FWorldDelegates::OnWorldPostActorTick: draw the joints when DisplayXR.Hands.Debug is on. */
+	void DrawDebugJoints(UWorld* World, ELevelTick TickType, float DeltaSeconds);
+	FDelegateHandle PostActorTickHandle;
+#endif
 
 	FDisplayXRSession* Session = nullptr;
 	mutable uint64 CachedGeneration = ~0ull;
