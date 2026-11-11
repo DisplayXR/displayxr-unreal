@@ -1,7 +1,7 @@
 # Hand Tracking — DisplayXR UE Plugin
 
-Ultraleap (Leap Motion) hands — or any other hand-tracking source the DisplayXR
-runtime serves — reach Unreal through **standard OpenXR `XR_EXT_hand_tracking`**,
+Hands from a hand-tracking camera — or any other hand-tracking source the
+DisplayXR runtime serves — reach Unreal through **standard OpenXR `XR_EXT_hand_tracking`**,
 exposed as Unreal's **`IHandTracker`** modular feature. There is no vendor SDK
 in the plugin and no vendor-specific API: the runtime owns the sensor (its
 input-provider plug-in, runtime ADR-034), the plugin consumes 26 joints per hand
@@ -9,8 +9,8 @@ like any OpenXR app, and UE's existing hand nodes work unchanged.
 
 Plugin version: **unreleased** (see `CHANGELOG.md`). Runtime: any DisplayXR
 runtime that advertises `XR_EXT_hand_tracking` with a hand-tracking input
-provider registered (the Ultraleap provider ships with the runtime; it needs the
-Ultraleap tracking service running and a device attached).
+provider registered (the hand-tracking camera's provider ships with the runtime;
+it needs the camera's tracking service running and a device attached).
 
 ## What you get
 
@@ -50,7 +50,7 @@ xrWaitFrame                       Session->Tick()
   optional: the core-only retry drops it with the other optional extensions.
 - **Support.** `XrSystemHandTrackingPropertiesEXT.supportsHandTracking` is read
   with the display info. The runtime reports `true` only when a hand-tracking
-  input provider claimed the hand-tracking roles — a box with no Ultraleap
+  input provider claimed the hand-tracking roles — a box with no hand-tracking camera
   registered advertises the extension and reports no support, and the plugin
   then serves nothing (no error).
 - **Trackers.** Left/right `XrHandTrackerEXT` (default joint set) are created
@@ -141,8 +141,8 @@ HandJoints #1: frame=rig L(active=1 wrist 1.237,-0.825,3.196) R(active=0 wrist .
 
 `supportsHandTracking = 0` with the trailing "(no hand-tracking input provider
 registered or present ...)" means the runtime has no joint source: check
-`displayxr-cli selftest` / `input list` on the box, the Ultraleap service, and
-the USB connection. `frame=` in the `HandJoints` line says which frame the
+`displayxr-cli selftest` / `input list` on the box, the hand-tracking camera's
+service, and the USB connection. `frame=` in the `HandJoints` line says which frame the
 joints are in: `rig` (runtime-mapped, spec 4), `plane` (display-plane fallback)
 or `local` (no raw rig channel, no `XR_DXR_view_rig`: joints kept in LOCAL
 as-is). `rig-scoped hand joints: NO` means the runtime is older than
@@ -152,13 +152,13 @@ Category `LogDisplayXRHands` (Verbose) prints the mapping actually applied
 (`frame=rig (runtime-mapped) scale=1.000 offsetZ=0.000`, or on the fallback
 `rig=display ... scale=14.9` / `rig=camera ... offsetZ=-0.600`).
 
-## Validation (Windows box with an Ultraleap attached)
+## Validation (Windows box with a hand-tracking camera attached)
 
 The plugin cannot be built on a Mac without Xcode and the runtime's hand source
 is Windows hardware, so the acceptance run is:
 
-1. Runtime: `displayxr-cli selftest` passes and the Ultraleap input provider is
-   registered (`displayxr-cli input list`); `cube_handle_d3d11_win --hands` draws
+1. Runtime: `displayxr-cli selftest` passes and the hand-tracking camera's input
+   provider is registered (`displayxr-cli input list`); `cube_handle_d3d11_win --hands` draws
    joint markers that follow your hands — this proves the runtime side before
    touching Unreal.
 2. Build the plugin into a UE 5.7 project (`Plugins/DisplayXR`), open a map with
@@ -166,21 +166,32 @@ is Windows hardware, so the acceptance run is:
    pawn), press Play on the 3D display panel.
 3. `Output Log`, filter `DisplayXRSession`: the three lines above, then
    `HandJoints #N` lines with `active=1` for a hand held over the sensor.
-4. Drop a Blueprint tick that calls **Get Hand Tracking State** (Left, Unreal
-   World Space) and draws a debug sphere at each `HandKeyLocations[i]` with
-   radius `HandKeyRadii[i]` (or use the XRVisualization render nodes). Expected:
+4. Type `DisplayXR.Hands.Debug 1` in the in-game console to draw every
+   tracked joint, both hands, as a sphere at its radius: left hand cyan, right
+   hand orange, grey while a hand holds its last pose. `0` turns it off. It is
+   compiled out of Shipping builds, like all debug drawing. Expected:
    26 spheres per hand, palm/wrist ~1–2 cm radius, fingertips ~0.5–1 cm, moving
    1:1 with your hand; a hand 30 cm in front of the panel centre sits ~30 UE
    units in front of the display plane (i.e. behind the camera on the display
    rig, between the viewer and the panel), left of centre for your left hand.
+   To draw your own markers instead (a Blueprint tick that calls **Get Hand
+   Tracking State** and draws at each `HandKeyLocations[i]` with radius
+   `HandKeyRadii[i]`, or the XRVisualization render nodes), use depth priority
+   **Foreground** for debug shapes: set the Blueprint **Draw Debug Sphere**
+   node's *Depth Priority* pin to `Foreground` (its default is `World`), or pass
+   `SDPG_Foreground` as `DrawDebugSphere`'s `DepthPriority` in C++. `SDPG_World`
+   debug draws are depth-tested against the temporally upscaled scene depth, and
+   while temporal AA (TAA/TSR) is on they are lost in the **second view**: they
+   appear in the left view only (#70). For markers that must depth-sort with the scene,
+   use mesh components (e.g. instanced spheres), not debug draw.
 5. Turn the camera with the mouse: the spheres turn with it. Lean left/right
    (eye tracking): the spheres stay put relative to the panel.
 6. `stat unit` / `stat game` while the hands are tracked: the locate costs two
    `xrLocateHandJointsEXT` calls per frame on the game thread; no measurable
    change expected. `stat fps` stays at the panel rate.
 7. Hand out of view: the last pose holds, `TrackingStatus = NotTracked`; both
-   hands out: `bValid = false`. Unplug the Ultraleap mid-session: same, no crash;
-   replug: tracking resumes (the runtime re-arbitrates the roles, ADR-034
+   hands out: `bValid = false`. Unplug the hand-tracking camera mid-session:
+   same, no crash; replug: tracking resumes (the runtime re-arbitrates the roles, ADR-034
    Amendment 3).
 
 ## Scope
@@ -188,11 +199,11 @@ is Windows hardware, so the acceptance run is:
 In: joints via `IHandTracker` / `GetHandTrackingState` / XRVisualization.
 
 Out (follow-up issue in this repo, "Motion-controller input from hand tracking /
-Ultraleap Tier 1 / gamepad"): `IMotionController` motion sources
+hand-tracking camera controllers / gamepad"): `IMotionController` motion sources
 (`LeftPalm`, `RightIndexTip`, ...) so `UMotionControllerComponent` can follow a
 bone, pinch/grab as input actions, Enhanced Input mapping, LiveLink subjects,
 and the runtime's action-system controllers (`XR_EXT_hand_interaction`,
-Ultraleap Tier 1, qwerty/gamepad emulation).
+the hand-tracking camera's controller emulation, qwerty/gamepad emulation).
 
 ## Files
 

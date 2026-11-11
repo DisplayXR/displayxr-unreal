@@ -4,10 +4,27 @@
 #include "DisplayXRHandTracking.h"
 #include "DisplayXRStereoMath.h"
 #include "Features/IModularFeatures.h"
+#include "HAL/IConsoleManager.h"
 #include "IXRTrackingSystem.h"
 #include "Engine/Engine.h"
+#include "Engine/World.h"
+#include "Engine/EngineTypes.h"   // SDPG_Foreground
+#include "DrawDebugHelpers.h"
 
 DEFINE_LOG_CATEGORY_STATIC(LogDisplayXRHands, Log, All);
+
+#if UE_ENABLE_DEBUG_DRAWING
+// Hand debug view — see Docs/DisplayXR/HandTracking.md. Read every tick, so it
+// can be toggled from the console while playing.
+static TAutoConsoleVariable<int32> CVarDisplayXRHandsDebug(
+	TEXT("DisplayXR.Hands.Debug"),
+	0,
+	TEXT("Draw the tracked hand joints: one sphere per joint, both hands, at the joint radius, in the game world.\n")
+	TEXT("0 (default): off.\n")
+	TEXT("1: on. Left hand cyan, right hand orange, grey while a hand holds its last pose (out of the camera's view).\n")
+	TEXT("Drawn at SDPG_Foreground so the spheres show in both views under TAA/TSR (SDPG_World debug lines are lost in the second view there, #70). Foreground lines draw over the scene."),
+	ECVF_Default);
+#endif
 
 // UE's EHandKeypoint is declared in OpenXR joint order; the cache below indexes
 // one by the other, so pin the correspondence (same checks Epic's plugin makes).
@@ -23,10 +40,16 @@ FDisplayXRHandTracking::FDisplayXRHandTracking(FDisplayXRSession* InSession)
 {
 	IModularFeatures::Get().RegisterModularFeature(IHandTracker::GetModularFeatureName(), static_cast<IHandTracker*>(this));
 	UE_LOG(LogDisplayXRHands, Log, TEXT("DisplayXR: IHandTracker registered (device type '%s')"), *DeviceTypeName().ToString());
+#if UE_ENABLE_DEBUG_DRAWING
+	PostActorTickHandle = FWorldDelegates::OnWorldPostActorTick.AddRaw(this, &FDisplayXRHandTracking::DrawDebugJoints);
+#endif
 }
 
 FDisplayXRHandTracking::~FDisplayXRHandTracking()
 {
+#if UE_ENABLE_DEBUG_DRAWING
+	FWorldDelegates::OnWorldPostActorTick.Remove(PostActorTickHandle);
+#endif
 	IModularFeatures::Get().UnregisterModularFeature(IHandTracker::GetModularFeatureName(), static_cast<IHandTracker*>(this));
 }
 
@@ -61,6 +84,45 @@ FTransform FDisplayXRHandTracking::TrackingToWorld()
 	}
 	return FTransform::Identity;
 }
+
+#if UE_ENABLE_DEBUG_DRAWING
+void FDisplayXRHandTracking::DrawDebugJoints(UWorld* World, ELevelTick TickType, float DeltaSeconds)
+{
+	// Post-actor tick, i.e. where an actor's own Tick would draw: the lines
+	// reach this frame's end-of-frame render update. The joints are the last
+	// locate (the session locates in SetupViewFamily), as for any app reader.
+	if (CVarDisplayXRHandsDebug.GetValueOnGameThread() == 0 || !World || !World->IsGameWorld())
+	{
+		return;
+	}
+	// Only our own device's rig places these joints in the world.
+	if (!Session || !Session->HasHandTracking() || !GEngine || !GEngine->XRSystem.IsValid()
+		|| GEngine->XRSystem->GetSystemName() != DeviceTypeName())
+	{
+		return;
+	}
+	RefreshCache();
+
+	static const FColor HandColor[2] = {FColor(0, 200, 255), FColor(255, 140, 0)};
+	static const FColor HeldColor(128, 128, 128);
+	const FTransform ToWorld = TrackingToWorld();
+	for (int32 H = 0; H < 2; ++H)
+	{
+		const FHandCache& C = Hands[H];
+		if (!C.bEverTracked)
+		{
+			continue;
+		}
+		const FColor Color = C.bTracked ? HandColor[H] : HeldColor;
+		for (int32 J = 0; J < EHandKeypointCount; ++J)
+		{
+			const FVector Loc = (C.Keypoints[J] * ToWorld).GetLocation();
+			DrawDebugSphere(World, Loc, FMath::Max(C.Radii[J], 0.1f), 8, Color,
+				/*bPersistentLines*/ false, /*LifeTime*/ -1.0f, SDPG_Foreground, /*Thickness*/ 0.0f);
+		}
+	}
+}
+#endif
 
 void FDisplayXRHandTracking::RefreshCache() const
 {
