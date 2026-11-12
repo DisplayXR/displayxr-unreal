@@ -8,6 +8,7 @@
 #include "HeadMountedDisplayTypes.h"
 #include "InputCoreTypes.h"
 #include "Engine/EngineBaseTypes.h"  // ELevelTick (debug-view tick delegate)
+#include "EngineDefines.h"           // UE_ENABLE_DEBUG_DRAWING (gates members below; not in every PCH)
 #include "DisplayXRSession.h"
 
 class UWorld;
