@@ -4,7 +4,9 @@ All notable changes to the DisplayXR Unreal plugin are documented here.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [0.11.0] - 2026-11-11
+
+The v0.10.0 tag was never published as a GitHub Release; this is the first published release with hand tracking, so it carries everything in the 0.10.0 section below as well.
 
 ### Added
 - **`DisplayXR.Hands.Debug 1` draws the tracked hand joints in both views (refs #70).** One sphere per joint at its radius, both hands (left cyan, right orange, grey while a hand holds its last pose), drawn from the world's post-actor tick at `SDPG_Foreground`. App-drawn `SDPG_World` debug shapes are lost in the second view while temporal AA (TAA/TSR) is on, so a tester's own debug spheres showed in the left view only. Foreground lines skip the scene-depth test and show in both. Compiled out where debug drawing is. `Docs/DisplayXR/HandTracking.md` (validation step 4) points to it and tells app authors to draw debug shapes at Foreground. The cause of the second-view loss, in the renderer's temporal depth upscale or its history for the second view, is still open in #70.
