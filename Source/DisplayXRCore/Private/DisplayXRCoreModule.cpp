@@ -9,6 +9,9 @@
 #include "Rendering/DisplayXRDevice.h"
 #include "SceneViewExtension.h"
 #include "Modules/ModuleManager.h"
+#include "Misc/CommandLine.h"
+#include "Misc/Parse.h"
+#include "CoreGlobals.h"
 #include "HAL/IConsoleManager.h"
 #include "HAL/Runnable.h"
 #include "HAL/RunnableThread.h"
@@ -236,9 +239,21 @@ void FDisplayXRCoreModule::StartupModule()
 	GConfig->SetFloat(TEXT("HMDPluginPriority"), TEXT("DisplayXRCore"),
 		HighestXrPluginPriority + 10, GEngineIni);
 
-	// Create session (loads DisplayXR OpenXR runtime directly)
+	// Create session (loads DisplayXR OpenXR runtime directly). Commandlets
+	// (cook, DDC fill, ...), dedicated servers and -nullrhi runs render nothing
+	// and want no HMD: skip loading the runtime and creating an XrInstance. The
+	// session object still exists, inactive — exactly the state a machine
+	// without the runtime is in — so everything downstream (HMD discovery,
+	// hand tracker, Blueprint helpers) already handles it.
 	Session = MakeShared<FDisplayXRSession>();
-	if (!Session->Initialize())
+	const bool bWantsHMD = !IsRunningCommandlet() && !IsRunningDedicatedServer()
+		&& !FParse::Param(FCommandLine::Get(), TEXT("nullrhi"));
+	if (!bWantsHMD)
+	{
+		UE_LOG(LogDisplayXRCore, Log,
+			TEXT("DisplayXR: commandlet / dedicated server / -nullrhi — runtime not loaded, no session"));
+	}
+	else if (!Session->Initialize())
 	{
 		UE_LOG(LogDisplayXRCore, Warning, TEXT("DisplayXR: Failed to initialize session"));
 	}
