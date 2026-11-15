@@ -179,7 +179,10 @@ void UDisplayXRManifestSettings::WriteResolvedManifest(bool bShowToast)
 
 	const FString OutPath = GetResolvedManifestPath();
 	IFileManager::Get().MakeDirectory(*FPaths::GetPath(OutPath), /*Tree=*/true);
-	if (!FFileHelper::SaveStringToFile(Out, *OutPath))
+	// Force UTF-8 (no BOM): AutoDetect writes UTF-16 as soon as the string
+	// holds a non-ASCII character (e.g. an accented app name), which
+	// PackageApp.py and other JSON readers then fail to parse (#77).
+	if (!FFileHelper::SaveStringToFile(Out, *OutPath, FFileHelper::EEncodingOptions::ForceUTF8WithoutBOM))
 	{
 		UE_LOG(LogDisplayXRManifest, Error, TEXT("Failed to write resolved manifest to '%s'"), *OutPath);
 		return;
