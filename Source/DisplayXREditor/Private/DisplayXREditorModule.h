@@ -24,6 +24,12 @@ private:
 	void OnPostPIEStarted(bool bIsSimulating);
 	void OnPrePIEEnded(bool bIsSimulating);
 
+	// Register the deferred preview-start retry (every editor tick, gives up
+	// after 600 attempts and falls back to mono). Used for the first start and
+	// for a dock/float restart whose synchronous re-start failed. Cancelled at
+	// PIE end via PreviewStartTicker.
+	void ArmDeferredPreviewStart(TSharedRef<class SViewport> ViewportWidget);
+
 	// Undo everything OnPostPIEStarted forced on: the borrowed viewport
 	// widget's stereo flag, the stereo device, and the panel's display mode
 	// (the XrSession survives PIE, so without an explicit 2D request the

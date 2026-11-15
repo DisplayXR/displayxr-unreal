@@ -59,6 +59,15 @@ public:
 
 	bool IsActive() const { return ProxyHWND != nullptr; }
 
+	/**
+	 * Called when a mid-PIE restart (dock/float) tore the preview down but the
+	 * re-TryStart against the new window failed (the widget is usually still
+	 * mid-layout). The owner arms the same deferred-start retry it uses for the
+	 * first start, so the preview comes back instead of staying dead until PIE
+	 * is restarted. Unset = no retry.
+	 */
+	TFunction<void(TSharedRef<SViewport>)> OnRestartDeferred;
+
 private:
 	void OnBackBufferReady_RenderThread(SWindow& Window, const FTextureRHIRef& BackBuffer);
 
@@ -128,6 +137,7 @@ public:
 	bool TryStart(TSharedRef<SViewport> /*ViewportWidget*/) { return false; }
 	void Stop(bool /*bClearModeFlag*/ = true) {}
 	bool IsActive() const { return false; }
+	TFunction<void(TSharedRef<SViewport>)> OnRestartDeferred; // never called: no restart off-Windows
 };
 
 #endif // PLATFORM_WINDOWS

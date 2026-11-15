@@ -252,7 +252,18 @@ bool FDisplayXRPIEPreview::TickUpdate(float /*DeltaTime*/)
 		{
 			FDisplayXRCoreModule::NotifyPlaySessionStarting();
 		}
-		return false; // TryStart registered a fresh ticker
+		else
+		{
+			UE_LOG(LogDisplayXRPIEPreview, Log,
+				TEXT("Restart against the new window deferred (widget not arranged yet) — retrying"));
+			if (OnRestartDeferred)
+			{
+				// May destroy this object on a later tick (retry give-up), never
+				// synchronously: it only registers a ticker.
+				OnRestartDeferred(Widget.ToSharedRef());
+			}
+		}
+		return false; // TryStart registered a fresh ticker, or the retry will
 	}
 
 	HWND ParentHWND = (HWND)Window->GetNativeWindow()->GetOSWindowHandle();

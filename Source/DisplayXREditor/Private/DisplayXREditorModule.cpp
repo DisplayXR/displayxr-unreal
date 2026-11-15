@@ -145,6 +145,12 @@ void FDisplayXREditorModule::OnPostPIEStarted(bool bIsSimulating)
 		FDisplayXRPlatform::bRequestSharedTextureBinding = true;
 
 		PIEPreview = MakeShared<FDisplayXRPIEPreview>();
+		// A dock/float restart whose re-TryStart fails retries through the same
+		// deferred start (same back-off and give-up, cancelled at PIE end).
+		PIEPreview->OnRestartDeferred = [this](TSharedRef<SViewport> VP)
+		{
+			ArmDeferredPreviewStart(VP);
+		};
 		PreviewStartAttempts = 0;
 
 		// On a RESTART the borrowed level-viewport widget usually still has
@@ -158,51 +164,8 @@ void FDisplayXREditorModule::OnPostPIEStarted(bool bIsSimulating)
 		}
 		else
 		{
-		TWeakPtr<SViewport> WeakViewport = ViewportWidget;
-		PreviewStartTicker = FTSTicker::GetCoreTicker().AddTicker(FTickerDelegate::CreateLambda(
-			[this, WeakViewport](float) -> bool
-			{
-				TSharedPtr<SViewport> VP = WeakViewport.Pin();
-				if (!PIEPreview.IsValid() || !VP.IsValid())
-				{
-					PreviewStartTicker.Reset();
-					return false; // PIE already ending — teardown owns cleanup
-				}
-				if (PIEPreview->TryStart(VP.ToSharedRef()))
-				{
-					FDisplayXRCoreModule::NotifyPlaySessionStarting();
-					PreviewStartTicker.Reset();
-					return false;
-				}
-				if (++PreviewStartAttempts % 60 == 0)
-				{
-					// Diagnose slow deferred starts: what is the widget missing?
-					const FVector2D Size = VP->GetCachedGeometry().GetAbsoluteSize();
-					const TSharedPtr<SWindow> Win = FSlateApplication::Get().FindWidgetWindow(VP.ToSharedRef());
-					UE_LOG(LogDisplayXREditor, Log,
-						TEXT("DisplayXR: [NativePIE] preview start still deferred (attempt %d): geometry=%.0fx%.0f window=%s"),
-						PreviewStartAttempts, Size.X, Size.Y,
-						Win.IsValid() ? *Win->GetTitle().ToString() : TEXT("<none>"));
-				}
-				if (PreviewStartAttempts > 600)
-				{
-					UE_LOG(LogDisplayXREditor, Warning,
-						TEXT("DisplayXR: [NativePIE] viewport never got geometry/window — no preview this session"));
-					// Undo everything OnPostPIEStarted forced on; UE returns to
-					// plain mono rendering for the rest of the session.
-					PIEPreview.Reset();
-					FDisplayXRPlatform::bRequestSharedTextureBinding = false;
-					if (TSharedPtr<SViewport> Forced = StereoForcedViewport.Pin())
-					{
-						Forced->EnableStereoRendering(false);
-					}
-					StereoForcedViewport.Reset();
-					PreviewStartTicker.Reset();
-					return false;
-				}
-				return true;
-			}));
-		UE_LOG(LogDisplayXREditor, Log, TEXT("DisplayXR: [NativePIE] texture-mode in-tab preview arming (deferred start)"));
+			ArmDeferredPreviewStart(ViewportWidget.ToSharedRef());
+			UE_LOG(LogDisplayXREditor, Log, TEXT("DisplayXR: [NativePIE] texture-mode in-tab preview arming (deferred start)"));
 		}
 	}
 
@@ -228,6 +191,63 @@ void FDisplayXREditorModule::OnPostPIEStarted(bool bIsSimulating)
 	UE_LOG(LogDisplayXREditor, Log,
 		TEXT("DisplayXR: [NativePIE] Forced stereo on PIE viewport (widget=%p)"),
 		ViewportWidget.Get());
+}
+
+void FDisplayXREditorModule::ArmDeferredPreviewStart(TSharedRef<SViewport> ViewportWidget)
+{
+	// One retry ticker at a time; a re-arm (restart after a first start) starts
+	// the attempt budget over.
+	if (PreviewStartTicker.IsValid())
+	{
+		FTSTicker::GetCoreTicker().RemoveTicker(PreviewStartTicker);
+		PreviewStartTicker.Reset();
+	}
+	PreviewStartAttempts = 0;
+
+	TWeakPtr<SViewport> WeakViewport = ViewportWidget;
+	PreviewStartTicker = FTSTicker::GetCoreTicker().AddTicker(FTickerDelegate::CreateLambda(
+		[this, WeakViewport](float) -> bool
+		{
+			TSharedPtr<SViewport> VP = WeakViewport.Pin();
+			if (!PIEPreview.IsValid() || !VP.IsValid())
+			{
+				PreviewStartTicker.Reset();
+				return false; // PIE already ending — teardown owns cleanup
+			}
+			if (PIEPreview->TryStart(VP.ToSharedRef()))
+			{
+				FDisplayXRCoreModule::NotifyPlaySessionStarting();
+				PreviewStartTicker.Reset();
+				return false;
+			}
+			if (++PreviewStartAttempts % 60 == 0)
+			{
+				// Diagnose slow deferred starts: what is the widget missing?
+				const FVector2D Size = VP->GetCachedGeometry().GetAbsoluteSize();
+				const TSharedPtr<SWindow> Win = FSlateApplication::Get().FindWidgetWindow(VP.ToSharedRef());
+				UE_LOG(LogDisplayXREditor, Log,
+					TEXT("DisplayXR: [NativePIE] preview start still deferred (attempt %d): geometry=%.0fx%.0f window=%s"),
+					PreviewStartAttempts, Size.X, Size.Y,
+					Win.IsValid() ? *Win->GetTitle().ToString() : TEXT("<none>"));
+			}
+			if (PreviewStartAttempts > 600)
+			{
+				UE_LOG(LogDisplayXREditor, Warning,
+					TEXT("DisplayXR: [NativePIE] viewport never got geometry/window — no preview this session"));
+				// Undo everything OnPostPIEStarted forced on; UE returns to
+				// plain mono rendering for the rest of the session.
+				PIEPreview.Reset();
+				FDisplayXRPlatform::bRequestSharedTextureBinding = false;
+				if (TSharedPtr<SViewport> Forced = StereoForcedViewport.Pin())
+				{
+					Forced->EnableStereoRendering(false);
+				}
+				StereoForcedViewport.Reset();
+				PreviewStartTicker.Reset();
+				return false;
+			}
+			return true;
+		}));
 }
 
 void FDisplayXREditorModule::OnPrePIEEnded(bool bIsSimulating)
