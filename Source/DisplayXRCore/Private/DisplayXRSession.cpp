@@ -152,6 +152,10 @@ void FDisplayXRSession::Shutdown()
 
 	if (Session != XR_NULL_HANDLE)
 	{
+		// A running session is ended (when its state allows) before it is
+		// destroyed, never waited on.
+		EndRunningSessionBeforeDestroy();
+
 		PFN_xrDestroySession xrDestroySessionFunc = nullptr;
 		xrGetInstanceProcAddrFunc(Instance, "xrDestroySession",
 			(PFN_xrVoidFunction*)&xrDestroySessionFunc);
@@ -181,6 +185,66 @@ void FDisplayXRSession::Shutdown()
 	bActive = false;
 	bSessionRunning.Store(false);
 	UE_LOG(LogDisplayXRSession, Log, TEXT("DisplayXR Session: Shut down"));
+}
+
+void FDisplayXRSession::EndRunningSessionBeforeDestroy()
+{
+	if (Session == XR_NULL_HANDLE || !bSessionRunning.Load() || !xrGetInstanceProcAddrFunc)
+	{
+		bSessionRunning.Store(false);
+		return;
+	}
+
+	if (SessionState.Load() != XR_SESSION_STATE_STOPPING)
+	{
+		// xrEndSession is only valid in STOPPING. Ask the runtime to go there,
+		// then read whatever it has already queued — one non-blocking drain,
+		// no wait: teardown runs on the game thread.
+		PFN_xrRequestExitSession xrRequestExitSessionFunc = nullptr;
+		xrGetInstanceProcAddrFunc(Instance, "xrRequestExitSession",
+			(PFN_xrVoidFunction*)&xrRequestExitSessionFunc);
+		if (xrRequestExitSessionFunc && XR_SUCCEEDED(xrRequestExitSessionFunc(Session)))
+		{
+			if (!xrPollEventFunc)
+			{
+				xrGetInstanceProcAddrFunc(Instance, "xrPollEvent", (PFN_xrVoidFunction*)&xrPollEventFunc);
+			}
+			if (xrPollEventFunc)
+			{
+				// == XR_SUCCESS, not XR_SUCCEEDED: XR_EVENT_UNAVAILABLE is a
+				// positive code (see PumpEvents).
+				XrEventDataBuffer EventData = {XR_TYPE_EVENT_DATA_BUFFER};
+				while (xrPollEventFunc(Instance, &EventData) == XR_SUCCESS)
+				{
+					if (EventData.type == XR_TYPE_EVENT_DATA_SESSION_STATE_CHANGED)
+					{
+						SessionState.Store(((XrEventDataSessionStateChanged*)&EventData)->state);
+					}
+					EventData = {XR_TYPE_EVENT_DATA_BUFFER};
+				}
+			}
+		}
+	}
+
+	if (SessionState.Load() == XR_SESSION_STATE_STOPPING)
+	{
+		if (!xrEndSessionFunc)
+		{
+			xrGetInstanceProcAddrFunc(Instance, "xrEndSession", (PFN_xrVoidFunction*)&xrEndSessionFunc);
+		}
+		if (xrEndSessionFunc)
+		{
+			const XrResult EndResult = xrEndSessionFunc(Session);
+			UE_LOG(LogDisplayXRSession, Log, TEXT("DisplayXR Session: session ended before destroy (%d)"), (int)EndResult);
+		}
+	}
+	else
+	{
+		UE_LOG(LogDisplayXRSession, Log,
+			TEXT("DisplayXR Session: running session not STOPPING (state %d) at teardown — destroyed without xrEndSession"),
+			(int)SessionState.Load());
+	}
+	bSessionRunning.Store(false);
 }
 
 // =============================================================================
@@ -1439,19 +1503,10 @@ bool FDisplayXRSession::CreateSessionWithGraphics(void* D3DDevice, void* Command
 		// Destroy existing bare session to replace with graphics-bound session
 		UE_LOG(LogDisplayXRSession, Log, TEXT("DisplayXR Session: Destroying existing session to create one with graphics binding"));
 
-		if (bSessionRunning.Load())
-		{
-			if (!xrEndSessionFunc)
-			{
-				xrGetInstanceProcAddrFunc(Instance, "xrEndSession",
-					(PFN_xrVoidFunction*)&xrEndSessionFunc);
-			}
-			if (xrEndSessionFunc)
-			{
-				xrEndSessionFunc(Session);
-			}
-			bSessionRunning.Store(false);
-		}
+		// xrEndSession only from STOPPING (it used to be called from any
+		// running state, where the runtime rejects it with
+		// XR_ERROR_SESSION_NOT_STOPPING).
+		EndRunningSessionBeforeDestroy();
 
 		// Hand trackers and action spaces are children of the session being torn down.
 		DestroyHandTrackers();
