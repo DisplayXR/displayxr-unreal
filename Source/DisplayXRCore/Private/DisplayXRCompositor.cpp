@@ -394,9 +394,27 @@ void FDisplayXRCompositor::CompositorLoop()
 			PV[i].subImage.swapchain = Swapchain;
 			if (bUseCopyPath) {
 				// IPC array: each eye is its own slice; content copied to slice origin.
+				// The slice was sized ONCE at swapchain creation (SliceW/SliceH) from
+				// the view config of that moment; after a mode change the current
+				// tile can be larger. Clamp to the slice actually created (same
+				// clamp as the copy in ReleaseImage_RenderThread) so the rect stays
+				// inside the image (#74).
+				const int32 SliceTW = FMath::Max(1, FMath::Min<int32>(TW, (int32)SliceW));
+				const int32 SliceTH = FMath::Max(1, FMath::Min<int32>(TH, (int32)SliceH));
+				if ((SliceTW != TW || SliceTH != TH) && i == 0)
+				{
+					static bool bLoggedSliceClamp = false;
+					if (!bLoggedSliceClamp)
+					{
+						bLoggedSliceClamp = true;
+						UE_LOG(LogDisplayXRCompositor, Warning,
+							TEXT("Compositor Thread: tile %dx%d exceeds the IPC array slice %ux%u (view config changed after swapchain creation); clamping copy + imageRect to the slice"),
+							TW, TH, SliceW, SliceH);
+					}
+				}
 				PV[i].subImage.imageArrayIndex = (uint32_t)i;
 				PV[i].subImage.imageRect.offset = {0, 0};
-				PV[i].subImage.imageRect.extent = {TW, TH};
+				PV[i].subImage.imageRect.extent = {SliceTW, SliceTH};
 			} else {
 				PV[i].subImage.imageRect.offset = {(i % Cols) * TW, (i / Cols) * TH};
 				PV[i].subImage.imageRect.extent = {TW, TH};
@@ -1049,10 +1067,16 @@ void FDisplayXRCompositor::ReleaseImage_RenderThread(FRHICommandListImmediate& R
 
 			RHICmdList.Transition(FRHITransitionInfo(SwapchainTexture, ERHIAccess::Unknown, ERHIAccess::CopySrc));
 			RHICmdList.Transition(FRHITransitionInfo(Dst, ERHIAccess::Unknown, ERHIAccess::CopyDest));
+			// The destination slice was sized once at swapchain creation
+			// (SliceW/SliceH); after a view-config change TW/TH can exceed it.
+			// Clamp the copy extent to the slice so it never writes out of
+			// bounds (#74). The source origin still steps by the full TW/TH.
+			const int32 CopyW = FMath::Max(1, FMath::Min<int32>(TW, (int32)SliceW));
+			const int32 CopyH = FMath::Max(1, FMath::Min<int32>(TH, (int32)SliceH));
 			for (int32 i = 0; i < NV; i++)
 			{
 				FRHICopyTextureInfo CopyInfo;
-				CopyInfo.Size = FIntVector(TW, TH, 1);
+				CopyInfo.Size = FIntVector(CopyW, CopyH, 1);
 				CopyInfo.SourcePosition = FIntVector((i % Cols) * TW, (i / Cols) * TH, 0);
 				CopyInfo.DestPosition = FIntVector(0, 0, 0);
 				CopyInfo.DestSliceIndex = (uint32)i;
