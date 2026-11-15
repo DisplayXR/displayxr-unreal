@@ -208,6 +208,13 @@ private:
 	// RearmCompositorCreation() clears it.
 	bool bCompositorCreationAttempted = false;
 
+	// Windows: the move/resize WndProc subclass is removed at play-session end
+	// (ShutdownCompositorForSessionEnd) so it does not outlive the PIE session
+	// on the editor window, and must not be re-installed by a trailing
+	// UpdateViewport before the next session starts. RearmCompositorCreation()
+	// clears it. Never set in game mode (no session-end notification there).
+	bool bWndProcHookSuppressed = false;
+
 	// Host game window HWND, re-cached each UpdateViewport. Used per-frame in
 	// ComputeViews to compute window-relative Kooima inputs (eye offset + screen
 	// dims) so the off-axis frustum tracks the window as it moves/resizes.

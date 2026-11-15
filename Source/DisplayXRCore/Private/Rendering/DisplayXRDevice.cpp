@@ -169,6 +169,27 @@ static LRESULT CALLBACK DisplayXRSubclassedWndProc(HWND Hwnd, UINT Msg, WPARAM W
 			return 0; // deliberately skip UE's WM_PAINT (no BeginPaint → stays invalid)
 		}
 		break;
+
+	case WM_NCDESTROY:
+	{
+		// Last message the window receives: unhook here so the globals never
+		// name a dead HWND (a later install/remove would SetWindowLongPtr on a
+		// handle Windows may have reused). Restore first, then forward.
+		const WNDPROC Orig = GDisplayXROrigWndProc;
+		if (Hwnd == GDisplayXRHookedHwnd)
+		{
+			if (Orig)
+			{
+				::SetWindowLongPtrW(Hwnd, GWLP_WNDPROC, (LONG_PTR)Orig);
+			}
+			GDisplayXROrigWndProc = nullptr;
+			GDisplayXRHookedHwnd = nullptr;
+			GDisplayXRInSizeMove = false;
+		}
+		return Orig
+			? ::CallWindowProcW(Orig, Hwnd, Msg, WParam, LParam)
+			: ::DefWindowProcW(Hwnd, Msg, WParam, LParam);
+	}
 	}
 
 	return GDisplayXROrigWndProc
@@ -176,28 +197,25 @@ static LRESULT CALLBACK DisplayXRSubclassedWndProc(HWND Hwnd, UINT Msg, WPARAM W
 		: ::DefWindowProcW(Hwnd, Msg, WParam, LParam);
 }
 
-static void DisplayXRInstallWndProcHook(HWND Hwnd)
-{
-	if (!Hwnd || GDisplayXRHookedHwnd == Hwnd) return;
-	if (GDisplayXRHookedHwnd)
-	{
-		::SetWindowLongPtrW(GDisplayXRHookedHwnd, GWLP_WNDPROC, (LONG_PTR)GDisplayXROrigWndProc);
-		GDisplayXROrigWndProc = nullptr;
-		GDisplayXRHookedHwnd = nullptr;
-	}
-	GDisplayXROrigWndProc = (WNDPROC)::SetWindowLongPtrW(Hwnd, GWLP_WNDPROC, (LONG_PTR)DisplayXRSubclassedWndProc);
-	GDisplayXRHookedHwnd = Hwnd;
-}
-
+// Idempotent: a no-op when nothing is hooked, and it never touches a window
+// that no longer exists.
 static void DisplayXRRemoveWndProcHook()
 {
-	if (GDisplayXRHookedHwnd && GDisplayXROrigWndProc)
+	if (GDisplayXRHookedHwnd && GDisplayXROrigWndProc && ::IsWindow(GDisplayXRHookedHwnd))
 	{
 		::SetWindowLongPtrW(GDisplayXRHookedHwnd, GWLP_WNDPROC, (LONG_PTR)GDisplayXROrigWndProc);
 	}
 	GDisplayXROrigWndProc = nullptr;
 	GDisplayXRHookedHwnd = nullptr;
 	GDisplayXRInSizeMove = false;
+}
+
+static void DisplayXRInstallWndProcHook(HWND Hwnd)
+{
+	if (!Hwnd || GDisplayXRHookedHwnd == Hwnd) return;
+	DisplayXRRemoveWndProcHook();
+	GDisplayXROrigWndProc = (WNDPROC)::SetWindowLongPtrW(Hwnd, GWLP_WNDPROC, (LONG_PTR)DisplayXRSubclassedWndProc);
+	GDisplayXRHookedHwnd = Hwnd;
 }
 
 #include "Windows/HideWindowsPlatformTypes.h"
@@ -945,7 +963,9 @@ void FDisplayXRDevice::UpdateViewport(bool bUseSeparateRenderTarget, const FView
 	// Install a WndProc subclass on the game window so we can:
 	//   - keep UE ticking during an interactive move/resize modal loop (WM_PAINT),
 	//   - bypass aspect-ratio constraint applied by UE / runtime DLLs on WM_SIZING.
-	if (GameHWND)
+	// Not between a play-session end and the next start: the hook belongs to
+	// the session's window and was removed at ShutdownCompositorForSessionEnd.
+	if (GameHWND && !bWndProcHookSuppressed)
 	{
 		DisplayXRInstallWndProcHook((HWND)GameHWND);
 	}
@@ -1001,6 +1021,16 @@ void FDisplayXRDevice::ShutdownCompositorForSessionEnd()
 	// window that is about to be destroyed.
 	bCompositorCreationAttempted = true;
 
+#if PLATFORM_WINDOWS
+	// The move/resize subclass was installed on the session's window (in the
+	// editor: UE's own editor window, or the PIE window). Take it off now so it
+	// does not keep re-entering RedrawViewports on that window after PIE, and
+	// keep it off until RearmCompositorCreation. The destructor's removal stays
+	// as the fallback; removal is idempotent.
+	bWndProcHookSuppressed = true;
+	DisplayXRRemoveWndProcHook();
+#endif
+
 	if (!Compositor)
 	{
 		return;
@@ -1043,6 +1073,9 @@ void FDisplayXRDevice::RearmCompositorCreation()
 	// Re-arm even if a compositor somehow survived: UpdateViewport only builds
 	// one when the pointer is null, so this cannot double-create.
 	bCompositorCreationAttempted = false;
+	// The next UpdateViewport re-installs the move/resize subclass on the new
+	// session's window.
+	bWndProcHookSuppressed = false;
 
 	UE_LOG(LogDisplayXRDevice, Log, TEXT("[%s] RearmCompositorCreation: deferred compositor creation re-armed"),
 		WorldCtxTag());
