@@ -62,12 +62,13 @@ Add a `MotionController` component and set its **Motion Source**:
 
 ### Where the pen lands
 
-A stylus provider publishes its poses relative to the physical display plane. The runtime places that plane where the rig the plug-in chained on `xrLocateViews` puts it, in metres (runtime `docs/specs/runtime/input-provider-discovery.md` §4b.4). The views are scaled by the rig, so the plug-in applies the same gain about that plane before handing the pose to Unreal:
+The plug-in computes no pen math: the runtime places every action-space pose in the frame of the rig the plug-in chained on its latest `xrLocateViews`, and the plug-in hands that pose to Unreal as located (runtime `docs/specs/runtime/input-provider-discovery.md` §4b.4 and §4b.4a).
 
-- **Display rig** (`DisplayXRDisplay`): gain `PerspectiveFactor × VirtualDisplayHeight / canvas height`, about the display plane. A tip touching the glass sits at zero parallax; a tip 1 cm in front of the glass lands `gain` cm in front of the virtual display, where its rendered image appears.
-- **Camera rig** (`DisplayXRCamera`): the glass is on the convergence plane (`1 / InvConvergenceDistance` in front of the camera), gain = the camera's virtual screen height there over the canvas height, as the runtime does for hand joints (`XR_DXR_view_rig` spec 5). At infinite convergence the pose stays metric.
+- **A stylus on a glass-registered origin** (`XRT_TRACKING_TYPE_RIG_LOCAL_PHYSICAL`, the frame a stylus provider uses on a runtime that has it) comes back already in the rig frame: rebased into the canvas and carried by the rig's glass mapping (display rig: `VirtualDisplayHeight / canvas height` about the rig's canvas centre; camera rig: its virtual screen height on the convergence plane). A tip touching the glass sits on the pixel it touches, at zero parallax, in a window as well as full screen.
+- **A display-relative controller** (`RIG_LOCAL`) comes back on the rig's display plane, metric (unscaled), canvas-relative in a window.
+- **A stage-anchored device** comes back as tracked.
 
-`DisplayXR.Controllers.RigMapping 0` turns this off and hands Unreal the pose as located (LOCAL metres): use it for a stage-anchored device that is not display-relative, or to debug. The math is `dxr_pose::ControllerRigMapping` in `Native/dxr_pose_math.h`, checked by `Scripts/tests/pose_math_test.cpp`.
+`DisplayXR.Controllers.RigMapping 1` additionally scales the located pose about the rig's display plane by the gain the hand joints get (display rig `PerspectiveFactor × VirtualDisplayHeight / canvas height`; camera rig the virtual screen height at the convergence plane over the canvas height). Use it only for a display-relative pen on a runtime that does not register it to the glass: on one that does, it scales the pen twice. The math is `dxr_pose::ControllerRigMapping` in `Native/dxr_pose_math.h`, checked by `Scripts/tests/pose_math_test.cpp`.
 
 Poses are synced once per frame on the game thread, right after the view and hand-joint locates and at the same predicted display time, so a motion-controller component reads the previous frame's sync.
 

@@ -11,8 +11,12 @@
 
 #include "Native/dxr_pose_math.h"
 
-/** Not in the vendored openxr.h, which predates it; the name is the Khronos registry's. */
+/** The vendored openxr.h defines it; the fallback keeps an older header building. */
+#ifdef XR_LOGITECH_MX_INK_STYLUS_INTERACTION_EXTENSION_NAME
+#define DISPLAYXR_MX_INK_STYLUS_INTERACTION_EXTENSION_NAME XR_LOGITECH_MX_INK_STYLUS_INTERACTION_EXTENSION_NAME
+#else
 #define DISPLAYXR_MX_INK_STYLUS_INTERACTION_EXTENSION_NAME "XR_LOGITECH_mx_ink_stylus_interaction"
+#endif
 
 /**
  * The OpenXR action plumbing behind FDisplayXRControllerAPI: one action set

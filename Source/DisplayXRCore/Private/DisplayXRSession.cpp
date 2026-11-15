@@ -26,10 +26,10 @@ DEFINE_LOG_CATEGORY_STATIC(LogDisplayXRSession, Log, All);
 // Controller / stylus pose mapping - see Docs/DisplayXR/ControllerInput.md.
 static TAutoConsoleVariable<int32> CVarDisplayXRControllersRigMapping(
 	TEXT("DisplayXR.Controllers.RigMapping"),
-	1,
+	0,
 	TEXT("How controller and stylus poses are mapped before they reach Unreal.\n")
-	TEXT("1 (default): into the rig frame the views are in, so a display-relative device (a stylus on the glass) lines up with what it touches: the located pose is scaled about the rig's display plane by the rig's gain.\n")
-	TEXT("0: raw, the pose as located in the session's LOCAL space (metres), for stage-anchored devices or debugging."),
+	TEXT("0 (default): as located. The runtime owns the mapping: a glass-registered device (a stylus on a RIG_LOCAL_PHYSICAL origin) comes back already in the rig frame the views are in, and a display-relative controller (RIG_LOCAL) on the rig's display plane, metric.\n")
+	TEXT("1: also scale the located pose about the rig's display plane by the rig's gain (the hand-joint mapping). Only for a display-relative device on a runtime that does not register it to the glass; on one that does, this scales a stylus twice."),
 	ECVF_Default);
 
 FDisplayXRSession::FDisplayXRSession()
@@ -2015,13 +2015,15 @@ void FDisplayXRSession::SyncControllers()
 		return;
 	}
 
-	// The runtime puts a display-relative (RIG_LOCAL) device on the plane the
-	// latest view locate's rig puts the physical display at, unscaled
-	// (input-provider-discovery.md section 4b.4). The views are in the rig
-	// frame, where that plane is scaled by the rig's gain - so apply that same
-	// gain about the plane, from the rig we chained ourselves (see
-	// dxr_pose::ControllerRigMapping). Canvas height: the runtime's resolved
-	// canvas, else the display.
+	// Default: the located pose as-is. The runtime maps action spaces into the
+	// frame of the latest view locate's rig itself: a glass-registered device
+	// (RIG_LOCAL_PHYSICAL, input-provider-discovery.md section 4b.4a) comes
+	// back in the rig frame, glass scale included; a display-relative one
+	// (RIG_LOCAL, section 4b.4) on the rig's display plane, metric. Applying
+	// the rig's gain here as well would scale a stylus twice. Opt-in (CVar 1):
+	// the hand-joint gain about that plane (dxr_pose::ControllerRigMapping), for
+	// a display-relative device on a runtime that does not register it to the
+	// glass. Canvas height: the runtime's resolved canvas, else the display.
 	dxr_pose::ControllerRigMapping Mapping = dxr_pose::ControllerRigMappingIdentity();
 	if (CVarDisplayXRControllersRigMapping.GetValueOnGameThread() != 0)
 	{

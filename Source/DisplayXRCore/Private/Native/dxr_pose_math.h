@@ -161,6 +161,12 @@ inline HandRigMapping HandRigMappingFor(bool jointsInRigFrame, bool cameraCentri
  *     p_rig = plane o (scale * (inv(plane) o p_located))
  *
  * Orientation is unchanged (the scale is uniform about the plane).
+ *
+ * Opt-in only (CVar DisplayXR.Controllers.RigMapping 1). A runtime that
+ * registers a stylus to the glass (an XRT_TRACKING_TYPE_RIG_LOCAL_PHYSICAL
+ * origin, input-provider-discovery.md section 4b.4a) already returns its
+ * action spaces in the rig frame, glass scale included; applying this on top
+ * would scale the pen twice. By default the plug-in uses located poses as-is.
  */
 struct ControllerRigMapping
 {
