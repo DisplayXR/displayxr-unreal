@@ -263,7 +263,13 @@ ETrackingStatus FDisplayXRInputDevice::GetControllerTrackingStatus(const int32 C
 	}
 	int32 Hand = -1;
 	const FDisplayXRControllerPose* Pose = ResolveSource(Snap, MotionSource, Hand);
-	return (Pose && Pose->bValid && Pose->bTracked) ? ETrackingStatus::Tracked : ETrackingStatus::NotTracked;
+	if (!Pose || !Pose->bValid)
+	{
+		return ETrackingStatus::NotTracked;
+	}
+	// Valid but not actively tracked (the runtime is holding or predicting the
+	// pose): InertialOnly, as Epic's OpenXR input reports it.
+	return Pose->bTracked ? ETrackingStatus::Tracked : ETrackingStatus::InertialOnly;
 }
 
 void FDisplayXRInputDevice::EnumerateSources(TArray<FMotionControllerSource>& SourcesOut) const
@@ -363,8 +369,16 @@ void FDisplayXRInputDevice::SetChannelValue(int32 ControllerId, FForceFeedbackCh
 	{
 		return;
 	}
-	const bool bLeft = ChannelType == FForceFeedbackChannelType::LEFT_LARGE || ChannelType == FForceFeedbackChannelType::LEFT_SMALL;
-	SetHaptic(bLeft ? 0 : 1, Value, 0.0f);
+	// Only the large channels carry amplitude (as in Epic's OpenXR input): a
+	// separate SMALL = 0 write must not stop a vibration the LARGE one started.
+	if (ChannelType == FForceFeedbackChannelType::LEFT_LARGE)
+	{
+		SetHaptic(0, Value, 0.0f);
+	}
+	else if (ChannelType == FForceFeedbackChannelType::RIGHT_LARGE)
+	{
+		SetHaptic(1, Value, 0.0f);
+	}
 }
 
 void FDisplayXRInputDevice::SetChannelValues(int32 ControllerId, const FForceFeedbackValues& Values)

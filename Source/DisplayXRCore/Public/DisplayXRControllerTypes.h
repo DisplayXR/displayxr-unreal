@@ -87,8 +87,8 @@ struct DISPLAYXRCORE_API FDisplayXRControllerAPI
 	/** True when the instance enabled the MX Ink stylus interaction profile. */
 	static bool IsStylusProfileEnabled();
 
-	/** Latest published snapshot. Thread-safe (double-buffered); callable from
-	 *  the render thread (motion-controller late update). */
+	/** Latest published snapshot, copied under a lock. Thread-safe; callable
+	 *  from the render thread (motion-controller late update). */
 	static bool GetSnapshot(FDisplayXRControllerSnapshot& Out);
 
 	/**
