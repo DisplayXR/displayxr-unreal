@@ -2,7 +2,6 @@
 # Usage: PackageApp.py SampleProject.uproject OutputDirectory 5.2 Shipping Win64
 
 import sys, json, winreg, os, re, glob, shutil
-from distutils.dir_util import copy_tree
 
 ProjectPath = os.path.abspath(sys.argv[1])
 OutPath = os.path.abspath(sys.argv[2])
@@ -12,9 +11,9 @@ PlatformType = sys.argv[5]
 print("Project: " + ProjectPath + " (" + BuildType + ")")
 print("Output: " + OutPath)
 
-f = open(ProjectPath, "r")
-
-ProjectManifest = json.loads(f.read())
+# utf-8-sig: accept a .uproject saved with or without a UTF-8 BOM.
+with open(ProjectPath, "r", encoding="utf-8-sig") as f:
+    ProjectManifest = json.loads(f.read())
 ProjectVersion = ProjectManifest["EngineAssociation"]
 print("Project engine UE" + ProjectVersion)
 print("Building against UE" + EngineVersion)
@@ -146,7 +145,8 @@ if ReturnCode == 0:
     if not os.path.isfile(manifest_path):
         print("No DisplayXRManifest.json found at " + manifest_path + " - skipping manifest emit")
     else:
-        with open(manifest_path, "r") as mf:
+        # utf-8-sig: the editor writes UTF-8; tolerate a BOM too.
+        with open(manifest_path, "r", encoding="utf-8-sig") as mf:
             resolved = json.load(mf)
 
         project_name = os.path.splitext(os.path.basename(ProjectPath))[0]
@@ -165,7 +165,7 @@ if ReturnCode == 0:
                 icon_3d_basename="icon_3d.png",
             )
             sidecar_path = staged_exe + ".displayxr.json"
-            with open(sidecar_path, "w") as sf:
+            with open(sidecar_path, "w", encoding="utf-8") as sf:
                 json.dump(sidecar, sf, indent=2)
             print("Wrote sidecar manifest: " + sidecar_path)
 
@@ -186,7 +186,7 @@ if ReturnCode == 0:
                         icon_3d_basename=sanitized + "_sbs.png",
                     )
                     reg_path = os.path.join(apps_dir, sanitized + ".displayxr.json")
-                    with open(reg_path, "w") as rf:
+                    with open(reg_path, "w", encoding="utf-8") as rf:
                         json.dump(registered, rf, indent=2)
                     print("Wrote registered manifest: " + reg_path)
 
@@ -194,6 +194,9 @@ if ReturnCode == 0 and os.path.isdir(OutPath):
     directories = [f.path for f in os.scandir(OutPath) if f.is_dir()]
     for directory in directories:
         print("Exporting redist to " + directory)
-        copy_tree(EnginePath + "\\Engine\\Extras\\Redist", directory + "\\Engine\\Extras\\Redist")
+        # distutils (copy_tree) was removed in Python 3.12. copytree with
+        # dirs_exist_ok=True keeps its semantics here: merge into an existing
+        # tree, overwrite existing files, copy metadata (copy2), follow symlinks.
+        shutil.copytree(EnginePath + "\\Engine\\Extras\\Redist", directory + "\\Engine\\Extras\\Redist", dirs_exist_ok=True)
 
 sys.exit(ReturnCode)
