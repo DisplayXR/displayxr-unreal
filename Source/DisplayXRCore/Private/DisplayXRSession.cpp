@@ -171,35 +171,47 @@ void FDisplayXRSession::Shutdown()
 // OpenXR loader
 // =============================================================================
 
-bool FDisplayXRSession::LoadOpenXRLoader()
+namespace
 {
-#if PLATFORM_WINDOWS
-	// --- Strategy: load the DisplayXR runtime DLL directly via negotiate ---
-	// This gives us the in-process compositor (weaving happens in our process)
-	// rather than going through openxr_loader.dll → DisplayXRClient.dll (IPC).
-
-	// Negotiate function types
-	struct XrNegotiateLoaderInfo
+	// Loader <-> runtime negotiation structs, declared once for every platform.
+	// Layout mirrors openxr/openxr_loader_negotiation.h (XrNegotiateLoaderInfo,
+	// XrNegotiateRuntimeRequest), which the plugin does not include. The
+	// *ApiVersion fields are XrVersion (uint64_t): declaring them 32-bit
+	// shrinks both structs from 40 to 32 bytes on 64-bit targets and the
+	// runtime then reads getInstanceProcAddr / maxApiVersion at the wrong
+	// offsets (#76). structType is XrLoaderInterfaceStructs (an enum) upstream;
+	// uint32_t has the same size and alignment.
+	struct FDxrNegotiateLoaderInfo
 	{
 		uint32_t structType;       // XR_LOADER_INTERFACE_STRUCT_LOADER_INFO = 1
 		uint32_t structVersion;
 		size_t structSize;
 		uint32_t minInterfaceVersion;
 		uint32_t maxInterfaceVersion;
-		uint64_t minApiVersion;    // XrVersion = uint64_t
-		uint64_t maxApiVersion;
+		XrVersion minApiVersion;
+		XrVersion maxApiVersion;
 	};
-	struct XrNegotiateRuntimeRequest
+	struct FDxrNegotiateRuntimeRequest
 	{
 		uint32_t structType;       // XR_LOADER_INTERFACE_STRUCT_RUNTIME_REQUEST = 3
 		uint32_t structVersion;
 		size_t structSize;
 		uint32_t runtimeInterfaceVersion;
-		uint64_t runtimeApiVersion;
+		XrVersion runtimeApiVersion;
 		PFN_xrGetInstanceProcAddr getInstanceProcAddr;
 	};
-	typedef XrResult(XRAPI_PTR* PFN_xrNegotiateLoaderRuntimeInterface)(
-		const XrNegotiateLoaderInfo* loaderInfo, XrNegotiateRuntimeRequest* runtimeRequest);
+	static_assert(sizeof(XrVersion) == sizeof(uint64_t), "XrVersion must be 64-bit");
+
+	typedef XrResult(XRAPI_PTR* PFN_DxrNegotiateLoaderRuntimeInterface)(
+		const FDxrNegotiateLoaderInfo* loaderInfo, FDxrNegotiateRuntimeRequest* runtimeRequest);
+}
+
+bool FDisplayXRSession::LoadOpenXRLoader()
+{
+#if PLATFORM_WINDOWS
+	// --- Strategy: load the DisplayXR runtime DLL directly via negotiate ---
+	// This gives us the in-process compositor (weaving happens in our process)
+	// rather than going through openxr_loader.dll → DisplayXRClient.dll (IPC).
 
 	// Step 1: Find runtime DLL path from manifest JSON
 	FString RuntimeDllPath;
@@ -295,12 +307,12 @@ bool FDisplayXRSession::LoadOpenXRLoader()
 		{
 			UE_LOG(LogDisplayXRSession, Log, TEXT("DisplayXR Session: Loaded runtime DLL: %s"), *RuntimeDllPath);
 
-			auto NegotiateFunc = reinterpret_cast<PFN_xrNegotiateLoaderRuntimeInterface>(
+			auto NegotiateFunc = reinterpret_cast<PFN_DxrNegotiateLoaderRuntimeInterface>(
 				reinterpret_cast<void*>(GetProcAddress((HMODULE)LoaderHandle, "xrNegotiateLoaderRuntimeInterface")));
 
 			if (NegotiateFunc)
 			{
-				XrNegotiateLoaderInfo LoaderInfo = {};
+				FDxrNegotiateLoaderInfo LoaderInfo = {};
 				LoaderInfo.structType = 1; // XR_LOADER_INTERFACE_STRUCT_LOADER_INFO
 				LoaderInfo.structVersion = 1;
 				LoaderInfo.structSize = sizeof(LoaderInfo);
@@ -309,7 +321,7 @@ bool FDisplayXRSession::LoadOpenXRLoader()
 				LoaderInfo.minApiVersion = XR_MAKE_VERSION(1, 0, 0);
 				LoaderInfo.maxApiVersion = XR_MAKE_VERSION(1, 1, 0);
 
-				XrNegotiateRuntimeRequest RuntimeRequest = {};
+				FDxrNegotiateRuntimeRequest RuntimeRequest = {};
 				RuntimeRequest.structType = 3; // XR_LOADER_INTERFACE_STRUCT_RUNTIME_REQUEST
 				RuntimeRequest.structVersion = 1;
 				RuntimeRequest.structSize = sizeof(RuntimeRequest);
@@ -408,8 +420,7 @@ bool FDisplayXRSession::LoadOpenXRLoader()
 	if (!xrGetInstanceProcAddrFunc)
 	{
 		// Try the negotiate function for runtime-as-loader pattern
-		typedef XrResult (*PFN_xrNegotiateLoaderRuntimeInterface)(const void*, void*);
-		auto negotiateFunc = (PFN_xrNegotiateLoaderRuntimeInterface)dlsym(
+		auto negotiateFunc = (PFN_DxrNegotiateLoaderRuntimeInterface)dlsym(
 			LoaderHandle, "xrNegotiateLoaderRuntimeInterface");
 
 		if (!negotiateFunc)
@@ -419,27 +430,7 @@ bool FDisplayXRSession::LoadOpenXRLoader()
 			return false;
 		}
 
-		struct XrNegotiateLoaderInfo
-		{
-			uint32_t structType;
-			uint32_t structVersion;
-			size_t structSize;
-			uint32_t minInterfaceVersion;
-			uint32_t maxInterfaceVersion;
-			uint32_t minApiVersion;
-			uint32_t maxApiVersion;
-		};
-		struct XrNegotiateRuntimeRequest
-		{
-			uint32_t structType;
-			uint32_t structVersion;
-			size_t structSize;
-			uint32_t runtimeInterfaceVersion;
-			uint32_t runtimeApiVersion;
-			PFN_xrGetInstanceProcAddr getInstanceProcAddr;
-		};
-
-		XrNegotiateLoaderInfo loaderInfo = {};
+		FDxrNegotiateLoaderInfo loaderInfo = {};
 		loaderInfo.structType = 1;
 		loaderInfo.structVersion = 1;
 		loaderInfo.structSize = sizeof(loaderInfo);
@@ -448,7 +439,7 @@ bool FDisplayXRSession::LoadOpenXRLoader()
 		loaderInfo.minApiVersion = XR_MAKE_VERSION(1, 0, 0);
 		loaderInfo.maxApiVersion = XR_MAKE_VERSION(1, 1, 0);
 
-		XrNegotiateRuntimeRequest runtimeRequest = {};
+		FDxrNegotiateRuntimeRequest runtimeRequest = {};
 		runtimeRequest.structType = 3;
 		runtimeRequest.structVersion = 1;
 		runtimeRequest.structSize = sizeof(runtimeRequest);
