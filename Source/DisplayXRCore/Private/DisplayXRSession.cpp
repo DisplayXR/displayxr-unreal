@@ -1310,7 +1310,8 @@ void FDisplayXRSession::LocateViews()
 		RigRawReadIndex.Store(WriteIdx);
 	}
 
-	// Store eye positions (in OpenXR display-local space, meters)
+	// Store the located view poses (LOCAL locate space; with the rig chained,
+	// render-ready and rig-relative — see GetEyePositions in the header)
 	const bool bTracked = (ViewState.viewStateFlags & XR_VIEW_STATE_POSITION_TRACKED_BIT) != 0;
 	{
 		const int32 WriteIdx = 1 - EyeDataReadIndex.Load();
