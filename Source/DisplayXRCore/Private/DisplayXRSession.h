@@ -212,7 +212,14 @@ public:
 	/** Get current view config (tile layout, driven by display mode). */
 	FDisplayXRViewConfig GetViewConfig() const;
 
-	/** Get latest eye positions in OpenXR display-local space (meters). */
+	/** Latest per-view positions from xrLocateViews: XrView.pose.position of
+	 *  views 0/1 in the LOCAL locate space. With XR_DXR_view_rig chained (an
+	 *  identity rig pose) these are render-ready view positions relative to
+	 *  the rig origin (display plane centre / camera), rig factors applied,
+	 *  in OpenXR axes; metres for the camera rig (metersToVirtual = 1), metres
+	 *  x VirtualDisplayHeight / canvas height for the display rig. Not the raw
+	 *  tracked eyes (those are XrViewDisplayRawDXR::rawEyes). Zero before the
+	 *  first locate. bOutTracked = XR_VIEW_STATE_POSITION_TRACKED_BIT. */
 	void GetEyePositions(FVector& OutLeft, FVector& OutRight, bool& bOutTracked) const;
 
 	/** Get the runtime-located per-view pose (position + orientation) and the

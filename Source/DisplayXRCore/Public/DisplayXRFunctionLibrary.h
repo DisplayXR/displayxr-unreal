@@ -21,7 +21,17 @@ public:
 	UFUNCTION(BlueprintPure, Category = "DisplayXR")
 	static FDisplayXRDisplayInfo GetDisplayInfo();
 
-	/** Get the current user/eye position (center of both eyes) in display space, in meters. */
+	/**
+	 * Midpoint of the two render-ready view positions the runtime located for
+	 * the current frame (xrLocateViews with XR_DXR_view_rig). Relative to the
+	 * active rig's origin (display rig: centre of the virtual display plane, i.e. the canvas;
+	 * camera rig: the camera), in OpenXR axes (+X right, +Y up, +Z toward the
+	 * viewer), not UE axes or centimetres. Metres for the camera rig; for the
+	 * display rig, metres scaled by VirtualDisplayHeight / physical canvas
+	 * height. The rig's IPD / parallax / perspective factors are already
+	 * applied, so this is not the raw tracked head position. Zero until the
+	 * first frame is located.
+	 */
 	UFUNCTION(BlueprintPure, Category = "DisplayXR")
 	static FVector GetUserPosition();
 

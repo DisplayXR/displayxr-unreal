@@ -1420,7 +1420,8 @@ void FDisplayXRDevice::ComputeViews()
 	// GetStereoProjectionMatrix index into this array by UE's view index).
 	const int32 ViewCount = DisplayXRMaxSubmittedViews;
 
-	// Read raw eye positions from session (OpenXR display-local, meters)
+	// Read the located view positions from the session (render-ready, rig-
+	// relative, OpenXR axes; not raw eyes — see FDisplayXRSession::GetEyePositions)
 	FVector LeftEyeRaw, RightEyeRaw;
 	bool bTracked = false;
 	Session->GetEyePositions(LeftEyeRaw, RightEyeRaw, bTracked);
