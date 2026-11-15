@@ -334,7 +334,10 @@ void FDisplayXRCompositor::CompositorLoop()
 		// TILE geometry below (Cols/TW/TH) still comes from the mode, so on a
 		// >2-tile mode we submit tiles 0 and 1 of that mode's grid and the
 		// runtime's under-submit contract composites the frame.
-		const int32 NV = VC.GetSubmittedViewCount();
+		// GetSubmittedViewCount() is already clamped to
+		// [1, DisplayXRMaxSubmittedViews]; clamp again here because the stack
+		// array PV below is sized by that bound.
+		const int32 NV = FMath::Min<int32>(VC.GetSubmittedViewCount(), DisplayXRMaxSubmittedViews);
 		// Window-relative tile dims (both paths) — the SAME helper the copy uses,
 		// so UE's render rect, the copy source, and this imageRect all agree and
 		// the content aspect tracks the window (correct under resize).
@@ -370,8 +373,8 @@ void FDisplayXRCompositor::CompositorLoop()
 		FVector LE, RE; bool bT;
 		Session->GetEyePositions(LE, RE, bT);
 
-		TArray<XrCompositionLayerProjectionView> PV;
-		PV.SetNum(NV);
+		// Fixed-size stack array, no per-frame heap allocation (#78).
+		XrCompositionLayerProjectionView PV[DisplayXRMaxSubmittedViews] = {};
 		for (int32 i = 0; i < NV; i++) {
 			PV[i] = {}; PV[i].type = XR_TYPE_COMPOSITION_LAYER_PROJECTION_VIEW;
 			// Submit the runtime's located pose + off-axis (Kooima) fov from
@@ -403,7 +406,7 @@ void FDisplayXRCompositor::CompositorLoop()
 		XrCompositionLayerProjection PL = {XR_TYPE_COMPOSITION_LAYER_PROJECTION};
 		PL.space = Session->GetXrSpace();
 		PL.viewCount = (uint32_t)NV;
-		PL.views = PV.GetData();
+		PL.views = PV;
 
 		// Texture-mode preview (#38): bind this layer to zone 1 — the same
 		// zone the game thread chains on xrLocateViews. A frame becomes a
