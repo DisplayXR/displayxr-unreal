@@ -385,6 +385,14 @@ private:
 	 *  mapped into the rig frame of the latest view locate. */
 	void SyncControllers();
 
+	/** Before xrDestroySession of a RUNNING session: xrEndSession it, but only
+	 *  in STOPPING (the one state OpenXR allows it in). From any other state it
+	 *  calls xrRequestExitSession and drains the already-queued events once —
+	 *  no waiting — so a runtime that posts STOPPING synchronously still gets
+	 *  the clean end; otherwise the session is destroyed running, as before.
+	 *  Clears bSessionRunning. No-op when no session is running. */
+	void EndRunningSessionBeforeDestroy();
+
 	// --- OpenXR state ---
 	bool bActive = false;
 	void* LoaderHandle = nullptr;
