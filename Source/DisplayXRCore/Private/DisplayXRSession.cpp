@@ -486,6 +486,7 @@ void FDisplayXRSession::UnloadOpenXRLoader()
 		LoaderHandle = nullptr;
 	}
 	xrGetInstanceProcAddrFunc = nullptr;
+	xrLocateViewsFunc = nullptr;
 }
 
 // =============================================================================
@@ -953,12 +954,16 @@ void FDisplayXRSession::LocateViews()
 		return;
 	}
 
-	PFN_xrLocateViews xrLocateViewsFunc = nullptr;
-	xrGetInstanceProcAddrFunc(Instance, "xrLocateViews",
-		(PFN_xrVoidFunction*)&xrLocateViewsFunc);
+	// Resolve once and cache (instance-level function, valid for the instance's
+	// lifetime) instead of a by-name lookup every frame (#78).
 	if (!xrLocateViewsFunc)
 	{
-		return;
+		xrGetInstanceProcAddrFunc(Instance, "xrLocateViews",
+			(PFN_xrVoidFunction*)&xrLocateViewsFunc);
+		if (!xrLocateViewsFunc)
+		{
+			return;
+		}
 	}
 
 	XrViewLocateInfo LocateInfo = {XR_TYPE_VIEW_LOCATE_INFO};

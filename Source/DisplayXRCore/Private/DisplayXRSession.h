@@ -418,6 +418,9 @@ private:
 	// Cached for the compositor-thread event pump (resolved lazily in PumpEvents).
 	PFN_xrPollEvent xrPollEventFunc = nullptr;
 	PFN_xrEndSession xrEndSessionFunc = nullptr;
+	// Cached for the per-frame LocateViews (game thread; resolved lazily on the
+	// first locate, cleared in UnloadOpenXRLoader with the resolver itself).
+	PFN_xrLocateViews xrLocateViewsFunc = nullptr;
 
 	// Display info (written once at init)
 	FDisplayXRDisplayInfo DisplayInfo;
