@@ -1375,9 +1375,35 @@ bool FDisplayXRSession::CaptureAtlas(const FString& PathPrefixUtf8, bool bProjec
 		: XR_ATLAS_CAPTURE_STAGE_POST_COMPOSE_DXR;
 	// Runtime appends "_atlas_<viewCount>_<cols>x<rows>.png" to pathPrefix
 	// (DisplayXR/displayxr-runtime#425). The field is a fixed in-struct char array
-	// (it crosses the IPC schema), so truncate to its capacity.
-	FCStringAnsi::Strncpy(Info.pathPrefix, TCHAR_TO_ANSI(*PathPrefixUtf8),
-		XR_ATLAS_CAPTURE_PATH_MAX_DXR);
+	// (it crosses the IPC schema), so truncate to its capacity. The runtime
+	// reads it as UTF-8: an ANSI conversion turned every non-ASCII character of
+	// the path (user name, project folder) into '?'. The converter is a named
+	// local so its buffer plainly outlives the copy.
+	const FTCHARToUTF8 PathUtf8(*PathPrefixUtf8);
+	FCStringAnsi::Strncpy(Info.pathPrefix, PathUtf8.Get(), XR_ATLAS_CAPTURE_PATH_MAX_DXR);
+	if (PathUtf8.Length() >= XR_ATLAS_CAPTURE_PATH_MAX_DXR)
+	{
+		// Truncated: never hand the runtime a split multi-byte sequence. Drop
+		// trailing continuation bytes and the lead byte they belonged to.
+		const int32 Len = FCStringAnsi::Strlen(Info.pathPrefix);
+		int32 Cut = Len;
+		while (Cut > 0 && (((uint8)Info.pathPrefix[Cut - 1]) & 0xC0) == 0x80)
+		{
+			--Cut;
+		}
+		if (Cut > 0 && ((uint8)Info.pathPrefix[Cut - 1]) >= 0xC0)
+		{
+			const uint8 Lead = (uint8)Info.pathPrefix[Cut - 1];
+			const int32 SeqLen = Lead >= 0xF0 ? 4 : (Lead >= 0xE0 ? 3 : 2);
+			if (Len - (Cut - 1) < SeqLen)
+			{
+				Info.pathPrefix[Cut - 1] = '\0';
+			}
+		}
+		UE_LOG(LogDisplayXRSession, Warning,
+			TEXT("DisplayXR Session: capture path prefix longer than %d bytes (UTF-8) — truncated"),
+			XR_ATLAS_CAPTURE_PATH_MAX_DXR - 1);
+	}
 
 	const XrResult Result = xrCaptureAtlasFunc(Session, &Info, nullptr);
 	if (!XR_SUCCEEDED(Result))
