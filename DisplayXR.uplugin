@@ -17,6 +17,12 @@
 			"PlatformAllowList": [ "Win64", "Mac", "Android" ]
 		},
 		{
+			"Name": "DisplayXRInput",
+			"Type": "Runtime",
+			"LoadingPhase": "Default",
+			"PlatformAllowList": [ "Win64", "Mac", "Android" ]
+		},
+		{
 			"Name": "DisplayXRMaterials",
 			"Type": "Runtime",
 			"LoadingPhase": "Default"

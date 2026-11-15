@@ -11,6 +11,8 @@
 
 #include "Native/displayxr_extensions.h"
 
+class FDisplayXRControllers;
+
 /**
  * Ceiling on the views this plug-in renders and SUBMITS per frame.
  *
@@ -291,6 +293,15 @@ public:
 	/** Latest raw rig channel (display plane pose in LOCAL, canvas size). */
 	FDisplayXRRigRaw GetRigRaw() const;
 
+	// --- Controllers / styluses (OpenXR actions, any input provider) ---
+
+	/** The action set behind FDisplayXRControllerAPI. Never null between
+	 *  construction and destruction; inert until an instance + session exist. */
+	FDisplayXRControllers* GetControllers() const { return Controllers.Get(); }
+
+	/** True when the instance enabled XR_LOGITECH_mx_ink_stylus_interaction. */
+	bool HasStylusInteraction() const { return bHasStylusInteraction; }
+
 	// --- Accessors for compositor integration ---
 
 	XrSession GetXrSession() const { return Session; }
@@ -369,6 +380,10 @@ private:
 	/** Destroy the trackers. Must run BEFORE xrDestroySession (they are
 	 *  session children) and resets the published samples to inactive. */
 	void DestroyHandTrackers();
+	/** Per-frame, right after LocateHandJoints (same thread, same display
+	 *  time, same base space): xrSyncActions and locate the controller poses,
+	 *  mapped into the rig frame of the latest view locate. */
+	void SyncControllers();
 
 	// --- OpenXR state ---
 	bool bActive = false;
@@ -484,6 +499,11 @@ private:
 	};
 	FHandsSnapshot HandsBuffer[2];
 	TAtomic<int32> HandsReadIndex{0};
+
+	// --- Controllers (XR actions) ---
+	// Probed before xrCreateInstance; cleared by the core-only retry.
+	bool bHasStylusInteraction = false;
+	TUniquePtr<FDisplayXRControllers> Controllers;
 
 	// Raw rig channel from the latest successful xrLocateViews.
 	FDisplayXRRigRaw RigRawBuffer[2];

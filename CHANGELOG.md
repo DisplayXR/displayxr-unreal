@@ -4,6 +4,11 @@ All notable changes to the DisplayXR Unreal plugin are documented here.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+- **Controllers and styluses from any DisplayXR input provider reach Unreal apps.** The core module now creates an OpenXR action set, suggests bindings for `/interaction_profiles/khr/simple_controller` and, when the runtime advertises `XR_LOGITECH_mx_ink_stylus_interaction` (probed before `xrCreateInstance`, enabled only then), the MX Ink stylus profile; attaches it to every session it owns, and syncs it each frame on the game thread right after the view and hand-joint locates. Grip, aim and tip poses are located in the view locate's space and mapped into the rig frame the views are in (the rig's gain about the plane the runtime puts a display-relative device on), so a pen touching the glass renders at zero parallax. A new `DisplayXRInput` module surfaces it as Unreal keys (`DisplayXR_{Left,Right}_{Select,Menu,System,Tip_Force,Middle_Force,Front_Click,Front_DoubleTap,Back_Click,Back_DoubleTap,Docked}`, usable in Enhanced Input), `IMotionController` sources (`Left`/`Right`, `LeftGrip`/`RightGrip`, `LeftAim`/`RightAim`, `LeftTip`/`RightTip`) and haptics through `xrApplyHapticFeedback`. `DisplayXR.Controllers.RigMapping 0` hands over the raw LOCAL pose instead. Docs: `Docs/DisplayXR/ControllerInput.md`. The display path is unchanged.
+
 ## [0.11.0] - 2026-11-11
 
 The v0.10.0 tag was never published as a GitHub Release; this is the first published release with hand tracking, so it carries everything in the 0.10.0 section below as well.
