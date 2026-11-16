@@ -25,6 +25,8 @@
 
 #include <openxr/openxr.h>
 
+#include <cmath>
+
 namespace dxr_pose
 {
 
@@ -137,6 +139,87 @@ inline HandRigMapping HandRigMappingFor(bool jointsInRigFrame, bool cameraCentri
 		return HandRigMapping{1.0f, -nominalZ};
 	}
 	return HandRigMapping{canvasHeight > 0.0f ? virtualDisplayHeight / canvasHeight : 1.0f, 0.0f};
+}
+
+// ---------------------------------------------------------------------------
+// Controller / stylus action-space poses and the view rig.
+// ---------------------------------------------------------------------------
+
+/**
+ * Mapping from an action-space pose located in the view locate's space
+ * (LOCAL) into the rig frame the views are in.
+ *
+ * The runtime places a display-relative (RIG_LOCAL) controller on the plane
+ * the session's chained rig puts the physical display at, but UNSCALED: the
+ * pose is `plane o (s L)` in metres, with `s L` the canvas point (runtime spec
+ * input-provider-discovery.md section 4b.4, XR_DXR_view_rig section 2). The
+ * views, and spec-4/5 rig-scoped hand joints, are in the rig frame, where that
+ * same canvas point is scaled by the rig's gain about the plane. So a pen
+ * touching the glass lands on the zero-parallax plane, and a pen 1 cm in front
+ * of it lands `gain` cm in front, exactly where its rendered tip appears:
+ *
+ *     p_rig = plane o (scale * (inv(plane) o p_located))
+ *
+ * Orientation is unchanged (the scale is uniform about the plane).
+ *
+ * Opt-in only (CVar DisplayXR.Controllers.RigMapping 1). A runtime that
+ * registers a stylus to the glass (an XRT_TRACKING_TYPE_RIG_LOCAL_PHYSICAL
+ * origin, input-provider-discovery.md section 4b.4a) already returns its
+ * action spaces in the rig frame, glass scale included; applying this on top
+ * would scale the pen twice. By default the plug-in uses located poses as-is.
+ */
+struct ControllerRigMapping
+{
+	XrPosef plane; //!< the rig's image of the physical display plane, in the locate space
+	float scale;   //!< rig units per located metre about that plane
+};
+
+/** No rig chained (or the mapping disabled): located poses are used as-is. */
+inline ControllerRigMapping ControllerRigMappingIdentity()
+{
+	return ControllerRigMapping{PoseIdentity(), 1.0f};
+}
+
+/**
+ * Display rig: the plane is the rig pose (the rig frame is canvas-centred, so
+ * the canvas centre maps to `pose`), the gain is the one the hand joints get:
+ * perspectiveFactor * virtualDisplayHeight / canvasHeight.
+ */
+inline ControllerRigMapping ControllerRigMappingForDisplayRig(const XrPosef& rigPose, float perspectiveFactor,
+                                                              float virtualDisplayHeight, float canvasHeight)
+{
+	const float pf = perspectiveFactor > 0.0f ? perspectiveFactor : 1.0f;
+	const float scale =
+	    (canvasHeight > 0.0f && virtualDisplayHeight > 0.0f) ? pf * virtualDisplayHeight / canvasHeight : 1.0f;
+	return ControllerRigMapping{rigPose, scale};
+}
+
+/**
+ * Camera rig (XR_DXR_view_rig spec 5): the physical glass sits on the
+ * convergence plane, `1 / convergenceDiopters` in front of the camera (-Z),
+ * and the gain is the camera's virtual screen height at that plane over the
+ * canvas height: V = 2 tan(verticalFov / 2) / convergenceDiopters. At infinite
+ * convergence (0 diopters) there is no glass plane and the poses stay metric
+ * about the rig pose.
+ */
+inline ControllerRigMapping ControllerRigMappingForCameraRig(const XrPosef& rigPose, float convergenceDiopters,
+                                                             float verticalFov, float canvasHeight)
+{
+	if (convergenceDiopters <= 0.0f || verticalFov <= 0.0f || canvasHeight <= 0.0f)
+	{
+		return ControllerRigMapping{rigPose, 1.0f};
+	}
+	const XrPosef glassInRig{{0.0f, 0.0f, 0.0f, 1.0f}, {0.0f, 0.0f, -1.0f / convergenceDiopters}};
+	const float v = 2.0f * static_cast<float>(std::tan(verticalFov * 0.5f)) / convergenceDiopters;
+	return ControllerRigMapping{PoseMul(rigPose, glassInRig), v / canvasHeight};
+}
+
+/** Apply a ControllerRigMapping to a located pose. */
+inline XrPosef MapControllerPoseToRig(const ControllerRigMapping& m, const XrPosef& located)
+{
+	XrPosef rel = PoseInFrame(m.plane, located);
+	rel.position = XrVector3f{rel.position.x * m.scale, rel.position.y * m.scale, rel.position.z * m.scale};
+	return PoseMul(m.plane, rel);
 }
 
 // ---------------------------------------------------------------------------

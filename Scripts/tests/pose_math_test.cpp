@@ -222,6 +222,66 @@ int main()
 	Check(RuntimeLocatesRigScopedHandJoints(4), "view_rig spec 4: rig-scoped joints");
 	Check(RuntimeLocatesRigScopedHandJoints(5), "view_rig spec 5: rig-scoped joints");
 
+	// 9. Controller / stylus action-space poses into the rig frame.
+	{
+		const XrPosef located{AxisAngle(0.3f, 1.0f, -0.2f, 0.7f), {0.031f, -0.012f, 0.045f}};
+
+		// Identity: untouched.
+		const XrPosef same = MapControllerPoseToRig(ControllerRigMappingIdentity(), located);
+		Check(Near(same.position.x, located.position.x) && Near(same.position.y, located.position.y) &&
+		          Near(same.position.z, located.position.z),
+		      "identity controller mapping keeps the located pose");
+
+		// Display rig at the identity pose: uniform gain about the origin,
+		// orientation unchanged.
+		const float vdh = 2.0f, canvasH = 0.1f, pf = 0.5f;
+		const ControllerRigMapping disp = ControllerRigMappingForDisplayRig(PoseIdentity(), pf, vdh, canvasH);
+		Check(Near(disp.scale, pf * vdh / canvasH, 1e-4), "display rig gain = perspectiveFactor * vdh / canvasH");
+		const XrPosef d = MapControllerPoseToRig(disp, located);
+		Check(Near(d.position.x, disp.scale * located.position.x, 1e-4) &&
+		          Near(d.position.y, disp.scale * located.position.y, 1e-4) &&
+		          Near(d.position.z, disp.scale * located.position.z, 1e-4),
+		      "display rig: position scaled about the plane");
+		Check(Near(d.orientation.x, located.orientation.x) && Near(d.orientation.w, located.orientation.w),
+		      "display rig: orientation unchanged");
+
+		// A tip touching the glass (z = 0) stays on the zero-parallax plane.
+		const XrPosef onGlass{{0, 0, 0, 1}, {0.02f, 0.01f, 0.0f}};
+		Check(Near(MapControllerPoseToRig(disp, onGlass).position.z, 0.0), "display rig: tip on the glass stays at z = 0");
+
+		// perspectiveFactor 1 on a centred canvas agrees with the hand fallback (m2v).
+		const ControllerRigMapping disp1 = ControllerRigMappingForDisplayRig(PoseIdentity(), 1.0f, vdh, canvasH);
+		const HandRigMapping legacy = HandRigMappingFor(false, false, vdh, canvasH, 0.6f);
+		Check(Near(disp1.scale, legacy.scale, 1e-4), "display rig gain matches the hand-joint m2v at perspectiveFactor 1");
+
+		// Degenerate inputs: no gain.
+		Check(Near(ControllerRigMappingForDisplayRig(PoseIdentity(), 1.0f, vdh, 0.0f).scale, 1.0),
+		      "display rig with unknown canvas: unscaled");
+
+		// Camera rig: the glass is on the convergence plane, gain = V / canvasH.
+		const float conv = 2.0f, vfov = 0.6283185307f;
+		const ControllerRigMapping cam = ControllerRigMappingForCameraRig(PoseIdentity(), conv, vfov, canvasH);
+		const double v = 2.0 * std::tan(vfov * 0.5) / conv;
+		Check(Near(cam.scale, v / canvasH, 1e-4), "camera rig gain = V / canvasH");
+		Check(Near(cam.plane.position.z, -1.0 / conv), "camera rig plane at -1 / convergenceDiopters");
+		const XrPosef glassPoint{{0, 0, 0, 1}, {0.0f, 0.0f, -1.0f / conv}};
+		const XrPosef g = MapControllerPoseToRig(cam, glassPoint);
+		Check(Near(g.position.z, -1.0 / conv) && Near(g.position.x, 0.0), "camera rig: a point on the glass stays on it");
+		const XrPosef inFront{{0, 0, 0, 1}, {0.0f, 0.0f, -1.0f / conv + 0.01f}};
+		Check(Near(MapControllerPoseToRig(cam, inFront).position.z, -1.0 / conv + 0.01 * cam.scale, 1e-4),
+		      "camera rig: 1 cm in front of the glass maps to gain cm in front of the convergence plane");
+		Check(Near(ControllerRigMappingForCameraRig(PoseIdentity(), 0.0f, vfov, canvasH).scale, 1.0),
+		      "camera rig at infinite convergence: metric");
+
+		// A posed rig: the mapping is about the rig's own plane.
+		const XrPosef rigPose{AxisAngle(0.0f, 1.0f, 0.0f, 0.5f), {0.1f, 0.2f, -0.3f}};
+		const ControllerRigMapping posed = ControllerRigMappingForDisplayRig(rigPose, 1.0f, vdh, canvasH);
+		const XrPosef atPlane = MapControllerPoseToRig(posed, rigPose);
+		Check(Near(atPlane.position.x, rigPose.position.x) && Near(atPlane.position.y, rigPose.position.y) &&
+		          Near(atPlane.position.z, rigPose.position.z),
+		      "posed rig: the plane origin is a fixed point");
+	}
+
 	if (g_failures == 0)
 	{
 		std::printf("pose_math_test: all checks passed\n");

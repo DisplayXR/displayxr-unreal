@@ -15,6 +15,7 @@ One-page reference for the DisplayXR Unreal plugin. Covers the class hierarchy, 
 | Module | Purpose | Load phase |
 |---|---|---|
 | `DisplayXRCore` | Session, device, compositor, rig components, Blueprint API, Kooima C libs | `PostConfigInit` |
+| `DisplayXRInput` | Controllers / styluses from any input provider as Unreal input: `FDisplayXRInputDevice` (`IInputDevice`, `IMotionController` "DisplayXR", `IHapticDevice`), `FDisplayXRKeys`, Blueprint queries. See [ControllerInput.md](./ControllerInput.md) | `Default` |
 | `DisplayXRMaterials` | Material expression nodes (`StereoIndex`, `StereoSelect`, `SideBySideCoords`, `TopBottomCoords`) | `Default` |
 | `DisplayXREditor` | In-tab weaved PIE preview, component visualization proxies, rig editor UI | `PostEngineInit` (editor only) |
 
@@ -29,6 +30,9 @@ FDisplayXRCoreModule          (IHeadMountedDisplayModule)
   │     ├── Per-frame Tick(): xrLocateViews (+ raw rig channel), stores eyes;
   │     │                     xrLocateHandJointsEXT x2 (rig chained, spec 4), stores rig-frame joints
   │     ├── Owns the left/right XrHandTrackerEXT (XR_EXT_hand_tracking)
+  │     ├── Owns FDisplayXRControllers (the OpenXR action set: per instance
+  │     │     bindings, per session attach + action spaces; Tick() syncs it
+  │     │     after the hand locate → FDisplayXRControllerAPI snapshot)
   │     ├── Double-buffered FDisplayXRTunables + FDisplayXRViewConfig
   │     └── Owns FDisplayXRCompositor (on Windows/D3D12 path)
   │           ├── Dedicated FRunnableThread (xrWaitFrame/Begin/End loop)

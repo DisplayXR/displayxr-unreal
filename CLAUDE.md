@@ -22,11 +22,12 @@ Output goes to `Packages/DisplayXR_<version>/`.
 
 ## Architecture
 
-### Three Modules
+### Four Modules
 
 1. **DisplayXRCore** (Runtime, `Win64|Mac|Android`, `PostConfigInit`) — OpenXR integration, stereo device, camera components, Blueprint function library, hand tracking (`FDisplayXRHandTracking`, UE's `IHandTracker` over `XR_EXT_hand_tracking` — see `Docs/DisplayXR/HandTracking.md`). No view math of its own (see §Shared native code).
-2. **DisplayXRMaterials** (Runtime, all platforms, `Default`) — Custom material expression nodes (`StereoIndex`, `StereoSelect`, `SideBySideCoords`, `TopBottomCoords`).
-3. **DisplayXREditor** (Editor, `Win64|Mac`, `PostEngineInit`) — In-tab weaved PIE preview (`FDisplayXRPIEPreview`, Windows only), component proxies.
+2. **DisplayXRInput** (Runtime, `Win64|Mac|Android`, `Default`) — Controllers / styluses from any DisplayXR input provider as Unreal input (`IInputDevice` + `IMotionController` + `IHapticDevice`, `FDisplayXRKeys`). The OpenXR action set itself lives in DisplayXRCore (`FDisplayXRControllers`, public `FDisplayXRControllerAPI`), because the session owns it. See `Docs/DisplayXR/ControllerInput.md`.
+3. **DisplayXRMaterials** (Runtime, all platforms, `Default`) — Custom material expression nodes (`StereoIndex`, `StereoSelect`, `SideBySideCoords`, `TopBottomCoords`).
+4. **DisplayXREditor** (Editor, `Win64|Mac`, `PostEngineInit`) — In-tab weaved PIE preview (`FDisplayXRPIEPreview`, Windows only), component proxies.
 
 ### OpenXR Integration
 

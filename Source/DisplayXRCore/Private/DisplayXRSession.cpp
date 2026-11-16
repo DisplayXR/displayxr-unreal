@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #include "DisplayXRSession.h"
+#include "DisplayXRControllers.h"
 
 #if PLATFORM_WINDOWS
 #include "Windows/AllowWindowsPlatformTypes.h"
@@ -18,10 +19,21 @@
 #include "Serialization/JsonSerializer.h"
 #include "Misc/FileHelper.h"
 #include "Misc/Paths.h"
+#include "HAL/IConsoleManager.h"
 
 DEFINE_LOG_CATEGORY_STATIC(LogDisplayXRSession, Log, All);
 
+// Controller / stylus pose mapping - see Docs/DisplayXR/ControllerInput.md.
+static TAutoConsoleVariable<int32> CVarDisplayXRControllersRigMapping(
+	TEXT("DisplayXR.Controllers.RigMapping"),
+	0,
+	TEXT("How controller and stylus poses are mapped before they reach Unreal.\n")
+	TEXT("0 (default): as located. The runtime owns the mapping: a glass-registered device (a stylus on a RIG_LOCAL_PHYSICAL origin) comes back already in the rig frame the views are in, and a display-relative controller (RIG_LOCAL) on the rig's display plane, metric.\n")
+	TEXT("1: also scale the located pose about the rig's display plane by the rig's gain (the hand-joint mapping). Only for a display-relative device on a runtime that does not register it to the glass; on one that does, this scales a stylus twice."),
+	ECVF_Default);
+
 FDisplayXRSession::FDisplayXRSession()
+	: Controllers(MakeUnique<FDisplayXRControllers>())
 {
 	FMemory::Memzero(TunablesBuffer, sizeof(TunablesBuffer));
 	TunablesBuffer[0].IpdFactor = 1.0f;
@@ -122,8 +134,9 @@ void FDisplayXRSession::Shutdown()
 	// dereferences a freed handle inside the runtime → EXCEPTION_ACCESS_VIOLATION
 	// on close (DisplayXRClient frame, DisplayXRSession.cpp:123). Space → session
 	// → instance is the correct teardown order.
-	// Hand trackers are session children too: they go first.
+	// Hand trackers and the action spaces are session children too: they go first.
 	DestroyHandTrackers();
+	Controllers->OnSessionDestroying();
 
 	if (ViewSpace != XR_NULL_HANDLE)
 	{
@@ -151,6 +164,9 @@ void FDisplayXRSession::Shutdown()
 
 	if (Instance != XR_NULL_HANDLE)
 	{
+		// The action set is an instance child.
+		Controllers->OnInstanceDestroying();
+
 		PFN_xrDestroyInstance xrDestroyInstanceFunc = nullptr;
 		xrGetInstanceProcAddrFunc(Instance, "xrDestroyInstance",
 			(PFN_xrVoidFunction*)&xrDestroyInstanceFunc);
@@ -634,6 +650,20 @@ bool FDisplayXRSession::CreateInstance()
 		bHasHandTracking ? TEXT("AVAILABLE (IHandTracker will be served)")
 		                 : TEXT("ABSENT — no hand tracking"));
 
+	// XR_LOGITECH_mx_ink_stylus_interaction: the Khronos interaction profile a
+	// stylus input provider is served under. Same rules: probe, then request.
+	// Without it the action set still binds khr/simple_controller, which every
+	// controller profile can fall back to.
+	bHasStylusInteraction = IsInstanceExtensionSupported(DISPLAYXR_MX_INK_STYLUS_INTERACTION_EXTENSION_NAME);
+	if (bHasStylusInteraction)
+	{
+		Extensions.Add(DISPLAYXR_MX_INK_STYLUS_INTERACTION_EXTENSION_NAME);
+	}
+	UE_LOG(LogDisplayXRSession, Log, TEXT("DisplayXR Session: %s: %s"),
+		TEXT(DISPLAYXR_MX_INK_STYLUS_INTERACTION_EXTENSION_NAME),
+		bHasStylusInteraction ? TEXT("AVAILABLE (stylus interaction profile will be bound)")
+		                      : TEXT("ABSENT - controllers bound through khr/simple_controller only"));
+
 	XrInstanceCreateInfo CreateInfo = {XR_TYPE_INSTANCE_CREATE_INFO};
 	FCStringAnsi::Strncpy(CreateInfo.applicationInfo.applicationName, "DisplayXR Unreal Plugin", XR_MAX_APPLICATION_NAME_SIZE);
 	CreateInfo.applicationInfo.applicationVersion = 1;
@@ -664,6 +694,7 @@ bool FDisplayXRSession::CreateInstance()
 		ViewRigExtensionVersion = 0;
 		bHasDisplayZones = false;
 		bHasHandTracking = false;
+		bHasStylusInteraction = false;
 		CreateInfo.enabledExtensionCount = (uint32_t)Extensions.Num();
 		CreateInfo.enabledExtensionNames = Extensions.GetData();
 
@@ -697,6 +728,10 @@ bool FDisplayXRSession::CreateInstance()
 	}
 
 	UE_LOG(LogDisplayXRSession, Log, TEXT("DisplayXR Session: Instance created, SystemId=%llu"), (unsigned long long)SystemId);
+
+	// Actions and suggested bindings are per instance and must exist before the
+	// first xrAttachSessionActionSets.
+	Controllers->OnInstanceCreated(Instance, xrGetInstanceProcAddrFunc, bHasStylusInteraction);
 	return true;
 }
 
@@ -892,6 +927,7 @@ bool FDisplayXRSession::CreateSession()
 	QueryRenderingModes();
 
 	CreateHandTrackers();
+	Controllers->OnSessionCreated(Session);
 
 	UE_LOG(LogDisplayXRSession, Log, TEXT("DisplayXR Session: Session created"));
 	return true;
@@ -926,6 +962,7 @@ void FDisplayXRSession::Tick()
 		}
 		LocateViews();
 		LocateHandJoints();
+		SyncControllers();
 		if (bFirstLocate)
 		{
 			UE_LOG(LogDisplayXRSession, Log, TEXT("DisplayXR Session: First LocateViews returned"));
@@ -1390,8 +1427,9 @@ bool FDisplayXRSession::CreateSessionWithGraphics(void* D3DDevice, void* Command
 			bSessionRunning.Store(false);
 		}
 
-		// Hand trackers are children of the session being torn down.
+		// Hand trackers and action spaces are children of the session being torn down.
 		DestroyHandTrackers();
+		Controllers->OnSessionDestroying();
 
 		if (ViewSpace != XR_NULL_HANDLE)
 		{
@@ -1531,6 +1569,7 @@ bool FDisplayXRSession::CreateSessionWithGraphics(void* D3DDevice, void* Command
 	QueryRenderingModes();
 
 	CreateHandTrackers();
+	Controllers->OnSessionCreated(Session);
 
 	UE_LOG(LogDisplayXRSession, Log, TEXT("DisplayXR Session: Session created with graphics binding"));
 
@@ -1725,6 +1764,11 @@ void FDisplayXRSession::PumpEvents()
 					FPlatformMisc::RequestExit(false);
 				}
 			}
+		}
+		else if (EventData.type == XR_TYPE_EVENT_DATA_INTERACTION_PROFILE_CHANGED)
+		{
+			// Re-queried on the game thread at the next action sync.
+			Controllers->NotifyInteractionProfileChanged();
 		}
 		EventData = {XR_TYPE_EVENT_DATA_BUFFER};
 	}
@@ -1957,6 +2001,48 @@ void FDisplayXRSession::LocateHandJoints()
 			Next.Hands[1].bActive ? 1 : 0, RW.position.x, RW.position.y, RW.position.z,
 			bRigFrame ? TEXT("rig-local m, canvas-centred") : TEXT("display-plane m"));
 	}
+}
+
+void FDisplayXRSession::SyncControllers()
+{
+	if (!Controllers->IsAttached() || ViewSpace == XR_NULL_HANDLE || bParkedForRebind.Load())
+	{
+		return;
+	}
+	const XrTime DisplayTime = (XrTime)PredictedDisplayTime.Load();
+	if (DisplayTime == 0)
+	{
+		return;
+	}
+
+	// Default: the located pose as-is. The runtime maps action spaces into the
+	// frame of the latest view locate's rig itself: a glass-registered device
+	// (RIG_LOCAL_PHYSICAL, input-provider-discovery.md section 4b.4a) comes
+	// back in the rig frame, glass scale included; a display-relative one
+	// (RIG_LOCAL, section 4b.4) on the rig's display plane, metric. Applying
+	// the rig's gain here as well would scale a stylus twice. Opt-in (CVar 1):
+	// the hand-joint gain about that plane (dxr_pose::ControllerRigMapping), for
+	// a display-relative device on a runtime that does not register it to the
+	// glass. Canvas height: the runtime's resolved canvas, else the display.
+	dxr_pose::ControllerRigMapping Mapping = dxr_pose::ControllerRigMappingIdentity();
+	if (CVarDisplayXRControllersRigMapping.GetValueOnGameThread() != 0)
+	{
+		const FDisplayXRRigRaw Raw = GetRigRaw();
+		const float CanvasH = (Raw.bValid && Raw.CanvasHeightMeters > 0.0f)
+			? Raw.CanvasHeightMeters
+			: DisplayInfo.DisplayHeightMeters;
+		if (LastLocatedRig == ELocatedRig::Display)
+		{
+			Mapping = dxr_pose::ControllerRigMappingForDisplayRig(LastDisplayRig.pose,
+				LastDisplayRig.perspectiveFactor, LastDisplayRig.virtualDisplayHeight, CanvasH);
+		}
+		else if (LastLocatedRig == ELocatedRig::Camera)
+		{
+			Mapping = dxr_pose::ControllerRigMappingForCameraRig(LastCameraRig.pose,
+				LastCameraRig.convergenceDiopters, LastCameraRig.verticalFov, CanvasH);
+		}
+	}
+	Controllers->SyncAndLocate(ViewSpace, DisplayTime, Mapping);
 }
 
 void FDisplayXRSession::GetHandSample(int32 HandIndex, FDisplayXRHandSample& Out) const
