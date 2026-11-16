@@ -52,6 +52,15 @@ static const GUID DXR_UE_RELEASE_FENCE_GUID =
 // {8fa02ae8-9d02-431e-ab93-bccd79b601f7}
 static const GUID DXR_UE_RELEASE_FENCE_VALUE_GUID =
 	{0x8fa02ae8, 0x9d02, 0x431e, {0xab, 0x93, 0xbc, 0xcd, 0x79, 0xb6, 0x01, 0xf7}};
+
+// DXR_UE_RELEASE_FENCE=0: neither the fence object nor any value is published
+// (see CreateReleaseFence). Read once per process. Diagnostic, not a setting.
+static bool IsReleaseFenceDisabled()
+{
+	static const bool bDisabled =
+		FPlatformMisc::GetEnvironmentVariable(TEXT("DXR_UE_RELEASE_FENCE")).Equals(TEXT("0"));
+	return bDisabled;
+}
 #endif
 
 // =============================================================================
@@ -737,6 +746,22 @@ bool FDisplayXRCompositor::CreateReleaseFence()
 	ID3D12CommandQueue* RQ = static_cast<ID3D12CommandQueue*>(RuntimeQueue);
 	if (!UEDev || !RQ) return false;
 
+	// Kill switch (DXR_UE_RELEASE_FENCE=0): publish NOTHING. The RuntimeQueue
+	// is new for this compositor, so its private data is empty and a runtime
+	// probing it finds no fence and takes its no-fence path (displayxr-runtime
+	// #2362: the immediate idle-wait at frame exit). Publishing the fence
+	// object but never a value would instead tell such a runtime "there is a
+	// fence" and it would skip that idle-wait, reading the image with no
+	// ordering at all.
+	if (IsReleaseFenceDisabled())
+	{
+		UE_LOG(LogDisplayXRCompositor, Warning,
+			TEXT("Compositor: release fence OFF (DXR_UE_RELEASE_FENCE=0) — no fence published on RuntimeQueue"));
+		ReleaseFence = nullptr;
+		ReleaseFenceValue = 0;
+		return true;
+	}
+
 	// SHARED so a runtime on another device (the D3D11 hub, ADR-059) can
 	// CreateSharedHandle + OpenSharedFence it and wait GPU-side.
 	ID3D12Fence* Fence = nullptr;
@@ -765,19 +790,11 @@ void FDisplayXRCompositor::SignalReleaseFence_RenderThread(FRHICommandListImmedi
 #if PLATFORM_WINDOWS
 	ID3D12Fence* Fence = static_cast<ID3D12Fence*>(ReleaseFence);
 	ID3D12CommandQueue* RQ = static_cast<ID3D12CommandQueue*>(RuntimeQueue);
-	if (!Fence || !RQ) return;
-
-	// Diagnostic kill switch (DXR_UE_RELEASE_FENCE=0): stop signalling and
-	// publishing; the published value then stays where it was. Not a setting.
-	static const bool bDisabled = FPlatformMisc::GetEnvironmentVariable(TEXT("DXR_UE_RELEASE_FENCE")).Equals(TEXT("0"));
-	if (bDisabled)
+	if (!Fence || !RQ)
 	{
-		static bool bWarned = false;
-		if (!bWarned)
-		{
-			bWarned = true;
-			UE_LOG(LogDisplayXRCompositor, Warning, TEXT("Compositor: release fence publishing DISABLED by DXR_UE_RELEASE_FENCE=0 (diagnostic)"));
-		}
+		// No fence (DXR_UE_RELEASE_FENCE=0, see CreateReleaseFence): nothing to
+		// signal or publish. Still kick the frame's work to the GPU, as the
+		// fence path does.
 		RHICmdList.SubmitCommandsHint();
 		return;
 	}
