@@ -4,6 +4,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "RHI.h"                // AdjustProjectionMatrixForRHI
 #include <openxr/openxr.h>
 #include "Native/dxr_pose_math.h"
 
