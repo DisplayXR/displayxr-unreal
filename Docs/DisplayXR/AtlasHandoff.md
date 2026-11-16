@@ -137,8 +137,12 @@ A runtime reads the value inside `xrReleaseSwapchainImage` and GPU-waits on
 `(fence, value)` on the context that reads the image. On the hub that is, for
 example, `CreateSharedHandle` + `ID3D11Device5::OpenSharedFence` +
 `ID3D11DeviceContext4::Wait`, with the handle opened once. A runtime that does
-not query the private data is unaffected. `DXR_UE_RELEASE_FENCE=0` stops the
-plug-in signalling and publishing (diagnostic, not a setting).
+not query the private data is unaffected. `DXR_UE_RELEASE_FENCE=0` publishes
+nothing: neither the fence object nor a value, so a runtime that probes the
+queue finds no fence and takes its no-fence path (on the D3D12 hub reroute,
+displayxr-runtime#2362, that is the immediate idle-wait at frame exit). It used
+to publish the object and only stop the values, which made such a runtime skip
+its idle-wait and read the image unordered. Diagnostic, not a setting.
 
 ### Key Design Decisions
 
