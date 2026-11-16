@@ -4,10 +4,26 @@ All notable changes to the DisplayXR Unreal plugin are documented here.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [0.12.0] - 2026-11-16
 
 ### Added
 - **Controllers and styluses from any DisplayXR input provider reach Unreal apps.** The core module now creates an OpenXR action set, suggests bindings for `/interaction_profiles/khr/simple_controller` and, when the runtime advertises `XR_LOGITECH_mx_ink_stylus_interaction` (probed before `xrCreateInstance`, enabled only then), the MX Ink stylus profile; attaches it to every session it owns, and syncs it each frame on the game thread right after the view and hand-joint locates. Grip, aim and tip poses are located in the view locate's space and used as located: the runtime places them in the frame of the rig the plug-in chained (a glass-registered stylus already in the rig frame, so a pen touching the glass renders at zero parallax over the pixel it touches). A new `DisplayXRInput` module surfaces it as Unreal keys (`DisplayXR_{Left,Right}_{Select,Menu,System,Tip_Force,Middle_Force,Front_Click,Front_DoubleTap,Back_Click,Back_DoubleTap,Docked}`, usable in Enhanced Input), `IMotionController` sources (`Left`/`Right`, `LeftGrip`/`RightGrip`, `LeftAim`/`RightAim`, `LeftTip`/`RightTip`) and haptics through `xrApplyHapticFeedback`. `DisplayXR.Controllers.RigMapping 1` (opt-in) also applies the rig's gain about its display plane, for a display-relative pen on a runtime that does not register it to the glass. Docs: `Docs/DisplayXR/ControllerInput.md`. The display path is unchanged.
+
+### Fixed
+- **The PIE preview stayed dead after a dock/float move if its restart failed.** When the PIE viewport moves to another top-level window the preview stops and restarts against the new window; if that restart failed (widget not arranged yet) nothing retried until PIE was restarted. The restart now goes through the same deferred-start ticker as the first start (retry every tick, give up and fall back to mono after 600 attempts) and is cancelled at PIE end the same way.
+- **The move/resize WndProc subclass outlived the play session.** It was removed only in the device destructor, so in the editor it stayed on UE's editor window (or a destroyed PIE window) after PIE ended. It is now removed at play-session end and not re-installed until the compositor is re-armed; `WM_NCDESTROY` on the hooked window restores the original proc, so the globals never name a dead HWND.
+- **The XrSession was destroyed without being ended correctly.** `Shutdown()` destroyed it without ending it, and replacing a session called `xrEndSession` from any running state, which OpenXR rejects outside `STOPPING`. Both now request exit, drain the events already queued and call `xrEndSession` only from `STOPPING`; if `STOPPING` has not arrived the session is destroyed running, as before, with a log line.
+- **Atlas capture paths with non-ASCII characters were mangled.** `CaptureAtlas` converted the path prefix with `TCHAR_TO_ANSI`; `XR_DXR_atlas_capture` takes UTF-8, so it is now converted with `FTCHARToUTF8`, and a truncation to the 256-byte field drops a split multi-byte sequence instead of handing the runtime invalid UTF-8.
+- **Commandlets loaded the runtime and created an XrInstance.** Cook, DDC and other commandlets, dedicated servers and `-nullrhi` runs no longer initialise the session; the module stays in the same inactive state as a machine without the runtime.
+- **`DXR_UE_RELEASE_FENCE=0` still published the fence object.** The kill switch stopped signalling but still published the fence on the `RuntimeQueue`, so a runtime that probes the queue (DisplayXR/displayxr-runtime#2362) skipped its idle-wait and read the image with no ordering. With `=0` nothing is created or published now and the runtime takes its no-fence path. The default (fence on) is unchanged.
+- IPC array path: the per-tile copy and the submitted `imageRect` are clamped to the array slice actually created, with a one-shot warning, so a view-config change cannot copy out of bounds (#74, #83).
+- Mac/Linux: one loader-negotiate struct definition for every platform; the Mac/Linux copy declared the `XrVersion` fields as `uint32_t` (32-byte structs instead of 40) (#76, #80).
+- `Scripts/PackageApp.py` runs on Python 3.12+ (no `distutils`) and reads/writes the manifests as UTF-8; the editor writes `DisplayXRManifest.json` as UTF-8 without BOM (#77, #81).
+- `DisplayXRStereoMath.h` includes `RHI.h` for `AdjustProjectionMatrixForRHI`; the Win64 BuildPlugin failed with C3861 once `DisplayXRControllers.cpp` included it (#86).
+
+### Changed
+- Performance: `xrLocateViews` is resolved once and cached on the session instead of by name on every call, and the compositor thread uses a fixed-size stack array for the projection views instead of a per-frame `TArray` (#78 items 2, 3; #82).
+- The `GetEyePositions` / `GetUserPosition` docs now say what they return: render-ready view positions relative to the rig origin with the rig's factors applied, in OpenXR axes (metres for the camera rig, scaled by `VirtualDisplayHeight` / canvas height for the display rig), not the raw tracked eyes. Comments only.
 
 ## [0.11.0] - 2026-11-11
 
