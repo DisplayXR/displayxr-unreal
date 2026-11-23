@@ -1029,8 +1029,7 @@ void FDisplayXRSession::RefreshRenderingModes(int32 PreferModeIndex, const TCHAR
 		UE_LOG(LogDisplayXRSession, Verbose, TEXT("DisplayXR Session: %s — no active mode in the table; view config kept"), Why);
 		return;
 	}
-	// Re-apply even when the index is unchanged: the table itself may have
-	// changed (a hardware-state event), and publishing is cheap.
+	// Re-apply even when the index is unchanged; publishing is cheap.
 	ApplyRenderingMode_Locked(*M, Why);
 }
 
@@ -1806,6 +1805,10 @@ bool FDisplayXRSession::CreateSessionWithGraphics(void* D3DDevice, void* Command
 
 		// 1. Drain events until READY, then xrBeginSession.
 		bool bBegan = false;
+		// The index of the last rendering-mode event these loops drain (they do
+		// not hand events to PumpEvents). Authoritative over isActive, which the
+		// service can still report as the old mode right after a change.
+		int32 LastModeEventIndex = INDEX_NONE;
 		if (xrPollEventFunc && xrBeginSessionFunc)
 		{
 			for (int i = 0; i < 100 && !bBegan; i++)
@@ -1814,6 +1817,10 @@ bool FDisplayXRSession::CreateSessionWithGraphics(void* D3DDevice, void* Command
 				if (!XR_SUCCEEDED(xrPollEventFunc(Instance, &EventData)))
 				{
 					break;
+				}
+				if (EventData.type == (XrStructureType)XR_TYPE_EVENT_DATA_RENDERING_MODE_CHANGED_DXR)
+				{
+					LastModeEventIndex = (int32)((const XrEventDataRenderingModeChangedDXR*)&EventData)->currentModeIndex;
 				}
 				if (EventData.type == XR_TYPE_EVENT_DATA_SESSION_STATE_CHANGED)
 				{
@@ -1881,6 +1888,10 @@ bool FDisplayXRSession::CreateSessionWithGraphics(void* D3DDevice, void* Command
 					{
 						SessionState.Store(((XrEventDataSessionStateChanged*)&EventData)->state);
 					}
+					else if (EventData.type == (XrStructureType)XR_TYPE_EVENT_DATA_RENDERING_MODE_CHANGED_DXR)
+					{
+						LastModeEventIndex = (int32)((const XrEventDataRenderingModeChangedDXR*)&EventData)->currentModeIndex;
+					}
 					EventData = {XR_TYPE_EVENT_DATA_BUFFER};
 				}
 			}
@@ -1888,11 +1899,11 @@ bool FDisplayXRSession::CreateSessionWithGraphics(void* D3DDevice, void* Command
 
 		if (bBegan)
 		{
-			// The begin/warm-up loops above drain events but only act on
-			// session-state changes, so a mode change at begin (the runtime's
-			// floor, a workspace that already chose a mode) was dropped there.
-			// Re-read the active mode once instead.
-			RefreshRenderingModes(INDEX_NONE, TEXT("Active mode after session begin"));
+			// The begin/warm-up loops above do not hand events to PumpEvents, so
+			// a mode change at begin (the runtime's floor, a workspace that
+			// already chose a mode) is applied here: the last such event's
+			// index if one came, else the mode the runtime reports active.
+			RefreshRenderingModes(LastModeEventIndex, TEXT("Active mode after session begin"));
 			bSessionRunning.Store(true);
 			UE_LOG(LogDisplayXRSession, Log, TEXT("DisplayXR Session: Session running (warmed to state %d)"), (int)SessionState.Load());
 			const XrSessionState Warmed = SessionState.Load();
@@ -1992,10 +2003,17 @@ void FDisplayXRSession::PumpEvents()
 		}
 		else if (EventData.type == (XrStructureType)XR_TYPE_EVENT_DATA_HARDWARE_DISPLAY_STATE_CHANGED_DXR)
 		{
+			// The physical lens state, NOT our rendering mode: under the service
+			// another app can flip the lens (or leave, which drops it to 2D)
+			// while this session's mode is unchanged, and the runtime composes
+			// our atlas for whatever the lens does. The layout follows only the
+			// rendering mode (the event above, whose index is authoritative).
+			// Re-enumerating here also raced that event: right after a mode
+			// change the service can still report the OLD mode as isActive,
+			// which undid the switch until the next one.
 			const auto* HS = (const XrEventDataHardwareDisplayStateChangedDXR*)&EventData;
-			UE_LOG(LogDisplayXRSession, Log, TEXT("DisplayXR Session: display hardware is now in %s"),
+			UE_LOG(LogDisplayXRSession, Log, TEXT("DisplayXR Session: display hardware is now in %s (the tile layout follows the rendering mode, not this)"),
 				HS->hardwareDisplay3D ? TEXT("3D") : TEXT("2D"));
-			RefreshRenderingModes(INDEX_NONE, TEXT("Following the display hardware state"));
 		}
 		EventData = {XR_TYPE_EVENT_DATA_BUFFER};
 	}
