@@ -4,6 +4,15 @@ All notable changes to the DisplayXR Unreal plugin are documented here.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.12.1] - 2026-11-23
+
+### Fixed
+- **The plug-in follows the runtime's rendering mode instead of assuming two-view side-by-side 3D.** It now reads the display driver's active rendering mode from the runtime (view count, tile layout and view scale) and sizes its views and atlas from it, rather than assuming a 2x1 3D layout.
+- **Mode changes are followed at run time.** A rendering-mode-changed event (2D to 3D and back) re-reads the active mode and updates the layout.
+- **A lens-state event alone no longer changes the layout.** The layout follows the rendering mode only.
+
+Works with DisplayXR runtime v2.70.0 and later, where each display driver serves two rendering modes: 2D and its 3D kind.
+
 ## [0.12.0] - 2026-11-16
 
 ### Added
