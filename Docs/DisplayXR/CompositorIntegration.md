@@ -7,7 +7,13 @@ UE renders an atlas directly to the backbuffer via IStereoRendering:
   on `XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO`, which is exactly two views and
   under which `xrEndFrame` refuses a projection layer with `viewCount > 2`. See
   *[Views vs tiles](#views-vs-tiles)* below.
-- `AdjustViewRect` → tiles placed per ViewConfig (2×1, scale 0.5×0.5)
+- `AdjustViewRect` → tiles placed per ViewConfig, which is the tile grid and
+  view scale of the ACTIVE rendering mode as the runtime enumerates it. Since
+  runtime ADR-065 a display has two modes, 0 = 2D (1×1) and 1 = 3D, whose
+  layout depends on the driver's 3D kind (2×1 at 0.5×0.5, a 2×2 grid, ...).
+  The session starts in whichever mode the runtime reports active and follows
+  `XrEventDataRenderingModeChangedDXR`, so a switch made outside the game (V,
+  the shell, the Dashboard) is followed too.
 - `GetStereoProjectionMatrix` → Kooima off-axis projection per view
 - `CalculateStereoViewOffset` → per-view eye displacement
 - Display: 3840×2160 physical pixels, atlas 3840×1080 (top half)

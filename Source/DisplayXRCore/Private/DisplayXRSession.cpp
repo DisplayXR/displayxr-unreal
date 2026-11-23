@@ -85,8 +85,8 @@ bool FDisplayXRSession::Initialize()
 	// resolution (3840x2160), but some runtimes report DPI-scaled logical pixels.
 	// If session creates successfully, QueryRenderingModes will override with
 	// accurate dimensions from viewWidthPixels/viewScaleX.
-	// For now, start in 3D mode (2x1 tiles, scale 0.5x0.5) as the default
-	// since that's the mode the display will be in.
+	// Until then, a 2x1 / 0.5x0.5 placeholder. QueryRenderingModes replaces it
+	// with the mode the runtime reports ACTIVE, which may be 2D (ADR-065).
 	{
 		const int32 WriteIdx = 1 - ViewConfigReadIndex.Load();
 		FDisplayXRViewConfig& VC = ViewConfigBuffer[WriteIdx];
@@ -856,6 +856,111 @@ void FDisplayXRSession::QueryDisplayInfo()
 	}
 }
 
+namespace
+{
+	// The mode the runtime reports active for this session (isActive, v13+).
+	const XrDisplayRenderingModeInfoDXR* FindActiveMode(const TArray<XrDisplayRenderingModeInfoDXR>& Modes)
+	{
+		for (const XrDisplayRenderingModeInfoDXR& M : Modes)
+		{
+			if (M.isActive) return &M;
+		}
+		return nullptr;
+	}
+
+	const XrDisplayRenderingModeInfoDXR* FindModeByIndex(const TArray<XrDisplayRenderingModeInfoDXR>& Modes, int32 ModeIndex)
+	{
+		if (ModeIndex < 0) return nullptr;
+		for (const XrDisplayRenderingModeInfoDXR& M : Modes)
+		{
+			if ((int32)M.modeIndex == ModeIndex) return &M;
+		}
+		return nullptr;
+	}
+
+	// The 3D entry (hardware 3D, 2+ views) or the 2D entry (hardware 2D).
+	// For 3D it is the LAST match, which is what the plug-in picked before
+	// ADR-065 on runtimes that listed several 3D modes; since ADR-065 there is
+	// exactly one of each.
+	const XrDisplayRenderingModeInfoDXR* FindModeForKind(const TArray<XrDisplayRenderingModeInfoDXR>& Modes, bool bMode3D)
+	{
+		const XrDisplayRenderingModeInfoDXR* Found = nullptr;
+		for (const XrDisplayRenderingModeInfoDXR& M : Modes)
+		{
+			if (bMode3D && M.hardwareDisplay3D && M.viewCount >= 2)
+			{
+				Found = &M;
+			}
+			else if (!bMode3D && !M.hardwareDisplay3D)
+			{
+				return &M;
+			}
+		}
+		return Found;
+	}
+}
+
+bool FDisplayXRSession::EnumerateRenderingModes(TArray<XrDisplayRenderingModeInfoDXR>& OutModes) const
+{
+	OutModes.Reset();
+	if (!xrEnumerateDisplayRenderingModesFunc || Session == XR_NULL_HANDLE)
+	{
+		return false;
+	}
+
+	uint32_t ModeCount = 0;
+	XrResult Result = xrEnumerateDisplayRenderingModesFunc(Session, 0, &ModeCount, nullptr);
+	if (!XR_SUCCEEDED(Result) || ModeCount == 0)
+	{
+		UE_LOG(LogDisplayXRSession, Warning, TEXT("DisplayXR Session: No rendering modes found (%d)"), (int)Result);
+		return false;
+	}
+
+	// Zeroed, so a runtime that predates a field (isActive is v13) leaves it 0.
+	OutModes.SetNumZeroed(ModeCount);
+	for (XrDisplayRenderingModeInfoDXR& M : OutModes)
+	{
+		M.type = (XrStructureType)XR_TYPE_DISPLAY_RENDERING_MODE_INFO_DXR;
+		M.next = nullptr;
+	}
+
+	Result = xrEnumerateDisplayRenderingModesFunc(Session, ModeCount, &ModeCount, OutModes.GetData());
+	if (!XR_SUCCEEDED(Result))
+	{
+		UE_LOG(LogDisplayXRSession, Warning, TEXT("DisplayXR Session: xrEnumerateDisplayRenderingModesDXR failed (%d)"), (int)Result);
+		OutModes.Reset();
+		return false;
+	}
+	OutModes.SetNum((int32)ModeCount);
+	return true;
+}
+
+void FDisplayXRSession::ApplyRenderingMode_Locked(const XrDisplayRenderingModeInfoDXR& M, const TCHAR* Why)
+{
+	const int32 ReadIdx = ViewConfigReadIndex.Load();
+	const FDisplayXRViewConfig& Current = ViewConfigBuffer[ReadIdx];
+	const int32 WriteIdx = 1 - ReadIdx;
+	FDisplayXRViewConfig& VC = ViewConfigBuffer[WriteIdx];
+
+	VC = Current;
+	VC.TileColumns = FMath::Max(1, (int32)M.tileColumns);
+	VC.TileRows = FMath::Max(1, (int32)M.tileRows);
+	VC.ScaleX = M.viewScaleX > 0.0f ? M.viewScaleX : 1.0f;
+	VC.ScaleY = M.viewScaleY > 0.0f ? M.viewScaleY : 1.0f;
+	// viewWidthPixels = viewScaleX x the physical display width, which is more
+	// reliable than displayPixelWidth (some runtimes report DPI-scaled pixels).
+	if (M.viewWidthPixels > 0 && M.viewHeightPixels > 0 && M.viewScaleX > 0.0f && M.viewScaleY > 0.0f)
+	{
+		VC.DisplayPixelW = (int32)(M.viewWidthPixels / M.viewScaleX);
+		VC.DisplayPixelH = (int32)(M.viewHeightPixels / M.viewScaleY);
+	}
+	ViewConfigReadIndex.Store(WriteIdx);
+
+	UE_LOG(LogDisplayXRSession, Log, TEXT("DisplayXR Session: %s — mode %u '%s' (%s): %dx%d tiles, scale %.2fx%.2f, display %dx%d px"),
+		Why, M.modeIndex, ANSI_TO_TCHAR(M.modeName), M.hardwareDisplay3D ? TEXT("3D") : TEXT("2D"),
+		VC.TileColumns, VC.TileRows, VC.ScaleX, VC.ScaleY, VC.DisplayPixelW, VC.DisplayPixelH);
+}
+
 void FDisplayXRSession::QueryRenderingModes()
 {
 	if (!xrEnumerateDisplayRenderingModesFunc || Session == XR_NULL_HANDLE)
@@ -864,69 +969,69 @@ void FDisplayXRSession::QueryRenderingModes()
 		return;
 	}
 
-	uint32_t ModeCount = 0;
-	XrResult Result = xrEnumerateDisplayRenderingModesFunc(Session, 0, &ModeCount, nullptr);
-	if (!XR_SUCCEEDED(Result) || ModeCount == 0)
-	{
-		UE_LOG(LogDisplayXRSession, Warning, TEXT("DisplayXR Session: No rendering modes found (%d)"), (int)Result);
-		return;
-	}
-
 	TArray<XrDisplayRenderingModeInfoDXR> Modes;
-	Modes.SetNum(ModeCount);
-	for (uint32_t i = 0; i < ModeCount; i++)
-	{
-		Modes[i].type = (XrStructureType)XR_TYPE_DISPLAY_RENDERING_MODE_INFO_DXR;
-		Modes[i].next = nullptr;
-	}
-
-	Result = xrEnumerateDisplayRenderingModesFunc(Session, ModeCount, &ModeCount, Modes.GetData());
-	if (!XR_SUCCEEDED(Result))
+	if (!EnumerateRenderingModes(Modes))
 	{
 		return;
 	}
 
-	// Log all available modes and find the 3D mode
-	for (uint32_t i = 0; i < ModeCount; i++)
+	for (const XrDisplayRenderingModeInfoDXR& M : Modes)
 	{
-		const auto& M = Modes[i];
-		UE_LOG(LogDisplayXRSession, Log, TEXT("DisplayXR Session: Mode[%d] '%s' views=%d scale=%.2fx%.2f tiles=%dx%d viewPx=%dx%d hw3D=%d"),
+		UE_LOG(LogDisplayXRSession, Log, TEXT("DisplayXR Session: Mode[%d] '%s' views=%d scale=%.2fx%.2f tiles=%dx%d viewPx=%dx%d hw3D=%d active=%d"),
 			M.modeIndex, ANSI_TO_TCHAR(M.modeName), M.viewCount,
 			M.viewScaleX, M.viewScaleY, M.tileColumns, M.tileRows,
-			M.viewWidthPixels, M.viewHeightPixels, (int)M.hardwareDisplay3D);
+			M.viewWidthPixels, M.viewHeightPixels, (int)M.hardwareDisplay3D, (int)M.isActive);
 
 		// Worst-case atlas across ALL modes (INV-4.2): tileCount × per-view px.
 		// viewWidthPixels is already viewScaleX × displayPixelWidth.
 		MaxAtlasW = FMath::Max<uint32>(MaxAtlasW, (uint32)M.tileColumns * (uint32)M.viewWidthPixels);
 		MaxAtlasH = FMath::Max<uint32>(MaxAtlasH, (uint32)M.tileRows * (uint32)M.viewHeightPixels);
-
-		// Use the 3D mode (hardwareDisplay3D=true) to populate ViewConfig
-		if (M.hardwareDisplay3D && M.viewCount >= 2)
-		{
-			const int32 WriteIdx = 1 - ViewConfigReadIndex.Load();
-			FDisplayXRViewConfig& VC = ViewConfigBuffer[WriteIdx];
-			VC.TileColumns = (int32)M.tileColumns;
-			VC.TileRows = (int32)M.tileRows;
-			VC.ScaleX = M.viewScaleX;
-			VC.ScaleY = M.viewScaleY;
-			// Use viewWidthPixels/viewHeightPixels to derive physical display dimensions
-			if (M.viewWidthPixels > 0 && M.viewHeightPixels > 0 && M.viewScaleX > 0.0f && M.viewScaleY > 0.0f)
-			{
-				VC.DisplayPixelW = (int32)(M.viewWidthPixels / M.viewScaleX);
-				VC.DisplayPixelH = (int32)(M.viewHeightPixels / M.viewScaleY);
-			}
-			ViewConfigReadIndex.Store(WriteIdx);
-
-			UE_LOG(LogDisplayXRSession, Log, TEXT("DisplayXR Session: Using 3D mode — %dx%d tiles, scale %.2fx%.2f, display %dx%d px"),
-				VC.TileColumns, VC.TileRows, VC.ScaleX, VC.ScaleY, VC.DisplayPixelW, VC.DisplayPixelH);
-		}
 	}
 
 	if (MaxAtlasW > 0 && MaxAtlasH > 0)
 	{
-		UE_LOG(LogDisplayXRSession, Log, TEXT("DisplayXR Session: Worst-case atlas across %u modes: %ux%u"),
-			ModeCount, MaxAtlasW, MaxAtlasH);
+		UE_LOG(LogDisplayXRSession, Log, TEXT("DisplayXR Session: Worst-case atlas across %d modes: %ux%u"),
+			Modes.Num(), MaxAtlasW, MaxAtlasH);
 	}
+
+	FScopeLock Lock(&RenderingModeLock);
+	RenderingModes = Modes;
+	// The mode the runtime says is active. A runtime that predates isActive
+	// (v13) reports none: keep the old assumption, the 3D mode.
+	if (const XrDisplayRenderingModeInfoDXR* Active = FindActiveMode(RenderingModes))
+	{
+		ApplyRenderingMode_Locked(*Active, TEXT("Starting in the active mode"));
+	}
+	else if (const XrDisplayRenderingModeInfoDXR* Mode3D = FindModeForKind(RenderingModes, true))
+	{
+		ApplyRenderingMode_Locked(*Mode3D, TEXT("No mode reported active; using the 3D mode"));
+	}
+}
+
+void FDisplayXRSession::RefreshRenderingModes(int32 PreferModeIndex, const TCHAR* Why)
+{
+	// The XR call stays outside the lock.
+	TArray<XrDisplayRenderingModeInfoDXR> Modes;
+	if (!EnumerateRenderingModes(Modes))
+	{
+		return;
+	}
+
+	FScopeLock Lock(&RenderingModeLock);
+	RenderingModes = Modes;
+	const XrDisplayRenderingModeInfoDXR* M = FindModeByIndex(RenderingModes, PreferModeIndex);
+	if (!M)
+	{
+		M = FindActiveMode(RenderingModes);
+	}
+	if (!M)
+	{
+		UE_LOG(LogDisplayXRSession, Verbose, TEXT("DisplayXR Session: %s — no active mode in the table; view config kept"), Why);
+		return;
+	}
+	// Re-apply even when the index is unchanged: the table itself may have
+	// changed (a hardware-state event), and publishing is cheap.
+	ApplyRenderingMode_Locked(*M, Why);
 }
 
 void FDisplayXRSession::GetWorstCaseAtlasSize(uint32& OutW, uint32& OutH) const
@@ -1340,6 +1445,19 @@ void FDisplayXRSession::LocateViews()
 
 void FDisplayXRSession::UpdateViewConfigFromDisplayMode(bool bMode3D)
 {
+	FScopeLock Lock(&RenderingModeLock);
+
+	// The layout of the requested kind as the runtime enumerated it. Mode 1's
+	// 3D kind is a per-driver setting (ADR-065): 2x1 at half scale, a 2x2
+	// grid, ... so it is never assumed. The runtime's rendering-mode event
+	// follows and re-reads the table (PumpEvents).
+	if (const XrDisplayRenderingModeInfoDXR* M = FindModeForKind(RenderingModes, bMode3D))
+	{
+		ApplyRenderingMode_Locked(*M, bMode3D ? TEXT("Requested 3D") : TEXT("Requested 2D"));
+		return;
+	}
+
+	// No mode table (enumeration unavailable): the pre-ADR-065 defaults.
 	const int32 ReadIdx = ViewConfigReadIndex.Load();
 	const FDisplayXRViewConfig& Current = ViewConfigBuffer[ReadIdx];
 
@@ -1534,6 +1652,10 @@ bool FDisplayXRSession::CreateSessionWithGraphics(void* D3DDevice, void* Command
 		}
 		Session = XR_NULL_HANDLE;
 		SessionState.Store(XR_SESSION_STATE_UNKNOWN);
+		{
+			FScopeLock Lock(&RenderingModeLock);
+			RenderingModes.Reset();
+		}
 	}
 
 	if (Instance == XR_NULL_HANDLE || !xrGetInstanceProcAddrFunc)
@@ -1766,6 +1888,11 @@ bool FDisplayXRSession::CreateSessionWithGraphics(void* D3DDevice, void* Command
 
 		if (bBegan)
 		{
+			// The begin/warm-up loops above drain events but only act on
+			// session-state changes, so a mode change at begin (the runtime's
+			// floor, a workspace that already chose a mode) was dropped there.
+			// Re-read the active mode once instead.
+			RefreshRenderingModes(INDEX_NONE, TEXT("Active mode after session begin"));
 			bSessionRunning.Store(true);
 			UE_LOG(LogDisplayXRSession, Log, TEXT("DisplayXR Session: Session running (warmed to state %d)"), (int)SessionState.Load());
 			const XrSessionState Warmed = SessionState.Load();
@@ -1851,6 +1978,24 @@ void FDisplayXRSession::PumpEvents()
 		{
 			// Re-queried on the game thread at the next action sync.
 			Controllers->NotifyInteractionProfileChanged();
+		}
+		else if (EventData.type == (XrStructureType)XR_TYPE_EVENT_DATA_RENDERING_MODE_CHANGED_DXR)
+		{
+			// A 2D/3D switch, ours or from outside the game (the V key, the
+			// shell, the Dashboard, the runtime's floor at session begin):
+			// follow it so the device stops using a stale tile layout. No
+			// swapchain rebuild: the runtime sizes for every mode up front.
+			const auto* RM = (const XrEventDataRenderingModeChangedDXR*)&EventData;
+			UE_LOG(LogDisplayXRSession, Log, TEXT("DisplayXR Session: rendering mode changed %u -> %u"),
+				RM->previousModeIndex, RM->currentModeIndex);
+			RefreshRenderingModes((int32)RM->currentModeIndex, TEXT("Following the runtime's mode change"));
+		}
+		else if (EventData.type == (XrStructureType)XR_TYPE_EVENT_DATA_HARDWARE_DISPLAY_STATE_CHANGED_DXR)
+		{
+			const auto* HS = (const XrEventDataHardwareDisplayStateChangedDXR*)&EventData;
+			UE_LOG(LogDisplayXRSession, Log, TEXT("DisplayXR Session: display hardware is now in %s"),
+				HS->hardwareDisplay3D ? TEXT("3D") : TEXT("2D"));
+			RefreshRenderingModes(INDEX_NONE, TEXT("Following the display hardware state"));
 		}
 		EventData = {XR_TYPE_EVENT_DATA_BUFFER};
 	}
