@@ -4,6 +4,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "HAL/CriticalSection.h"
 #include "DisplayXRTypes.h"
 
 // Include our bundled OpenXR headers (not from UE's OpenXRHMD module)
@@ -374,8 +375,24 @@ private:
 	 *  CreateSessionWithGraphics exclusively. */
 	bool CreateSession();
 	void QueryDisplayInfo();
+	/** At session creation: read the rendering-mode table, size the worst-case
+	 *  atlas from it and set the view config from the mode the runtime reports
+	 *  ACTIVE (isActive). A runtime may start a session in 2D (ADR-065: the
+	 *  simulated display does), so 3D is not assumed. */
 	void QueryRenderingModes();
+	/** xrEnumerateDisplayRenderingModesDXR into OutModes (zeroed first, so a
+	 *  runtime older than v13 leaves isActive false). False on failure. */
+	bool EnumerateRenderingModes(TArray<XrDisplayRenderingModeInfoDXR>& OutModes) const;
+	/** Re-read the mode table after a mode change the runtime reported, and
+	 *  follow it: the mode whose modeIndex is PreferModeIndex if it is in the
+	 *  table, else the active one. Any thread. */
+	void RefreshRenderingModes(int32 PreferModeIndex, const TCHAR* Why);
+	/** After our own successful xrRequestDisplayModeDXR: take the layout from
+	 *  the cached table (the 3D or the 2D entry), not a hard-coded 2x1 grid. */
 	void UpdateViewConfigFromDisplayMode(bool bMode3D);
+	/** Publish M's tile grid and view scale as the view config. Caller holds
+	 *  RenderingModeLock. */
+	void ApplyRenderingMode_Locked(const XrDisplayRenderingModeInfoDXR& M, const TCHAR* Why);
 	void LocateViews();
 	/** Per-frame, right after LocateViews (same thread, same display time):
 	 *  xrLocateHandJointsEXT for both hands in ViewSpace, rebased into
@@ -454,6 +471,16 @@ private:
 
 	// Display info (written once at init)
 	FDisplayXRDisplayInfo DisplayInfo;
+
+	// The rendering modes as last enumerated for the live session. Since
+	// ADR-065 a driver exposes two modes, 0 = 2D and 1 = 3D, and mode 1's
+	// layout depends on the driver's 3D kind, so the layout is always read
+	// from this table. Re-read whenever a session is created.
+	// RenderingModeLock guards it and serializes the view-config WRITERS:
+	// the game thread (session setup, RequestDisplayMode) and the compositor
+	// thread (PumpEvents) can both write it. Readers stay lock-free.
+	TArray<XrDisplayRenderingModeInfoDXR> RenderingModes;
+	mutable FCriticalSection RenderingModeLock;
 
 	// View config (updated on display mode change)
 	FDisplayXRViewConfig ViewConfigBuffer[2];
